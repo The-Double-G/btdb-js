@@ -1,0 +1,184 @@
+name: Distributed AI Training
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: Parallel training and evaluation shards
+        required: true
+        type: choice
+        default: "8"
+        options: ["2", "4", "8", "16"]
+      training_matches:
+        description: Self-play matches per training shard
+        required: true
+        default: "96"
+      evaluation_matches:
+        description: Frozen matches per evaluation shard
+        required: true
+        default: "8"
+      base_seed:
+        description: First deterministic training seed
+        required: true
+        default: "1000"
+      minimum_score:
+        description: Required frozen evaluation score
+        required: true
+        default: "0.56"
+      minimum_games:
+        description: Required total frozen evaluation games
+        required: true
+        default: "32"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distributed-ai-training-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run ai:verify -- training/checkpoints/champion.json
+      - id: matrix
+        name: Validate inputs and build shard matrix
+        env:
+          WORKERS: ${{ inputs.workers }}
+          TRAINING_MATCHES: ${{ inputs.training_matches }}
+          EVALUATION_MATCHES: ${{ inputs.evaluation_matches }}
+          BASE_SEED: ${{ inputs.base_seed }}
+          MINIMUM_SCORE: ${{ inputs.minimum_score }}
+          MINIMUM_GAMES: ${{ inputs.minimum_games }}
+        run: |
+          node -e "const fs=require('fs');const integer=(name,min,max)=>{const raw=process.env[name];if(!/^(0|[1-9][0-9]*)$/.test(raw))throw new Error(name+' must be a non-negative integer');const value=Number(raw);if(!Number.isSafeInteger(value)||value<min||(max!=null&&value>max))throw new Error(name+' is out of range');return value};const workers=integer('WORKERS',1,16);const training=integer('TRAINING_MATCHES',1);const evaluation=integer('EVALUATION_MATCHES',1);const seed=integer('BASE_SEED',0,0xffffffff);const minimumGames=integer('MINIMUM_GAMES',1);const minimumScore=Number(process.env.MINIMUM_SCORE);if(training!==96)throw new Error('TRAINING_MATCHES must be exactly 96');if(evaluation%8!==0)throw new Error('EVALUATION_MATCHES must be a positive multiple of 8');if(!Number.isFinite(minimumScore)||minimumScore<0||minimumScore>1)throw new Error('MINIMUM_SCORE must be between 0 and 1');if(workers*evaluation<minimumGames)throw new Error('Total evaluation games are below MINIMUM_GAMES');if(seed+100000+workers-1>0xffffffff)throw new Error('BASE_SEED is too large for evaluation shard seeds');fs.appendFileSync(process.env.GITHUB_OUTPUT,'matrix='+JSON.stringify({shard:Array.from({length:workers},(_,i)=>i)})+'\n')"
+
+  train:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Train candidate shard
+        env:
+          BASE_SEED: ${{ inputs.base_seed }}
+          SHARD: ${{ matrix.shard }}
+          MATCHES: ${{ inputs.training_matches }}
+        run: |
+          seed=$((BASE_SEED + SHARD))
+          npm run ai:worker -- --mode train --checkpoint training/checkpoints/champion.json --seed "$seed" --shard "train-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/train-$SHARD.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-train-${{ matrix.shard }}
+          path: ${{ runner.temp }}/train-${{ matrix.shard }}.json
+          retention-days: 2
+          if-no-files-found: error
+
+  select:
+    needs: [prepare, train]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ai-train-*
+          path: ${{ runner.temp }}/train-results
+          merge-multiple: true
+      - name: Select deterministic candidate
+        run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train-results" --baseline training/checkpoints/champion.json --output "$RUNNER_TEMP/candidate/candidate.json" --report "$RUNNER_TEMP/candidate/candidate.selection.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-candidate
+          path: ${{ runner.temp }}/candidate
+          retention-days: 7
+          if-no-files-found: error
+
+  evaluate:
+    needs: [prepare, select]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Evaluate frozen candidate shard
+        env:
+          BASE_SEED: ${{ inputs.base_seed }}
+          SHARD: ${{ matrix.shard }}
+          MATCHES: ${{ inputs.evaluation_matches }}
+        run: |
+          seed=$((BASE_SEED + 100000 + SHARD))
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate/candidate.json" --baseline training/checkpoints/champion.json --seed "$seed" --shard "eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/eval-$SHARD.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-${{ matrix.shard }}
+          path: ${{ runner.temp }}/eval-${{ matrix.shard }}.json
+          retention-days: 2
+          if-no-files-found: error
+
+  report:
+    needs: [prepare, evaluate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-candidate
+          path: ${{ runner.temp }}/bundle
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ai-eval-*
+          path: ${{ runner.temp }}/eval-results
+          merge-multiple: true
+      - name: Build frozen evaluation report
+        env:
+          MINIMUM_SCORE: ${{ inputs.minimum_score }}
+          MINIMUM_GAMES: ${{ inputs.minimum_games }}
+        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval-results" --output "$RUNNER_TEMP/bundle/evaluation.json" --report "$RUNNER_TEMP/bundle/evaluation.md" --minimum-score "$MINIMUM_SCORE" --minimum-games "$MINIMUM_GAMES"
+      - name: Publish job summary
+        run: cat "$RUNNER_TEMP/bundle/evaluation.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-training-bundle
+          path: ${{ runner.temp }}/bundle
+          retention-days: 14
+          if-no-files-found: error

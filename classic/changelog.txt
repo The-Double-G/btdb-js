@@ -1,0 +1,8 @@
+Current Version: v1.0.0
+
+v1.0.0 -
+Based from BTD JS 2 v1.4.1
+xx3 Dart price $700 -> $450 (buff)
+000 Tack price $650 -> $400 (buff)
+xx3, xx4, & xx5 Bomb cluster bombs no longer have halved pierce (buff)
+Fixed 005, 105, & 205 Bomb from firing half as fast

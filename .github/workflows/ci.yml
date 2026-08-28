@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run validate
+      - run: npm run test:distributed
+      - run: npm run audit:public
+      - run: php -v
+      - run: npm run test:endpoint
+
+  headless-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Initialize checkpoint
+        run: npm run ai:init -- --seed 253 --shard ci-init --output "$RUNNER_TEMP/champion.json"
+      - name: Train one deterministic match twice
+        run: |
+          mkdir -p "$RUNNER_TEMP/train" "$RUNNER_TEMP/replay"
+          npm run ai:worker -- --mode train --checkpoint "$RUNNER_TEMP/champion.json" --seed 1000 --shard ci-train --matches 1 --output "$RUNNER_TEMP/train/result.json"
+          npm run ai:worker -- --mode train --checkpoint "$RUNNER_TEMP/champion.json" --seed 1000 --shard ci-train --matches 1 --output "$RUNNER_TEMP/replay/result.json"
+      - name: Verify deterministic replay identities
+        run: node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.argv[1]));const b=JSON.parse(fs.readFileSync(process.argv[2]));if(a.resultId!==b.resultId||a.candidate.checkpointId!==b.candidate.checkpointId)throw new Error('Deterministic replay identities differ');" "$RUNNER_TEMP/train/result.json" "$RUNNER_TEMP/replay/result.json"
+      - name: Select candidate
+        run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train" --baseline "$RUNNER_TEMP/champion.json" --output "$RUNNER_TEMP/candidate.json"
+      - name: Evaluate one frozen match
+        run: |
+          mkdir -p "$RUNNER_TEMP/eval"
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate.json" --baseline "$RUNNER_TEMP/champion.json" --seed 100000 --shard ci-eval --matches 1 --output "$RUNNER_TEMP/eval/result.json"
+      - name: Aggregate smoke evaluation
+        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval" --output "$RUNNER_TEMP/evaluation.json" --minimum-score 0 --minimum-games 1
+      - run: npm run ai:verify -- "$RUNNER_TEMP/candidate.json"
+      - run: npm run ai:verify -- "$RUNNER_TEMP/evaluation.json"

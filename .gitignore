@@ -1,0 +1,50 @@
+# Runtime AI data, credentials, locks, and mutable state
+/data/*
+!/data/.htaccess
+
+# Dependencies and generated test output
+/node_modules/
+/.playwright-mcp/
+/artifacts/
+/training/output/
+/test-results/
+/playwright-report/
+/coverage/
+
+# Local review captures
+/btdb-offline-menu.png
+/btdbjs-*-production.png
+/v*-local-*.png
+/v*-production-*.png
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# Logs, temporary files, and backups
+*.log
+*.lock
+*.tmp
+*.tmp.*
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*~
+*.sw?
+
+# Editors and operating systems
+/.vscode/
+/.idea/
+.DS_Store
+Thumbs.db

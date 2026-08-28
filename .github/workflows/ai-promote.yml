@@ -1,0 +1,75 @@
+name: Promote AI Checkpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      training_run_id:
+        description: Successful Distributed AI Training workflow run ID
+        required: true
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: ai-checkpoint-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Validate training run metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.training_run_id }}
+        run: |
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "training_run_id must be numeric" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/training-run.json"
+          workflow_id=$(node -e "const run=require(process.argv[1]);process.stdout.write(String(run.workflow_id));" "$RUNNER_TEMP/training-run.json")
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id" > "$RUNNER_TEMP/training-workflow.json"
+          gh api "repos/$GITHUB_REPOSITORY" > "$RUNNER_TEMP/repository.json"
+          node -e "const run=require(process.argv[1]);const workflow=require(process.argv[2]);const repo=require(process.argv[3]);if(workflow.path!=='.github/workflows/ai-training.yml'||workflow.name!=='Distributed AI Training')throw new Error('Run is not from the distributed training workflow');if(run.event!=='workflow_dispatch'||run.conclusion!=='success')throw new Error('Training run must be a successful workflow_dispatch');if(run.head_branch!==repo.default_branch)throw new Error('Training run is not from the current default branch');if(!run.head_sha||!repo.default_branch)throw new Error('Training run metadata is incomplete');" "$RUNNER_TEMP/training-run.json" "$RUNNER_TEMP/training-workflow.json" "$RUNNER_TEMP/repository.json"
+          training_sha=$(node -e "const run=require(process.argv[1]);process.stdout.write(run.head_sha);" "$RUNNER_TEMP/training-run.json")
+          git merge-base --is-ancestor "$training_sha" HEAD
+      - name: Download evaluated bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.training_run_id }}
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name ai-training-bundle --dir "$RUNNER_TEMP/bundle"
+      - name: Validate promotion gate
+        run: |
+          npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
+          npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline training/checkpoints/champion.json --minimum-score 0.56 --minimum-games 32
+      - name: Stage promoted checkpoint
+        run: cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
+      - name: Run promotion checks
+        run: |
+          npm test
+          npm run test:endpoint
+      - name: Commit promoted checkpoint
+        env:
+          RUN_ID: ${{ inputs.training_run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add training/checkpoints/champion.json
+          if git diff --cached --quiet; then
+            echo "Checkpoint is already current."
+            exit 0
+          fi
+          git commit -m "Promote AI checkpoint from run $RUN_ID"
+          git push

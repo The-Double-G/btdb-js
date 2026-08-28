@@ -1,0 +1,1081 @@
+Current Version: v2.5.3
+
+v2.5.3 -
+Added authenticated atomic AI knowledge resets with strict fresh-model validation
+Added contribution epochs so queued and in-progress matches from before a reset cannot train the new model
+AI and Local match telemetry now capture the contribution epoch when each match begins
+Active browser tabs now discard stale queued contributions and reload the fresh shared model when the epoch changes
+Reset operations now increment the model revision and contribution epoch while clearing deduplication and rate-limit guards under the same lock
+Expanded endpoint integration tests for reset authentication, stale and legacy events, guard clearing, and current-epoch learning
+Fixed the contribution schema so an empty bounded observation list is accepted correctly
+Reset the hosted shared AI to a fresh schema-8 model at revision 6 and contribution epoch 2
+
+v2.4.0 -
+Rebalanced all towers and upgrade paths for clearer competitive roles and viable late-game choices
+Removed frame-rate-dependent repeated projectile damage by tracking hits per Bloon
+Corrected Bloon Boost, MOAB knockback, freeplay leak damage, tight ceramic unlocks, and AI rush timing
+Added working crowd-control stuns to Bomb, Ninja bomb, and Mortar impact paths
+Nerfed exponential COBRA, Shinobi, Overclock, Farm, Sniper income, and Trade Empire stacking
+Buffed underperforming high-tier damage paths through targeted prices and corrected mechanics
+Fixed Mastery round asymmetries and counters, Engineer traps, Aircraft Master planes, and Sword attribution
+Optimized tower targeting, collision attribution, UI rendering, and FPS measurement
+Added BALANCE-v2.4.0.md and tools/validate-balance.js
+
+v2.3.0 -
+Farmers can no longer be upgraded and this fixes the farmer upgrade money glitch
+Fixed multiple AI and input null-reference issues that could block tower placement or crash upgrade handling
+Moved AI thinking off raw interval scheduling and onto frame-driven throttles so tabbing out no longer causes AI cursor speed bursts on return
+AI pregame loadout observation now pauses while the tab is hidden or out of focus so the wait timer does not skip offscreen
+AI now waits 5 to 10 seconds before choosing its loadout in Vs AI, watches what the human selects, and can counter-pick based on observed towers and boosts
+Added opponent loadout summaries, counter-pick heuristics, and learned loadout counter records so the AI can improve its pregame counter selection over time
+Expanded the AI neural policy with a deeper two hidden layer network, more input features, confidence-aware exploration, and safe migration for older save data
+Added many new AI input features for pregame loadout economy, pressure, heavy defense, camo defense, support, late game strength, and offensive or defensive boost bias
+Improved AI reward calculation to include damage differential, pressure differential, eco differential, farm differential, and counter-pick outcome quality instead of relying mostly on lives
+AI now learns better placement spots per tower, role, map, and board area and also learns stronger per-tower crosspath choices for different combat contexts
+Improved danger sensing so defensive boosts react less often when bloons are already past meaningful tower coverage or when normal defense can still stabilize
+Eco boost timing now triggers at the start of every visible round from round 5 onward when the AI has eco boost available
+Bloon send and rush logic is smarter, including more aggressive punishment of weak defenses and offensive powers that now consider whether the opponent can actually afford more defense
+Increased penalties for duplicate low-tier towers so the AI is much more likely to upgrade existing weak copies instead of spamming many similar low-upgrade towers
+Cleaned up and redesigned the AI Stats screen into clearer overview, feature profile, and top strategy sections with better readability and added counter record tracking
+
+v2.2.0 -
+Added a new front menu with Local, Multiplayer placeholder, Vs AI, and AI Stats options
+Added a custom menu background asset and updated the front menu presentation
+Vs AI now lets the player choose a side and then enters the normal pregame flow against the AI
+Added a visible AI cursor so the AI now moves around the map instead of instantly spawning actions
+AI now selects its own towers and boosts on the pregame screen instead of starting with a hidden preset loadout
+AI now handles farmers and banana collection more naturally, including checking farm coverage and collecting with the cursor when safe
+AI now deselects towers when idle by selecting empty ground instead of leaving towers selected
+AI upgrades now visibly select the tower first and then buy the upgrade on the next step instead of upgrading invisibly
+Added AI handling for manual aim towers like Dartling and Mortar, including cursor follow and lock behavior
+Improved cursor hold movement so it no longer waits for browser key repeat before moving continuously
+Changed shared cursor/key movement repeat delay from 100ms to 150ms
+Fixed background-tab runtime catch-up bursts that caused AI cursor movement to run extremely fast after tabbing back in
+Added a startup mode menu and AI-aware input/main-loop integration so menu, input, and AI all run through the same flow consistently
+Added an AI Stats screen that shows runtime mode, persistence backend, player profile summary, profile count, and top strategy records
+Added hosted-only AI cross-match learning with a shared PHP backend at `ai-learning.php`
+Added shared hosted AI save data file `data/ai-learning-global.json`
+Local runtime via `file://`, `localhost`, or `127.0.0.1` now disables cross-match AI learning and runs session-only
+Hosted runtime now loads and saves the same shared AI model for all players instead of using browser local storage
+Upgraded the AI from a fixed script into an adaptive model that tracks player style and learns across hosted matches
+Added mathematical defense/offense evaluation using observed tower DPS, incoming threat DPS, urgency weighting, and projected upgrade/placement gains
+AI now decides more realistically between boosting, upgrading, adding a tower, or doing nothing based on combat math
+Boost logic is now much more disciplined and checks actual engagement windows, speed, danger, and whether normal defense can still solve the situation
+AI eco sending is now smarter and follows staged eco progression instead of staying on red sends or making unrealistic jumps straight to high-cost sends
+AI now uses intentional crosspath build targets and scores upgrades toward useful final combinations instead of loosely guessing crosspaths
+Expanded the AI strategy/profile pool heavily with many more tower and power combinations plus generated greedy, pressure, defensive, and tempo variants
+Added multiple near-duplicate profiles around the same archetypes so the AI can pick slightly different timings, boosts, and pacing even in similar matchups
+Restored and reconciled the adaptive AI file with `index.html`, `08-main-loop.js`, and `09-input.js` after version mismatch issues
+
+v2.1.0 -
+Removed the unused legacy `scripts.js` monolith file from the active project
+Renamed the main browser entry file from `game.html` to `index.html`
+Added automatic pause when the game tab becomes hidden or the window loses focus
+Cleared held key state when auto pause triggers so controls do not stick after returning to the game
+Packed runtime PNG assets into generated atlas pages with a generated sprite manifest
+Added shared atlas asset runtime helpers so existing sprite names can render from atlas pages without code side renames
+Replaced repeated `new Image()` sprite rendering paths with shared atlas backed drawing helpers
+Replaced the giant manual image preload list with atlas preloading
+Added atlas build scripts in `tools/` for rebuilding generated runtime assets
+Moved source PNG assets into `assets-src/` and documented the asset workflow for developers
+Updated favicon and direct asset fallback paths to use `assets-src/`
+
+v2.0.0 -
+0x3 Farm bananas per round 6 -> 3 (nerf)
+103 Farm bananas per round 10 -> 5 (nerf)
+203 Farm bananas per round 14 -> 7 (nerf)
+xx4 Farm bananas per round unchanged
+x2x Farm cost $1.2k -> $800 (buff)
+3xx Tack cost $400 -> $650 (nerf)
+x3x Tack cost $600 -> $650 (nerf)
+x3x Boomer cost $1.75k -> $1.4k (buff)
+x4x Boomer cost $9k -> $7.5k (buff)
+xx3 Buccaneer cost $1.5k -> $2.2k (nerf)
+x3x Dartling cost $5.5k -> $8k (nerf)
+x4x Dartling cost $6k -> $7k (nerf)
+2xx Sniper cost $700 -> $1.4k (nerf)
+x4x Sniper cost $6k -> $7k (nerf)
+4xx Ninja cost $4k -> $2.5k (buff)
+100 Mortar pierce increase +15 -> +10 (nerf)
+150/105 Mortar pierce increase +30 -> +20 (nerf)
+x3x Mortar cost $1k -> $2.5k (nerf)
+03x Mortar pierce 15 -> 25 (buff)
+03x/130 Mortar damage 2 -> 1 (nerf)
+1+30 Mortar pierce 30 -> 40 (buff)
+230 Mortar damage 3 -> 2 (nerf)
+Above mortar changes also apply to x4x but not x5x
+xx3 Mortar cost $2.5k -> $1.5k (buff)
+Eco boost gives 4 * round eco -> 5 * round eco (buff)
+Spaced rainbow bloon send $70 -> $120 (nerf)
+Split `scripts.js` into ordered local javascript files for preload, bloons, towers, support entities, boss logic, setup/UI, round data, rounds, main loop, and input
+Added shared constants file for canvas size, version text, boost settings, key codes, and base tower prices
+Added shared state bootstrap file for canvas/context setup and core runtime globals
+Updated `index.html` to load all local javascript files in dependency order instead of one monolithic script
+Refactored early standard AI rounds into extracted round data with reusable round helper functions
+Cleaned tower rendering logic by extracting image path, debug label, and rotation helper methods
+Refactored input system into named helpers for cursor movement, selection, pregame toggles, boosts, bloon cycling, sends, auto eco, tower upgrades, placement, selling, and targeting
+Removed large duplicated left/right input blocks by replacing them with side agnostic helper driven logic
+Added shared loadout tower placement config for tower radius, range, type, and price data
+Added structured player state access helpers used by the refactored input and runtime code
+Cleaned setup and bootstrap files with clearer sectioning and comments
+Cleaned input file with clearer helper sections and comments
+Removed unused refactor scaffolding and helper leftovers from shared files
+Fixed inconsistent mirrored tower placement pricing caused by old duplicated input code
+Added runtime scheduler layer so gameplay time can be paused without background timers continuing to advance
+Added pause support on `Esc`
+Added pause menu overlay using Luckiest Guy font
+Added resume button to the pause menu
+Pause menu can now be closed either by pressing `Esc` again or clicking the Resume button
+Paused state now freezes game time based `Date.now()`, `setTimeout`, and `setInterval` gameplay behavior instead of only freezing visuals
+All gameplay timing now uses explicit game time helpers so pause freezes `Date.now()` based systems correctly
+Main loop now continues rendering while paused so the pause menu remains responsive
+Fixed pause toggle failing to unpause because key cooldowns were tied to frozen game time
+Fixed resume button click detection by converting mouse clicks to canvas relative coordinates
+Pause menu background no longer applies a fullscreen fade; only the menu panel itself is slightly transparent
+
+
+v FINAL -
+Eco boost gives 7 * round eco -> 4 * round eco (nerf)
+Lightning power strikes 10 times -> 5 times (nerf)
+x3x Boomer cost $1.3k -> $1.75k (nerf)
+
+v1.10.2 -
+Fixed a bug where xx5 Buccaneer crashes the game when it generates money
+
+v1.10.1 -
+Fixed a bug where slow would not effect sentry spawning rates
+Fixed a bug where subtowers did not have the slow visual
+Fixed a bug where lightning would keep going if both sides used lightning at the same time
+Towers, subtowers, and projectiles now rotate
+Pop effects last for 100ms instead of 200ms
+Fixed a bug where power text on the right side of the screen stacked
+Fixed controls graphics still refering to 3, 4, 6, & 7 keys as tower and bloon boost instead of powers
+Pop effects are now randomly rotated
+2xx Engineer sentry spawn rate 3.5s -> 3s (buff)
+xx4 Buccaneer money per round base $550 -> $700 (buff)
+xx5 Buccaneer maximum favored trader income stack x3 -> x2 (nerf)
+xx5 Buccaneer income multiplier per favored trader 0.1 -> 0.05 (nerf)
+000 Wizard cost $600 -> $500 (buff)
+
+v1.10.0 -
+Added more powers
+    Lightning zaps all bloons on the screen several times when activated
+    Slow sabotages enemy towers and makes them attack 20% slower
+    Eco boost grants eco based on the round number
+The new powers are now part of the loadout and need to be selected on the selection screen
+Put number of boosts text above the icon for more visibility
+Tight Ceramics cost $6.8k -> $3.4k (buff)
+Tight MOABs cost $8k -> $4k (buff)
+Tight BFBs cost $10k -> $7k (buff)
+x3x Dart cost $300 -> $500 (nerf)
+xx2 Dart range +35 -> +70 (buff)
+2xx Sniper cost $1.2k -> $700 (buff)
+3xx Sniper cost $2.5k -> $2k (buff)
+x2x Sniper cost $450 -> $300 (buff)
+xx4 Sniper cost $6k -> $4k (buff)
+000 Ice cost $900 -> $700 (buff)
+xx2 Ice range +20/+30 -> +50 (buff, bugfix)
+1xx Bomb cost $400 -> $250 (buff)
+2xx Bomb cost $600 -> $400 (buff)
+x1x Bomb cost $250 -> $200 (buff)
+x2x Bomb cost $500 -> $400 (buff)
+xx2 Bomb cost $300 -> $250 (buff)
+1xx Wizard cost $200 -> $100 (buff)
+x1x Wizard cost $300 -> $250 (buff)
+xx1 Wizard cost $300 -> $250 (buff)
+xx2 Wizard cost $200 -> $100 (buff)
+Practice mode no longer spawns bloons on non player side
+Practice mode now shows stats
+In Pracice mode, the non player side's cursor is no longer shown
+xx4 & xx5 Engineer bloon traps should now properly add to total pop count
+
+v1.9.6 -
+Added visual indication to boost cooldown
+
+v1.9.5 -
+Fixed a bug where x3x Cobras no longer display that they stole lives when they steal lives
+4xx Dart cost $2.2k -> $3.5k (nerf)
+xx3 Bomb cost $3k -> $2k (buff)
+x3x Boomer cost $1.1k -> $1.3k (nerf)
+x4x Boomer cost $6k -> $9k (nerf)
+032 Boomer damage 3 -> 4 (buff)
+042 Boomer damage 4 -> 6 (buff)
+052 Boomer damage 9 -> 11 (buff)
+xx4 Knight cost $12k -> $10k (buff)
+4xx Farm crates produced per round 6 -> 5 (nerf)
+x4x Farm cost $10k -> $8k (buff)
+x5x Farm cost $40k -> $42k (nerf)
+
+v1.9.4 -
+Fixed a bug where xx3+ Farm on the right side gave its end of round bonus to the left side instead of the right side
+
+v1.9.3 -
+xx2 Super renamed from "Heavier Knockback" to "Heavier Weapons"
+xx2 Super damage 1 -> 2 (buff)
+401 & 402 Super pierce 25 -> 75 (buff) (bug fix)
+402 Super damage 10 -> 15 (buff)
+502 Super damage 60 -> 90 (buff)
+032 Super damage 2 -> 3 (buff)
+042 Super damage 5 -> 8 (buff)
+052 Super damage 12 -> 18 (buff)
+xx3 Super damage 2 -> 3 (buff)
+xx4 Super damage 3 -> 5 (buff)
+xx5 Super damage 8 -> 12 (buff)
+x2x Farm cost $800 -> $1.5k (nerf)
+x3x Farm cost $7k -> $6.3k (buff)
+023+ Farm now increased end of round bonus by 25% (buff)
+x3+x Supers now always have spread of at least 10 degrees
+Fixed tower boost effect breaking the game when a subtower was present
+Bloon boost effect no longer covers towers
+Subtowers reposition themselves if out of bounds earlier
+Pop count should be more accurate with higher damage projectiles and xx5 Engineer XXXL Trap
+
+v1.9.2 -
+xx4 Bomb recursive explosion damage 1 -> 2 (buff)
+Spaced Black cost $30 -> $42 (nerf)
+Spaced Black eco gain 1.5 -> 2.1 (buff)
+Spaced Black spacing 280ms -> 420ms (nerf)
+Grouped Ceramic cost $475 -> $700 (nerf)
+Spaced Rainbow spacing 350ms -> 700ms (nerf)
+Engineer sentry and trap placement speed affected by speed buffs (buff)
+Bloon boosts now affect all player sent bloons and not player sent bloons sent while the bloon boost is active (buff)
+Made it more clear when a bloon boost and tower boost are active
+Fixed a bug where 032 Bombs never fired frags
+
+v1.9.1 -
+Tight Pinks unlock round 25 -> 30 (nerf)
+New Tight Blacks bloon send after round 25
+Tight Ceramics unlock round 25 -> 24 (buff)
+Cursors now has white outline
+1xx Knight cost $300 -> $400 (nerf)
+2xx Knight cost $600 -> $800 (nerf)
+x3x Knight cost $3.5k -> $2.5k (buff)
+x4x & x5x Knight retain x3x Knight attack (buff)
+3xx Boomer cost $1.3k -> $1.2k (buff)
+x3x Boomer cost $1.2k -> $1.1k (buff)
+
+v1.9.0 -
+New tower: Knight Monkey uses his sword to attack the bloons
+x4x Dart cost $5.5k -> $7k (nerf)
+x5x Dart cost $35k -> $50k (nerf)
+xx5 Dart cost $27.5k -> $24k (buff)
+xx5 Dart projectile speed bloon radius -> 18 (nerf)
+5xx Tack cost $40k -> $80k (nerf)
+x5x Tack cost $35k -> $60k (nerf)
+xx5 Tack cost $25k -> $60k (nerf)
+xx3 Farm cost $2.75k -> $2.4k (buff)
+xx4 Farm cost $15k -> $13k (buff)
+xx5 Farm cost $45k -> $47k (nerf)
+4xx Super cost $80k -> $200k (nerf)
+3xx Super cost $15k -> $12k (buff)
+5xx Super cost $300k -> $750k (nerf)
+x3x Super cost $10k -> $9k (buff)
+x4x Super cost $30k -> $55k (nerf)
+x5x Super cost $90k -> $150k (nerf)
+xx4 Super cost $25k -> $45k (nerf)
+xx5 Super cost $60k -> $100k (nerf)
+5xx Bomb cost $30k -> $40k (nerf)
+x5x Bomb cost $22k -> $30k (nerf)
+xx5 Bomb cost $40k -> $50k (nerf)
+5xx Dartling cost $80k -> $150k (nerf)
+x5x Dartling cost $70k -> $150k (nerf)
+xx5 Ice cost $35k -> $60k (nerf)
+000 Wizard cost $300 -> $600 (nerf)
+4xx Wizard cost $7.5k -> $11k (nerf)
+5xx Wizard cost $32k -> $40k (nerf)
+x3x Wizard cost $2.2k -> $3.5k (nerf)
+x4x Wizard cost $6k -> $12k (nerf)
+x5x Wizard cost $36k -> $60k (nerf)
+xx5 Wizard cost $40k -> $60k (nerf)
+5xx Boomerang cost $38k -> $75k (nerf)
+x5x Boomerang cost $35k -> $50k (nerf)
+xx5 Boomerang cost $35k -> $60k (nerf)
+5xx Sniper cost $30k -> $40k (nerf)
+x3x Sniper cost $3k -> $2.5k (buff)
+x4x Sniper cost $5k -> $6k (nerf)
+xx3 Sniper cost $2.8k -> $2k (buff)
+xx4 Sniper cost $5k -> $6k (nerf)
+xx4 Sniper frag damage 1 -> 2 (buff)
+4xx Ninja cost $2.5k -> $4k (nerf)
+5xx Ninja cost $32k -> $70k (nerf)
+xx4 Ninja cost $6k -> $9k (nerf)
+xx5 Ninja cost $40k -> $75k (nerf)
+4xx Engineer cost $2.8k -> $4.2k (nerf)
+5xx Engineer cost $40k -> $60k (nerf)
+3xx Buccaneer cost $2.5k -> $4k (nerf)
+5xx Buccaneer cost $37.5k -> $50k (nerf)
+x5x Buccaneer cost $30k -> $50k (nerf)
+5xx Mortar cost $35k -> $80k (nerf)
+x5x Mortar cost $40k -> $70k (nerf)
+xx5 Mortar cost $26k -> $42k (nerf)
+000 Mortar cost $750 -> $1k (nerf)
+000 Engineer cost $400 -> $300 (buff)
+Added FPS Counter & % Efficiency
+Reordered interactions with Round announcement and pop effects
+Added announcement text for Tower Boosts and Bloon Boosts
+Attrition should now properly leak lives
+Fixed a bug where upgrading a xx3 Farm with path 1 upgrades made the farm spit out extra bananas
+Projectiles with mostly the same values merge together to decrease lag
+
+v1.8.3 -
+All non-farm towers have a DPS counter
+Ninja monkeys no longer display shinobi stack count
+4xx Ninja spread 60 deg -> 30 deg (buff)
+5xx Ninja spread 78.75 deg -> 39.375 (buff)
+
+v1.8.2 -
+Mortars no longer stay on follow mouse targeting when upgrading to xx1
+1xx Mortar cost $400 -> $600 (nerf)
+2xx Mortar cost $1k -> $1.2k (nerf)
+x3x Banana Farms give $20 -> $40 base for packet (buff)
+x4x Banana Farms give $20 -> $80 base for packet (buff)
+x5x Banana Farms give $20 -> $160 base for packet (buff)
+
+v1.8.1 -
+Rounds now have an announcement text
+Spaced Rainbow eco per send +2.8 -> +3.5 (buff)
+x3x Tack price $700 -> $600 (buff)
+4xx Tack price $5.2k -> $2.75k (buff)
+40x Tack pierce 24 -> 12 (nerf)
+410 Tack pierce 36 -> 18 (nerf)
+420 Tack pierce 48 -> 24 (nerf)
+2xx Mortar cost $600 -> $1k (nerf)
+xx2 Mortar cost $500 -> $750 (nerf)
+xx3 Mortar fire tick damage 2 -> 1 (nerf)
+xx3 Mortar fire tick count 7 -> 6 (nerf)
+xx3 Mortar cost $1k -> $2.5k (nerf)
+x4x Mortar cost $6k -> $7k (nerf)
+04x Mortar pierce 30 -> 15 (nerf)
+140 Mortar pierce 60 -> 30 (nerf)
+x5x Mortar cost $35k -> $45k (nerf)
+All banana farms reworked
+    Banana farms no longer drop bananas on a time based basis
+    Bananas are now dropped depending on the round progress
+    0xx Farms produce 3 bananas per round
+    1xx Farms produce 5 bananas per round
+    2xx Farms produce 7 bananas per round
+    3xx Farms produce 16 bananas per round
+    4+xx Farms produce 6 bananas per round
+    0x3+ Farms produce 6 bananas per round
+    103+ Farms produce 10 bananas per round
+    203+ Farms produce 14 bananas per round
+000 Banana Farm cost $1.1k -> $1.25k (nerf)
+3xx Banana Farm cost $2.5k -> $3k (nerf)
+023+ Banana farms no longer recieve 25% bonus income on end of round boost (nerf)
+x30 Wizard pierce 2 -> 3 (buff)
+031+ Wizard pierce 3 -> 5 (buff)
+x40 Wizard pierce 4 -> 6 (buff)
+041+ Wizard pierce 6 -> 9 (buff)
+x50 Wizard pierce 8 -> 12 (buff)
+051+ Wizard pierce 12 -> 18 (buff)
+xx4 Wizard cost $5k -> $8k (nerf)
+x4x Sniper cost $7k -> $5k (buff)
+xx3 Super cost $6k -> $5k (buff)
+x3x Dartling cost $7k -> $5.5k (buff)
+x4x Dartling cost $7.5k -> $6.5k (buff)
+3xx Ice cost $1.75k -> $1.5k (buff)
+1xx Engineer now spawns a sentry when upgraded
+Fixed bug where x3+x Wizard dragon's breath attacked twice as fast as normal
+
+v1.8.0 -
+New tower: Mortar monkey fires shells to detonate bloons from above
+ZOMGs take 50% knockback from xx5 Wizard (0.015 on offside, 0.01 on classic steps) (buff)
+Prices on tower select screen moved to bottom of tower for visual clarity
+4xx Dart pierce 30 -> 40 (buff)
+000 Bomb price $700 -> $500 (buff)
+xx3 Tack price $300 -> $250 (buff)
+x3x Bomb $3k -> $2k (buff)
+x4x Bomb $4k -> $3.2k (buff)
+3xx Super cost $18k -> $15k (buff)
+x3x Super cost $12.5k -> $10k (buff)
+4xx Super cost $100k -> $80k (buff)
+xx5 Super cost $80k -> $60k (buff)
+1xx Boomer cost $400 -> $350 (buff)
+2xx Boomer cost $550 -> $450 (buff)
+3xx Boomer cost $1.6k -> $1.3k (buff)
+x3x Boomer cost $1.5k -> $1.2k (buff)
+All Buccaneer extra projectile shots happen every shot instead of every other shot (buff)
+x3x Buccaneer damage 2 -> 1 (nerf)
+13+0 Farm end of round base bonus $800 -> $900 (buff)
+23+0 Farm end of round base bonus $800 -> $1000 (buff)
+
+v1.7.7 -
+x2x Cobra reworked
+    Renamed from "Eco Steal" to "Wired Eco"
+    Instead of stealing 4 eco every 30 seconds, gain 4 eco per round
+x4x Cobra no longer steals from opponent (nerf)
+x4x Cobra gain per second $25 -> $15 (nerf)
+x5x Cobra no longer steals from opponent (nerf)
+x5x Cobra given gain cap ($10k and 200 eco) (nerf)
+
+v1.7.6 -
+Bloon boost bloon speed increase x1.25 -> x1.4 (buff)
+xx3 Wizard cost $1.8k -> $2.2k (nerf)
+xx3 Wizard lightning spawn chance per bloon 10% -> 20% (buff)
+xx3 Wizard max lightning count 10 -> 5 (nerf)
+xx4 Wizard lightning spawn chance per bloon 20% -> 40% (buff)
+xx4 Wizard max lightning count 25 -> 13 (nerf)
+xx5 Wizard lightning spawn chance per bloon 20% -> 40% (buff)
+4xx Engineer cost $2.5k -> $2.8k (nerf)
+x3x Engineer cost $1k -> $500 (buff)
+x4x Engineer cost $20k -> $20.5k (nerf)
+3xx Dartling spread +-5 deg -> +-2 deg (buff)
+Fixed bug where xx3+ Wizards ignore max lightning count
+
+v1.7.5 -
+x4x & x5x Tack spin at x1.5 the rate
+
+v1.7.4 -
+Added visual health bar over lives count
+Tight Pinks cost $600 -> $300 (buff)
+Grouped Zebras cost $240 -> $220 (buff)
+Grouped Zebras eco 5.3 -> 6 (buff)
+Grouped Rainbow cost $600 -> $550 (buff)
+xx1 Tack cost $200 -> $100 (buff)
+xx2 Tack cost $200 -> $100 (buff)
+xx3 Tack cost $350 -> $300 (buff)
+xx4 Tack cost $4k -> $3k (buff)
+2xx Dartling cost $750 -> $550 (buff)
+x2x Dartling cost $500 -> $350 (buff)
+xx2 Dartling cost $800 -> $600 (buff)
+xx3 Dartling attack speed 1s -> 0.8s (buff)
+023 Dartling attack speed 0.66s -> 0.528s (buff)
+xx4 Dartling attack speed 0.25s -> 0.2s (buff)
+024 Dartling attack speed 0.165s -> 0.132s (buff)
+xx5 Dartling attack speed 0.167s -> 0.133s (buff)
+025 Dartling attack speed 0.110s -> 0.088s (buff)
+xx4 Dartling cost $10k -> $12k (nerf)
+xx5 Dartling cost $70k -> $75k (nerf)
+3xx Cobra attack speed boost stacks up to unlimited cooldown reduction -> 0.5x cooldown reduction (nerf)
+xx3 Cobra bloon speed boost stacks up to unlimted speed multiplier-> 1.5x speed multiplier (nerf)
+3xx Cobra cost $750 -> $500 (buff)
+xx3 Cobra cost $750 -> $500 (buff)
+x5x Cobra no longer makes infinite money in practice mode
+4xx Boomer pierce 60 -> 50 (nerf)
+x4x Super cost $40k -> $30k (buff)
+xx4 Super cost $30k -> $25k (buff)
+xx5 Super cost $125k -> $80k (buff)
+3xx Farm production speed 2.5s -> 2s (buff)
+4xx Farm cost $16k -> $14k (buff)
+5xx Farm cost $80k -> $65k (buff)
+x5x Farm cost $60k -> $40k (buff)
+
+v1.7.3 -
+Practice mode towers replaced with cobras, allowing for tests against cobra rushes
+Tight Pinks cost $150 -> $600 (nerf)
+x3+x Farm interest rate max halved (nerf)
+x3+x Farm end of round cash bonus base $400 -> $800 (buff)
+3xx Dart cost $400 -> $750 (nerf)
+4xx Dart cost $2.5k -> $2.2k (buff)
+5xx Dart cost $20k -> $18k (buff)
+xx5 Dart cost $22.5k -> $27.5k (nerf)
+x3x Tack cost $550 -> $700 (nerf)
+x5x Tack cost $25k -> $35k (nerf)
+xx3 Tack cost $400 -> $350 (buff)
+x5x Wizard fireball rate 1.1s -> 0.55s (buff)
+5xx Wizard cost $25k -> $32k (nerf)
+x5x Wizard cost $30k -> $36k (nerf)
+xx5 Wizard cost $20k -> $40k (nerf)
+5xx Engineer cost $30k -> $40k (nerf)
+Version text shortened; "Version" replaced with "v"
+
+v1.7.2 -
+Added Practice Mode: Allows player to play the game solo with the other side being invincible
+Added Tight Pink send after Round 25
+Fixed bug where xx4 & xx5 Wizard tornado knockback decay immunity did not apply
+x3+x COBRA adapted for infinite lives
+All Farm production speed halved (nerf)
+023+ Farm end of round crosspath bonus +50% -> +30% (nerf)
+Tight BFBs cost $14k -> $10k (buff)
+Tight Ceramic Round Unlock 27 -> 25 (buff)
+Font changed back to Luckiest Guy
+
+v1.7.1 -
+Fixed bug where "Lock On Point" on left side used incorrect outline
+4xx Buccaneer cost $7k -> $9k (nerf)
+x30 Wizard dragon's breath pierce 1 -> 2 (buff)
+031 Wizard dragon's breath pierce 2 -> 3 (buff)
+x40 Wizard dragon's breath pierce 3 -> 4 (buff)
+041 Wizard dragon's breath pierce 5 -> 6 (buff)
+x50 Wizard dragon's breath pierce 7 -> 8 (buff)
+051 Wizard dragon's breath pierce 12 -> 13 (buff)
+xx4 & xx5 Wizard tornadoes are no longer affected by knockback decay
+
+v1.7.0 -
+New key allows for bloon sends to be automatic for selected bloon
+New tower: Monkey buccaneer throws powerful darts at bloons and uses equipment derived from his ship
+Removed tight ZOMG send
+000 Ninja cost $250 -> $350 (nerf)
+1xx Ninja cost $150 -> $300 (nerf)
+2xx Ninja cost $200 -> $300 (nerf)
+3xx Ninja cost $600 -> $750 (nerf)
+510 Ninja MOAB knockback 5% -> 2.5% (nerf)
+520 Ninja MOAB knockback 10% -> 5% (nerf)
+x04 Ninja MOAB knockback 5% -> 2.5% (nerf)
+014 Ninja MOAB knockback 10% -> 5% (nerf)
+024 Ninja MOAB knockback 15% -> 7.5% (nerf)
+x05 Ninja MOAB knockback 10% -> 4% (nerf)
+015 Ninja MOAB knockback 20% -> 8% (nerf)
+025 Ninja MOAB konckback 30% -> 12% (nerf)
+000 Bomb cost $900 -> $700 (buff)
+Reworked xx2+ Bomb
+    Frags now fly more faithfully to original iteration
+xx3 Bomb cost $2k -> $3k (nerf)
+xx4 Bomb cost $5k -> $8k (nerf)
+xx5 Bomb cost $30k -> $40k (nerf)
+5xx Super damage 75 -> 60 (nerf)
+x3x & x4x Farm no longer gives extra eco
+023+ Farm now gives 50% bonus to end of round gain
+Fixed 023 Farm reporting $30 instead of $60 in cash generated count
+5xx Farm now gives all 4xx Farms +25% cash per crate (buff)
+000 Engineer cost $300 -> $400 (nerf)
+x4x Engineer overclock attack speed bonus +50% -> +33% (nerf)
+x5x Engineer overclock attack speed bonus +150% -> +66% (nerf)
+3xx Boomer cost $1.5k -> $1.6k (nerf)
+x1x Wizard cost $400 -> $300 (buff)
+x2x Wizard cost $600 -> $400 (buff)
+x3x Wizard cost $2.5k -> $2.2k (buff)
+05x & 150 Dartling damage 50 -> 100 (buff)
+250 Dartling damage 75 -> 150 (buff)
+x4x Tack gives +30 range (buff)
+x5x Tack spawns blades spinning both clockwise and counterclockwise (buff)
+000 Ice cost $1k -> $900 (buff)
+All text uses outlines
+Changed which heart is used for text
+Text when recieving money, eco, or lives from towers moves half the speed and last twice as long
+Knockback effectiveness after Round 25 decay 2% -> 3.5%
+Made popcounts more accurate
+
+v1.6.2 -
+Ninjas now use proper projectile skins
+Fixed xx4 Engineer crashing game if no track was in range
+014 Engineer should be able to place bloon traps on range gained from x1x upgrade
+xx2 Engineer knockback chance 25% -> 50% (buff)
+Crosspaths on Engineers now affect sentries (buff)
+    x1x Engineer sentry range increased by 50
+    x2x Engineer sentry damage increased by 1
+    xx1 Engineer sentry pierce increased by a factor of 1.5
+    xx2 Engineer sentry knockback set to 50%
+
+
+v1.6.1 -
+Engineer trap cooldown now works properly
+Bloon traps now contribute to income generated statistic
+Freeplay (Round 26+) Ceramics lives lost on leak 104 -> 68 (nerf)
+xx4 Engineer trap cooldown 5s -> 8s (nerf)
+4xx Engineer crushing sentry pierce 10 -> 20 (buff)
+4xx Engineer bomb sentry damage 1 -> 2 (buff)
+4xx Engineer energy sentry pierce 3 -> 5 (buff)
+4xx Engineer cold sentry pierce 10 -> 20 (buff)
+4xx Dart pierce 40 -> 30 (nerf)
+4xx Boomer cost $3.5k -> $4k (nerf)
+0xx & 1xx Ninja pierce 2 -> 3 (buff)
+2xx Ninja pierce 4 -> 6 (buff)
+Tier 5 Ninja shurikens unaffected
+
+v1.6.0 -
+New tower: Engineer monkey builds many things to attack the bloons
+Fixed bug where wrong stats were affected by v1.4.2 Elite Defender buffs
+Round 24 AI replaced with slightly modified Round 49 from original game
+000 Ninja cost $400 -> $250 (buff)
+1xx Ninja cost $300 -> $150 (buff)
+2xx Ninja cost $400 -> $200 (buff)
+3xx Ninja cost $700 -> $600 (buff)
+0xx & 1xx Ninja pierce 4 -> 2 (nerf)
+2xx Ninja pierce 8 -> 4 (nerf)
+Tier 5 Ninja shurikens unaffected
+x04 Ninja MOAB knockback chance 10% -> 5% (nerf)
+014 Ninja MOAB knockback chance 20% -> 10% (nerf)
+024 Ninja MOAB knockback chance 30% -> 15% (nerf)
+xx5 Ninja MOAB knockback unchanged
+xx4 Ninja bomb damage 4 -> 3 (nerf)
+xx5 Ninja bomb damage 12 -> 8 (nerf)
+5xx Dartling cost $70k -> $80k (nerf)
+x5x Dartling cost $60k -> $70k (nerf)
+xx5 Dartling cost $40k -> $70k (nerf)
+On tower select screen, yellow towers have prices in blue for better visibility
+
+v1.5.2 -
+Font "Luckiest Guy" -> "Bahnschrift SemiBold"
+Ninjas now display amount of shinobi stacks when selected
+5xx Ninja attack speed 0.188s -> 0.281s (nerf)
+502 Ninja attack speed 0.094s -> 0.137s (nerf)
+xx5 Ninja cost $35k -> $40k (nerf)
+1xx Boomer cost $250 -> $400 (nerf)
+2xx Boomer cost $400 -> $550 (nerf)
+x1x Boomer cost $300 -> $200 (buff)
+x2x Boomer cost $300 -> $200 (buff)
+5x0 & 501 Boomer damage 4 -> 2 (nerf)
+502 Boomer damage 7 -> 4 (nerf)
+5x0 & 501 Boomer radial glaive damage 2 -> 1 (nerf)
+502 Boomer radial glaive damage 4 -> 2 (nerf)
+xx1 Super cost $2k -> $1.5k (buff)
+xx2 Super cost $3k -> $1.5k (buff)
+3xx Super cost $15k -> $18k (nerf)
+x2x Tack replaced with Sharper Tacks
+    No longer increases range by 30
+    Only increases pierce by 1
+x3x Tack cost $500 -> $550 (nerf)
+
+v1.5.1 -
+Shinobi attack speed cooldown modifier x0.85 -> x0.9 (nerf)
+Shinobi piece modifier x1.15 -> x1.1 (nerf)
+Shinobis now only affect ninjas in range (nerf)
+Shinobis now only affect ninjas on the same player side (bug fix)
+Bloons now lose their sabotage slowdown when the layer originally sabotaged is popped (nerf)
+ZOMG speed 0.003 -> 0.0042 (buff)
+
+v1.5.0 -
+New tower: Ninja Monkey uses shurikens to swiftly pop bloons
+Fixed x5x Farm displaying +350 eco when it only makes 200
+
+v1.4.3 -
+Multiple farmers together should no longer collect bananas more than once before deleting them
+Farmers no longer display upgrades, pop count, or target prio
+Added favicon
+Bananas move to allowed area before the check for collection
+xx1 & xx2 Farm resprited so that boxes are bigger on crosspaths
+000 Bomb cost $1k -> $900 (buff)
+x5x Bomb cost $25k -> $22k (buff)
+xx5 Bomb cost $22k -> $30k (nerf)
+x3x & x4x Bomb attack speed 0.844s -> 0.703s (buff)
+x5x Bomb attack speed 0.563s -> 0.703 (nerf) (bug fix)
+xx2 & xx3 Bomb frag count 3 -> 4 (buff)
+102 Bomb frag pierce 2 -> 3 (buff)
+202 Bomb frag pierce 2 -> 4 (buff)
+302 Bomb frag count 5 -> 8 (buff)
+302 Bomb frag pierce 2 -> 5 (buff)
+402 Bomb frag count 7 -> 12 (buff)
+402 Bomb frag pierce 4 -> 8 (buff)
+502 Bomb frag count 9 -> 16 (buff)
+502 Bomb frag pierce 10 -> 16 (buff)
+032 Bomb frag damage 1 -> 2 (buff)
+042 Bomb frag damage 2 -> 5 (buff)
+052 Bomb frag damage 6 -> 12 (buff)
+xx4 & xx5 Bomb recursive shot count 8 -> 12 (buff)
+
+v1.4.2 -
+Implemented preloading images to eliminate frame stuttering (thanks gg)
+Eco steal can no longer reduce opponent's eco below 250 (nerf)
+Bloons spawned on Offside spawn closer together
+Banana Farmers are no longer their own tower
+Banana Farmers no longer attack
+Banana Farmers are free
+Banana Farmers are no longer upgradable
+Banana Farmers are placed by pressing 1/2 on left side & 8/9 on right side
+104 Sniper damage 5 -> 7 (buff)
+204 Sniper damage 8 -> 12 (buff)
+xx4 Sniper frag damage 2 -> 1 (nerf)
+xx4 Sniper cost $4k -> $5k (nerf)
+105 Sniper damage 7 -> 11 (buff)
+205 Sniper damage 10 -> 18 (buff)
+xx3 Boomer damage 2 -> 3 (buff)
+xx5 Boomer damage 4 -> 7 (buff)
+
+v1.4.1 -
+Knockback now scales for relative bloon speed (less strong on Offside)
+ZOMGs take less knockback (0.06 -> 0.03 on Classic Steps, 0.04 -> 0.02 on Offside) (buff)
+Bloons are no longer drawn if their path position is below 0
+Pop effects are no longer created if the bloon's path position is below 0
+
+v1.4.0 -
+New tower: Sniper Monkey uses high powered rifle to pop bloons from anywhere
+New map: Offside - From being famed for its 1v1s in Bloons TD Battles, this map now makes its way into this game
+xx1 Dart replaced with Subsidized Training
+    Costs $100
+    No longer increases range by 35
+    No longer increases projectile speed by 2.5
+    All top path and middle path upgrade costs reduced by 20%
+xx2 Dart projectile speed 15 -> 12.5 (nerf)
+x4x Dart $6k -> $5.5k (buff)
+x5x Dart cost $50k -> $35k (buff)
+xx5 Dart cost $35k -> $22.5k (buff)
+3xx Tack cost $600 -> $400 (buff)
+4xx Tack cost $5k -> $5.2k (nerf)
+x4x Tack cost $5k -> $4k (buff)
+xx4 Tack cost $3k -> $4k (nerf)
+xx4 Tack damage 1 -> 2 (buff)
+xx5 Tack cost $20k -> $25k (nerf)
+xx5 Tack damage 2 -> 4 (buff)
+x3x Tack cost $600 -> $500 (buff)
+xx1 Ice replaced with Cheap Cryogenics
+    Costs $150
+    No longer increases range by 30
+    All top and middle path upgrade costs reduced by 20%
+xx2 Ice renamed to "Longer Range"
+xx5 Ice cost $30k -> $35k (nerf)
+x2x Ice cost $600 -> $750 (nerf)
+x3x Ice cost $4k -> $3.85k (buff)
+002, 012, 022, 102, & 202 Bomb frag pierce 1 -> 2 (buff)
+4xx Bomb cost $7k -> $5k (buff)
+5xx Bomb cost $70k -> $30k (buff)
+x5x Bomb cost $40k -> $25k (buff)
+x5x Bomb attack speed 0.844s -> 0.563s (buff)
+xx5 Bomb cost $40k -> $22k (buf)
+x3+x Super now is able to target 2 different bloons using arms
+x5x Super cost $200k -> $90k (buff)
+x2x Cobra cost $750 -> $400 (buff)
+x2x Cobra cooldown 30s -> 20s (buff)
+x3x Cobras now give $70 instead of adding 2 lives if other player is on 1 life
+x3x Cobra cooldown 30s -> 20s (buff)
+xx2 Cobra cost $750 -> $400 (buff)
+xx5 Cobra renamed "Upgrade Bloons"
+xx5 Cobra cost $10k -> $7.5k (buff)
+5xx Dartling cost $150k -> $70k (buff)
+x5x Dartling cost $120k -> $60k (buff)
+xx2 Dartling cost $1k -> $800 (buff)
+xx3 Dartling cost $3.2k -> $2.5k (buff)
+xx4 Dartling cost $12k -> $10k (buff)
+xx5 Dartling cost $80k -> $40k (buff)
+4xx Wizard cost $10k -> $7.5k (buff)
+210 Wizard size of fireballs 15 -> 20 (buff)
+5xx Wizard cost $40k -> $25k (buff)
+x2x Wizard shots until fireball 3 -> 2 (buff)
+x4x Wizard cost $8k -> $6k (buff)
+x5x Wizard cost $75k -> $30k (buff)
+x5x Wizard fireball attack speed doubled (buff)
+xx5 Wizard cost $30k -> $20k (buff)
+5xx Boomer now has radial glaive attack
+    5x0 & 501: 2 damage
+    502: 4 damage
+    Attack speed same as thrown glaives
+    Pierce: 333
+5xx Boomer cost $30k -> $38k (nerf)
+04x Boomer pierce 4 -> 8 (buff)
+140 Boomer pierce 8 -> 16 (buff)
+240 Boomer pierce 12 -> 24 (buff)
+xx1 Farm replaced by Quality Soil
+    Costs $400
+    No longer increases size of bananas by 25%
+    All top path and middle path upgrade costs reduced by 20%
+3xx Farm cost $2k -> $2.5k (nerf)
+4xx Farm cost $17.5k -> $16k (buff)
+40x & 410 Farm money per crate $900 -> $600 (nerf)
+420 Farm money per crate $1.35k -> $900 (nerf)
+5xx Farm cost $140k -> $80k (buff)
+50x & 510 Farm money per crate $4k -> $3k (nerf)
+520 Farm money per crate $6k -> $4.5k (nerf)
+x4x & x5x Farm use the same formula as x3x but allow it to compound longer (nerf)
+x4x & x5x Farm production speed reduced to match x3x (nerf)
+x4x Farm cost $20k -> $10k (buff)
+x4x Farm capacity $28k -> $20k (nerf)
+x5x Farm cost $80k -> $60k (buff)
+x5x Farm capacity $60k -> $30k (nerf)
+x5x Farm eco per round 350 -> 200 (nerf)
+xx5 Farm cost $60k -> $45k (buff)
+1xx Farmer cost $250 -> $75 (buff)
+2xx Farmer cost $350 -> $100 (buff)
+3xx Farmer cost $500 -> $300 (buff)
+4xx Farmer cost $2.5k -> $1k (buff)
+5xx Farmer cost $70k -> $35k (buff)
+x1x Farmer cost $200 -> $75 (buff)
+x2x Farmer cost $300 -> $100 (buff)
+x3x Farmer cost $1.2k -> $600 (buff)
+x4x Farmer cost $5k -> $3k (buff)
+04x Farmer capacity 200 -> 1k (buff)
+140 Farmer capacity 400 -> 1.2k (buff)
+240 Farmer capacity 800 -> 1.6k (buff)
+x5x Farmer cost $30k -> $20k (buff)
+05x Farmer capacity 200 -> 3k (buff)
+150 Farmer capacity 400 -> 3.2k (buff)
+250 Farmer capacity 800 -> 3.6k (buff)
+xx1 Farmer cost $100 -> $50 (buff)
+xx2 Farmer cost $200 -> $75 (buff)
+xx3 Farmer cost $1.5k -> $650 (buff)
+xx4 Farmer cost $3k -> $1.5k (buff)
+xx5 Farmer cost $20k -> $10k (buff)
+The cost of sending any MOAB class bloon is doubled
+ZOMG speed 0.0054 -> 0.003 (nerf)
+Fixed bug that caused game to stutter and pause logic
+Fixed bug where one player can't buy a tier 5 if the other player had the same tier 5
+Modified many rounds to make them longer
+Rounds end when all AI bloons are popped 5 seconds -> 6 seconds
+When a tower is selected, shows display bloons instead of display towers
+Resprited x3x, x4x, & x5x Bomb
+"w/o eco" on stats screen changed to more accurate "inc. eco"
+Added money generated with only eco on stats screen
+Added star popper to stats screen
+Increased sensitivity of cursor
+Added key press cooldown (100ms) to prevent double inputs
+Added pop effects when some bloons are hit
+Cursor can no longer shift off its grid when it hits the border of the screen
+Fixed bug where x50 Dart had less pierce than intended on some darts
+Fixed bug where 050, 051, 052, & 150 Wizard never fired radial fireballs
+Fixed bug where if a bloon takes too much damage in one frame, it will disappear and not produce more bloons
+Reordered spawning of wizard projectiles so that fireballs are activated before magic bolts
+Fixed bug where x4x & x5x Farm showed +30 eco from the tower despite giving more than 30 eco
+Towers that have to be upgraded to generate cash only show generated cash if upgraded
+Cobras are now guaranteed to hit their target even if a bloon is in the way
+
+v1.3.1 -
+0x3 Dart pierce 3 -> 6 (buff)
+103 Dart pierce 4 -> 8 (buff)
+203 Dart pierce 5 -> 10 (buff)
+xx4 Dart damage 4 -> 5 (buff)
+0x4 Dart pierce 5 -> 8 (buff)
+104 Dart pierce 7 -> 12 (buff)
+204 Dart pierce 9 -> 16 (buff)
+xx5 Dart damage 4 -> 6 (buff)
+0x5 Dart pierce 14 -> 21 (buff)
+015 Dart pierce 18 -> 27 (buff)
+025 Dart pierce 22 -> 33 (buff)
+4xx Tack reworked:
+    4xx Tack cost $3k -> $5k (nerf)
+    4xx Tack count reduced to 1 (nerf)
+    4xx Tack now functions like an Ice Monkey
+    4x0 Tack damage remains 2 (unchanged)
+    401 Tack damage 2 -> 3 (buff)
+    402 Tack damage 2 -> 4 (buff)
+    40x Tack pierce 3 -> 24 (buff)
+    410 Tack pierce 3 -> 36 (buff)
+    420 Tack pierce 4 -> 48 (buff)
+5xx Tack reworked:
+    5xx Tack count reduced to 1 (nerf)
+    5xx Tack now functions like an Ice Monkey
+    5x0 Tack damage 2 -> 3 (buff)
+    501 Tack damage 2 -> 4 (buff)
+    502 Tack damage 2 -> 5 (buff)
+    50x Tack pierce 16 -> 128 (buff)
+    510 Tack pierce 16 -> 192 (buff)
+    520 Tack pierce 24 -> 256 (buff)
+3xx Boomer cost $1k -> $1.5k (nerf)
+4xx Boomer cost $4k -> $3.5k (buff)
+04x Boomer pierce 6 -> 4 (nerf)
+140 Boomer pierce 12 -> 8 (nerf)
+240 Boomer pierce 18 -> 12 (nerf)
+x4x Boomer price $3.5k -> $6k (nerf)
+x0x Bomb attack speed 1s -> 1.5s (nerf)
+x1x Bomb attack speed 0.75s -> 1.125s (nerf)
+x2x Bomb attack speed 0.563s -> 0.845s (nerf)
+x05 Bomb attack speed 0.5s -> 0.75s (nerf)
+015 Bomb attack speed 0.375s -> 0.563s (nerf)
+025 Bomb attack speed 0.281s -> 0.422s (nerf)
+000 Bomb cost $1.25k -> $1k (buff)
+1xx Bomb cost $500 -> $400 (buff)
+2xx Bomb cost $800 -> $600 (buff)
+x1x Bomb cost $400 -> $250 (buff)
+x2x Bomb cost $750 -> $500 (buff)
+xx1 Bomb cost $200 -> $100 (buff)
+xx2 Bomb cost $400 -> $300 (buff)
+xx5 Ice cost $60k -> $30k (buff)
+x3x Farm capacity $7k -> $14k (buff)
+x4x Farm capacity $14k -> $28k (buff)
+x5x Farm capacity $30k -> $60k (buff)
+All x3+x Farm interest rates now match capacity (nerf)
+x3x Farm now gives 30 eco per round
+x4x Farm now gives 80 eco per round
+x5x Farm now gives 350 eco per round
+xx4 Wizard cost $8k -> $5k (buff)
+xx4 Wizard tornado pierce 40 -> 100 (buff)
+xx4 Wizard tornadoes ricochet
+xx5 Wizard cost $50k -> $30k (buff)
+xx4 Wizard tornade pierce 100 -> 250 (buff)
+xx5 Wizard tornadoes ricochet
+Tight MOAB eco change -50 -> -100 (nerf)
+Spaced BFB & Grouped BFB eco change -25 -> -50 (nerf)
+Tight BFB eco change -150 -> -300 (nerf)
+Spaced ZOMG & Grouped ZOMG eco change -100 -> -200 (nerf)
+Tight ZOMG eco change -400 -> -800 (nerf)
+Fixed issue where 5xx Boomerang did not use the proper projectile image
+Fixed bug where collecting from a x3+x Farm crashes the game
+Fixed bug where left side could buy multiple bottom path tier 5s
+
+v1.3.0 -
+New tower: Boomerang monkey throws high pierce boomerangs at the bloons
+4xx Dart price $2k -> $2.5k (nerf)
+4xx Dart pierce 50 -> 40 (nerf)
+xx4 Ice cost $5k -> $6.5k (nerf)
+Grouped Ceramic cost $350 -> $475 (nerf)
+Game over stats page now shows time game ended
+x4+x Cobra Active Syphon now adds to $ made count
+Fixed bug where x3+x Farms on right side gave money to left side when collected without selling
+Fixed bug where Banana Farmers picked up bananas for opponents
+
+v1.2.2 -
+3xx Dart pierce 10 -> 20 (buff)
+4xx Dart pierce 35 -> 50 (buff)
+xx3 Ice cost $1.25k -> $1.75k (nerf)
+2xx Wizard cost $750 -> $500 (buff)
+3xx Wizard cost $2k -> $1.25k (buff)
+x3x Wizard cost $4k -> $2.5k (buff)
+x1+x Cobra makes $80 -> $70 per round (nerf)
+x2+x Cobra steals 5 -> 4 eco (nerf)
+Tight Zebra cost $1.2k -> $2.4k (nerf)
+Tight Ceramic cost $3.4k -> $6.8k (nerf)
+Game over stats page shows money generated with eco
+All towers can now be upgraded without the cursor being on it
+Fixed a bug where bloons damaged with multilayer attacks that become blue bloons spawn too closely
+
+v1.2.1 -
+xx3 Ice cost $750 -> $1250 (nerf)
+1xx Super cost $1k -> $750 (buff)
+x1x Super cost $750 -> $1k (nerf)
+Grouped Zebra eco per send 3.5 -> 5.3 (buff)
+Grouped Rainbow eco per send 6 -> 9 (buff)
+xx3+ Farmers now add to the cash generated counter
+Fixed a bug where Tight MOABs send 15 MOABs on Round 25 instead of 7
+
+v1.2.0 -
+000 Super cost $1.5k -> $1.25k (buff)
+3xx Ice cost $1k -> $1.75k (nerf)
+4xx Ice cost $3k -> $4.5k (nerf)
+xx3 Ice damage 1 -> 2 (buff)
+203 Ice damage 2 -> 3 (buff)
+xx3 Ice cost $500 -> $750 (nerf)
+xx4 Ice damage 2 -> 3 (buff)
+204 Ice damage 3 -> 4 (buff)
+xx4 Ice cost $7.5k -> $5k (buff)
+xx5 Ice damage 4 -> 10 (buff)
+205 Ice damage 5 -> 15 (buff)
+4xx Tack cost $5k -> $3k (buff)
+xx4 Tack cost $4k -> $3k (buff)
+5xx Tack cost $70k -> $40k (buff)
+x5x Tack cost $35k -> $25k (buff)
+xx5 Tack cost $35k -> $20k (buff)
+3xx Super cost $10k -> $15k (nerf)
+30x Super pierce 4 -> 8 (buff)
+310 Super pierce 5 -> 10 (buff)
+320 Super pierce 6 -> 12 (buff)
+40x Super pierce 25 -> 75 (buff)
+410 Super pierce 30 -> 100 (buff)
+420 Super pierce 35 -> 125 (buff)
+5xx Super cost $250k -> $300k (nerf)
+50x Super pierce 167 -> 500 (buff)
+510 Super pierce 200 -> 600 (buff)
+520 Super pierce 233 -> 700 (buff)
+5xx Farm cost $75k -> $140k (nerf)
+Tight ZOMG send count 2 -> 3 (buff)
+Tight ZOMG send time per bloon from 600ms -> 400ms (buff)
+Fixed bug where 250 Wizard fires fireballs at absurd rate
+Fixed bug where x5x Cobra gains $80 twice
+Fixed bug where xx4 & xx5 Farm makes half the money during the round
+Cobras now display how much money they made
+Revamped game over screen to display basic stats
+Added option to have bloon decal
+
+v1.1.2 -
+Grouped Zebras cost $120 -> $240 (nerf)
+Grouped Rainbows cost $250 -> $600 (nerf)
+3xx Ice cost $2.5k -> $1k (buff)
+4xx Ice cost $7.5k -> $3k (buff)
+5xx Ice cost $40k -> $30k (buff)
+Dartlings can now be upgraded without cursor being on it
+
+v1.1.1 -
+000 Ice price $1250 -> $1000 (buff)
+xx1 Ice price $200 -> $75 (buff)
+xx2 Ice price $200 -> $125 (buff)
+xx3 Ice price $1000 -> $500 (buff)
+x4x Tack price $8k -> $5k (buff)
+x3+x Farms no longer add to eco at end of round (nerf)
+4xx Farm price $14k -> $17.5k (nerf)
+Bananas collected by Farmers have +25% value
+In Freeplay (Round 41+) AI BFB max lowered by 10 & AI MOAB max lowered by 20
+In Freeplay (Round 41+) AI bloon spacing 100ms -> 200ms
+Fixed bug where x4x Cobra set own money to 0 when opponent's money hit 0
+
+v1.1.0 -
+000 Dart price $200 -> $100 (buff)
+000 Tack price $400 -> $300 (buff)
+000 Bomb price $1000 -> $1250 (nerf)
+000 Super price $2000 -> $1500 (buff)
+000 Farm price $1250 -> $1100 (buff)
+000 Farmer price $100 -> $50 (buff)
+000 Dartling price $850 -> $750 (buff)
+000 Wizard price $600 -> $300 (buff)
+1xx Dart price $200 -> $100 (buff)
+2xx Dart price $250 -> $150 (buff)
+3xx Dart price $500 -> $400 (buff)
+x1x Dart price $100 -> $75 (buff)
+x2x Dart price $200 -> $150 (buff)
+x3x Dart price $600 -> $300 (buff)
+xx2 Dart price $100 -> $75 (buff)
+xx3 Dart price $450 -> $350 (buff)
+xx2 Bomb price $300 -> $400 (nerf)
+4xx Dart damage 1 -> 2 (buff)
+4xx Dart pierce 50 -> 35 (nerf)
+5xx Dart damage 1 -> 2 (buff)
+x2x Ice price $400 -> $600 (nerf)
+1xx Super price $1.5k -> $1k (buff)
+2xx Super price $3k -> $2k (buff)
+x1x Super price $1.5k -> $750 (buff)
+x2x Super price $1.5k -> $1k (buff)
+xx1 Super price $2k -> $1.5k (buff)
+xx2 Super price $3k -> $2.5k (buff)
+Tier 2 Bomb frag pierce 2 -> 1 (nerf)
+1xx Dartling price $200 -> $100 (buff)
+x1x Dartling price $200 -> $100 (buff)
+xx1 Dartling price $200 -> $100 (buff)
+2xx Dartling price $1000 -> $750 (buff)
+x2x Dartling price $750 -> $500 (buff)
+xx2 Dartling price $1500 -> $1000 (buff)
+3xx Farm price $2500 -> $2000 (buff)
+xx3 Farm price $2200 -> $2750 (nerf)
+4xx Farm price $17.5k -> $14k (buff)
+5xx Farm price $150k -> $75k (buff)
+x5x Farm price $100k -> $80k (buff)
+xx3 Farm now gives $300 at start of round
+xx4 Farm now gives $2000 at start of round
+All Tier 2 Dartlings & below without xx2 pierce 1 -> 2 (buff)
+Tier 2 xx2 Dartling pierce 3 -> 4 (buff)
+All Wizard attack speed doubled
+x3x & x4x Wizard attack speed on flame breath stays the same
+Fixed bug where 230 Wizard fires slower than other x3x Wizards
+Fixed bug where x3+x and xx3+ Farms give money to unused variable
+x3+x Farms now display eco gain
+Halved bloons from tight zebras and tight ceramics but kept time sent the same (nerf)
+Tight Zebra send count 60 -> 30 (nerf)
+Tight Zebra send time per bloon from 17ms -> 33ms (nerf)
+Tight Ceramic send count 40 -> 20 (nerf)
+Tight Ceramic send time per bloon from 20ms -> 40ms (nerf)
+Tight MOAB send count 15 -> 7 (nerf)
+Tight MOAB send time per bloon from 66ms -> 133ms (nerf)
+Tight BFB send count 10 -> 5 (nerf)
+Tight BFB send time per bloon from 120ms -> 240ms (nerf)
+Tight ZOMG send count 4 -> 2 (nerf)
+Tight ZOMG send time per bloon from 300ms -> 600ms (nerf)
+
+v1.0.3 -
+Most Tack attack speed doubled
+5xx, x4x, and xx4 not affected by speed buff
+3xx Super price $12k -> $10k (buff)
+x3x Super price $17.5k -> $12.5k (buff)
+4xx Super price $200k -> $100k (buff)
+5xx Super price $750k -> $250k (buff)
+x4x Super price $80k -> $40k (buff)
+x5x Super price $200k -> $100k (buff)
+xx3 Super price $10k -> $6k (buff)
+xx4 Super price $60k -> $30k (buff)
+xx5 Super price $250k -> $125k (buff)
+Red bloon send $25 -> $20 (buff)
+
+v1.0.2 -
+All Banana Farm banana production speed doubled
+xx2 Cobra Adjustment chance 1/8 -> 1/5 (buff)
+4xx Cobra Pop Adjustment chance 1/10 -> 1/5 (buff)
+5xx Cobra Damage Adjustment chance 1/5 -> 1/2.5 (buff)
+1xx Dart price $200 -> $100 (buff)
+2xx Dart price $250 -> $150 (buff)
+x4x Dart price $8000 -> $6000 (buff)
+1xx Tack price $300 -> $150 (buff)
+2xx Tack price $400 -> $250 (buff)
+x1x Tack price $200 -> $75 (buff)
+x2x Tack price $450 -> $300 (buff)
+xx1 & xx2 Tack price $250 -> $200 (buff)
+1xx Bomb price $400 -> $500 (nerf)
+2xx Bomb price $750 -> $800 (nerf)
+x1x Bomb price $250 -> $400 (nerf)
+x2x Bomb price $500 -> $750 (nerf)
+
+v1.0.1 -
+Fixed bug where xx2+ Farms on the right side sold for $0
+000 Dart price $300 -> $200 (buff)
+Fixed bug where 000 Dart claimed to be $200 but wasn't 200
+
+v1.0.0 -
+Based from BTD JS 2 v1.4.1
+xx3 Dart price $700 -> $450 (buff)
+000 Tack price $650 -> $400 (buff)
+xx3, xx4, & xx5 Bomb cluster bombs no longer have halved pierce (buff)
+Fixed 005, 105, & 205 Bomb from firing half as fast
+All farms make 2x money per banana
