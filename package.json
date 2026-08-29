@@ -5,7 +5,7 @@
   "description": "Local deterministic Playwright tooling for BTDB AI training",
   "scripts": {
     "test": "npm run check && npm run validate && npm run test:distributed && npm run audit:public && npm run test:endpoint && npm run test:browser",
-    "check": "node --check tools/audit-publication.js && node --check tools/distributed-ai/common.js && node --check tools/distributed-ai/run-worker.js && node --check tools/distributed-ai/select-candidate.js && node --check tools/distributed-ai/aggregate-evaluation.js && node --check tools/distributed-ai/verify-checkpoint.js && node --check tools/distributed-ai/verify-promotion.js && node --check tools/test-ai-browser.js && node --check tools/test-distributed-ai.js",
+    "check": "node --check tools/audit-publication.js && node --check tools/distributed-ai/common.js && node --check tools/distributed-ai/hosted-model.js && node --check tools/distributed-ai/run-worker.js && node --check tools/distributed-ai/select-candidate.js && node --check tools/distributed-ai/aggregate-evaluation.js && node --check tools/distributed-ai/verify-checkpoint.js && node --check tools/distributed-ai/verify-promotion.js && node --check tools/test-ai-browser.js && node --check tools/test-distributed-ai.js",
     "audit:public": "node tools/audit-publication.js",
     "validate": "node tools/validate-balance.js && node tools/validate-ai.js",
     "test:endpoint": "node tools/test-ai-endpoint.js",
@@ -16,7 +16,8 @@
     "ai:select": "node tools/distributed-ai/select-candidate.js",
     "ai:evaluate-report": "node tools/distributed-ai/aggregate-evaluation.js",
     "ai:verify": "node tools/distributed-ai/verify-checkpoint.js --input",
-    "ai:verify-promotion": "node tools/distributed-ai/verify-promotion.js"
+    "ai:verify-promotion": "node tools/distributed-ai/verify-promotion.js",
+    "ai:hosted": "node tools/distributed-ai/hosted-model.js"
   },
   "dependencies": {
     "playwright": "1.62.1"

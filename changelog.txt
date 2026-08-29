@@ -1,6 +1,11 @@
 Current Version: v2.5.3
 
 v2.5.3 -
+Unified browser, Browser Lab, and GitHub self-play around one authoritative Hosted Model
+Added immutable hosted training snapshots and conflict-safe, idempotent verified policy promotion
+Preserved concurrent human statistics and live policy learning during distributed champion promotion
+Removed full-model Browser Lab publication so all hosted Lab learning uses bounded contributions
+Changed the repository champion checkpoint into a checked promotion audit mirror
 Added authenticated atomic AI knowledge resets with strict fresh-model validation
 Added contribution epochs so queued and in-progress matches from before a reset cannot train the new model
 AI and Local match telemetry now capture the contribution epoch when each match begins

@@ -4,15 +4,15 @@
 
 Each training run uses a generation-based population workflow:
 
-1. Every worker loads the same committed champion checkpoint.
+1. The prepare job fetches the authoritative Hosted Model once and packages it as an immutable baseline checkpoint and credential-free source manifest.
 2. Workers receive unique PRNG seeds and train independent candidates in deterministic headless Chromium.
 3. The selector validates every shard against that exact baseline and chooses one source policy with stable tie-breaking.
-4. The selector materializes a policy-only checkpoint from the baseline model. Only the selected policy, generations, and bounded population history change; shard statistics and learned stores are discarded.
-5. Separate workers evaluate that exact materialized checkpoint against the original frozen champion with learning and exploration disabled.
+4. The selector materializes a policy-only checkpoint from the hosted baseline. Only the selected policy, generations, and bounded population history change; shard statistics and learned stores are discarded.
+5. Separate workers evaluate that exact materialized checkpoint against the snapshot's frozen champion with learning and exploration disabled.
 6. The report aggregates results by map, candidate side, and candidate responder role and requires balanced coverage.
-7. A candidate is promotable only when the frozen evaluation passes strict identity, coverage, game-count, and score checks.
+7. A candidate is promotable only when the frozen evaluation passes strict identity, coverage, game-count, and score checks. A protected publisher then promotes its policy to the Hosted Model before the repository audit mirror is updated.
 
-Workers do not average neural-network weights and do not write to the hosted PHP endpoint. Increasing the worker count increases candidate diversity without introducing concurrent model corruption.
+Workers do not average neural-network weights and cannot write to the hosted PHP endpoint. Increasing the worker count increases candidate diversity without introducing concurrent model corruption. Only the final protected publisher receives the policy-promotion credential.
 
 ## Run On GitHub
 
@@ -34,18 +34,26 @@ The `ai-training-bundle` artifact contains:
 - `candidate.selection.json`
 - `evaluation.json`
 - `evaluation.md`
+- `baseline.json`
+- `hosted-source.json`
 
-Artifacts are public in a public repository and have short retention. They must never contain production guards, tokens, secrets, client hashes, or mutable hosted state.
+Artifacts are public in a public repository and have short retention. The baseline contains the publicly readable model, including aggregate human-derived records. The source manifest contains only model identity and revision metadata. Neither may contain contribution tokens, private state envelopes, guards, contribution identifiers, rate-limit records, client hashes, or secrets.
 
 ## Continuous Operation
 
-Set the repository Actions variable `AI_CONTINUOUS_TRAINING_ENABLED` to `true` to enable unattended operation. Set it to `false` to stop automatic promotion, successor dispatch, and watchdog restarts; an already-running read-only training generation may still finish and publish its report. Continuous runs are accepted only from the repository's default branch.
+Configure repository variable `AI_HOSTED_ENDPOINT` with the HTTPS `ai-learning.php?protocol=1` URL. Configure the protected `production-ai` environment secret `AI_POLICY_PROMOTION_KEY`, and set repository variable `AI_HOSTED_PROMOTION_ENABLED` to `true` only after the matching server-side key hash is installed.
+
+Set `AI_CONTINUOUS_TRAINING_ENABLED` to `true` to enable unattended operation. Set either enable variable to `false` to stop automatic promotion, successor dispatch, and watchdog restarts; an already-running read-only generation may still finish and publish its report. Continuous runs are accepted only from the repository's default branch.
 
 The **Continuous AI Training Watchdog** runs at minute 17 of each hour. It checks the 100 most recent default-branch training runs and starts a continuous run only when none is active. Default-branch training is serialized, so active work normally remains at the top of that list. A healthy continuous run queues its successor before it finishes, making the watchdog a liveness fallback rather than a source of overlapping work.
 
 Continuous defaults use 20 training shards with 96 matches each and 20 evaluation shards with 16 matches each. This targets the 20-job standard-runner concurrency ceiling on GitHub Free; GitHub queues shards when other jobs consume part of that allowance. Each newly dispatched generation receives a deterministic seed block derived from its workflow run number; rerunning one generation intentionally reuses that block. Explicit seeds are rejected in continuous mode. The 32-bit allocator supports 42,934 workflow run numbers, after which configuration validation stops the chain rather than reusing seeds. Failed candidates leave `champion.json` unchanged and the next new generation explores a new block.
 
-A passing continuous candidate is automatically promoted only after the fixed 56% score, 32-game minimum, balanced coverage, checkpoint identity, publication, endpoint, browser, and deterministic model checks pass against the staged candidate. Two narrowly scoped training jobs have repository write access, and neither runs repository JavaScript: the first accepts only the checksum validated by the read-only report job and pushes the exact checkpoint commit to a temporary branch for both CI jobs; the short finalizer rechecks the default-branch parent, optionally pushes that same commit to `main` while continuous mode remains enabled, and removes the temporary branch. Promotion updates the repository checkpoint only; it does not update or deploy hosted community state.
+A passing continuous candidate is promoted only after the fixed 56% score, 32-game minimum, balanced coverage, checkpoint identity, endpoint, browser, and deterministic checks pass. A write-scoped job creates a checkpoint-only temporary commit and requires CI on that exact SHA. The protected read-only publisher revalidates the bundle and applies only the policy promotion to the Hosted Model. The finalizer then pushes the same checked commit to `main` as the audit mirror and removes the temporary branch.
+
+The endpoint compares the source contribution epoch and frozen champion identity, not the constantly changing hosted revision. Ordinary contributions may therefore continue during training. Promotion preserves current statistics and stores; if public play changed the live candidate policy after the snapshot, that newer candidate is retained while the verified GitHub policy becomes the new `championPolicy`. A reset or competing promotion causes a conflict instead of an overwrite. Replaying the same successful promotion is idempotent.
+
+Hosted publication and the Git push cannot form one atomic transaction. The endpoint operation is idempotent, receipt upload is best-effort, the training bundle is retained for 90 days, and the exact CI-tested temporary branch is deleted only after its audit commit reaches the default branch. If publication or finalization becomes uncertain, the branch is retained. Disable continuous training, run **Promote AI Checkpoint** with the original training run ID, and enable `reconcile_hosted_promotion`. Reconciliation performs no endpoint write: it advances the audit mirror only when the current hosted champion and contribution epoch exactly match the evaluated candidate and source epoch.
 
 Protect `main` with the `validate` and `headless-smoke` CI jobs as required status checks. Promotion commits already carry those checks from their temporary branch before they reach `main`.
 
@@ -60,32 +68,32 @@ Manually dispatched non-continuous runs remain separate from promotion:
 3. Open **Promote AI Checkpoint** in Actions.
 4. Run it with that training run ID.
 
-Manual promotion is disabled while `AI_CONTINUOUS_TRAINING_ENABLED` is `true`, preventing it from racing the automatic promotion transaction. Otherwise, the workflow accepts only a successful `workflow_dispatch` run of `.github/workflows/ai-training.yml` from the exact current default-branch commit. Its read-only job validates candidate and aggregate digests, requires balanced coverage, enforces at least 32 games and a 56% score regardless of training-run inputs, requires the candidate parent and evaluation baseline to match the current committed champion, stages the candidate, and runs repository, endpoint, and browser tests. A separate write-only job verifies the validated checksum and requires CI on the exact promotion commit before updating `main`. It does not deploy the checkpoint to the hosted game.
+Manual promotion is disabled while `AI_CONTINUOUS_TRAINING_ENABLED` is `true`, preventing it from racing the automatic transaction. Normally the workflow accepts only a successful `workflow_dispatch` training run from the exact current default-branch commit. It validates the candidate against the bundled hosted baseline, requires at least 32 balanced games and a 56% score, requires CI on the exact checkpoint-only commit, publishes through the same protected hosted policy endpoint, and only then updates the audit mirror on `main`. Reconciliation mode also accepts a completed failed run from an ancestor commit, but only the read-only exact hosted-champion check described above can authorize its audit update.
 
 ## Local Commands
 
-Initialize a deterministic checkpoint:
+Fetch an immutable hosted baseline:
 
 ```text
-npm run ai:init -- --seed 253 --shard initial --output training/checkpoints/champion.json
+npm run ai:hosted -- --mode fetch --endpoint "https://example.invalid/ai-learning.php?protocol=1" --output training/output/baseline.json --manifest training/output/hosted-source.json
 ```
 
 Train one candidate:
 
 ```text
-npm run ai:worker -- --mode train --checkpoint training/checkpoints/champion.json --seed 1000 --shard local --matches 96 --output training/output/train.json
+npm run ai:worker -- --mode train --checkpoint training/output/baseline.json --seed 1000 --shard local --matches 96 --output training/output/train.json
 ```
 
 Select and materialize a policy-only candidate from the baseline:
 
 ```text
-npm run ai:select -- --results-dir training/output --baseline training/checkpoints/champion.json --output training/output/candidate.json
+npm run ai:select -- --results-dir training/output --baseline training/output/baseline.json --output training/output/candidate.json
 ```
 
 Run frozen evaluation:
 
 ```text
-npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json --baseline training/checkpoints/champion.json --seed 100000 --shard eval-local --matches 32 --output training/output/eval.json
+npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json --baseline training/output/baseline.json --seed 100000 --shard eval-local --matches 32 --output training/output/eval.json
 ```
 
 ## Determinism And Safety

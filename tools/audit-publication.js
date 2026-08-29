@@ -16,7 +16,7 @@ const forbiddenPaths = [
     /^training\/output\//,
     /^node_modules\//,
     /(^|\/)\.env(?:\.|$)/,
-    /(^|\/)(?:ai-trainer-key\.sha256|ai-contribution-secret|ai-learning-global\.json)$/,
+    /(^|\/)(?:ai-trainer-key\.sha256|ai-policy-promotion-key\.sha256|ai-contribution-secret|ai-learning-global\.json)$/,
     /(^|\/)(?:btdb-offline-menu|btdbjs-.*-production|v.*-(?:local|production)-.*)\.png$/,
     /\.(?:p12|pfx|jks|keystore|kdb|kdbx|der|gpg|pgp|age)$/i,
 ]

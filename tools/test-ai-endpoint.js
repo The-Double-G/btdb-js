@@ -5,6 +5,7 @@ const net = require("node:net")
 const os = require("node:os")
 const path = require("node:path")
 const { spawn } = require("node:child_process")
+const { createHostedSnapshot } = require("./distributed-ai/common")
 
 const root = path.resolve(__dirname, "..")
 const featureCount = 17
@@ -149,6 +150,14 @@ async function main() {
         assert.equal(initialEnvelope.contributionEpoch, 1)
         assert.match(initialEnvelope.contributionToken, /^\d+\.[a-f0-9]{64}$/)
         assert.equal(initialEnvelope.writeEnabled, false)
+        assert.equal(initialEnvelope.promotionEnabled, false)
+        assert.equal(initialEnvelope.gameVersion, "v2.5.3")
+        assert.match(initialEnvelope.policyDigest, /^sha256:[a-f0-9]{64}$/)
+        assert.match(initialEnvelope.championPolicyDigest, /^sha256:[a-f0-9]{64}$/)
+        assert.match(initialEnvelope.promotionBaseDigest, /^sha256:[a-f0-9]{64}$/)
+        assert.equal(Array.isArray(initialEnvelope.model.loadoutStats), false)
+        assert.equal(Array.isArray(initialEnvelope.model.tacticalStats), false)
+        assert.equal(createHostedSnapshot(initialEnvelope).manifest.revision, 1)
 
         const contributionHeaders = {
             ...commonHeaders,
@@ -256,6 +265,100 @@ async function main() {
         })
         assert.equal(adminResponse.status, 503)
 
+        const promotionKey = "BTDB-AI-Policy-Promotion-Test-Key"
+        const promotionRequest = {
+            protocolVersion: 1,
+            promotionId: `sha256:${"a".repeat(64)}`,
+            sourceRevision: afterHuman.revision,
+            expectedContributionEpoch: afterHuman.contributionEpoch,
+            expectedPromotionBaseDigest: afterHuman.promotionBaseDigest,
+            expectedPolicyDigest: afterHuman.policyDigest,
+            expectedChampionGeneration: afterHuman.model.championGeneration,
+            policy: createPolicy(),
+        }
+        promotionRequest.policy.b1[0] = 0.25
+        const unconfiguredPromotion = await fetch(`${endpoint}&action=promote`, {
+            method: "POST",
+            headers: { ...commonHeaders, "Content-Type": "application/json", "X-AI-Policy-Promotion-Key": promotionKey },
+            body: JSON.stringify(promotionRequest),
+        })
+        assert.equal(unconfiguredPromotion.status, 503)
+
+        const promotionHash = crypto.createHash("sha256").update(promotionKey).digest("hex")
+        fs.writeFileSync(path.join(dataDir, "ai-policy-promotion-key.sha256"), `${promotionHash}\n`)
+        const unauthorizedPromotion = await fetch(`${endpoint}&action=promote`, {
+            method: "POST",
+            headers: { ...commonHeaders, "Content-Type": "application/json", "X-AI-Policy-Promotion-Key": "wrong" },
+            body: JSON.stringify(promotionRequest),
+        })
+        assert.equal(unauthorizedPromotion.status, 401)
+        const invalidPromotion = await fetch(`${endpoint}&action=promote`, {
+            method: "POST",
+            headers: { ...commonHeaders, "Content-Type": "application/json", "X-AI-Policy-Promotion-Key": promotionKey },
+            body: JSON.stringify({ ...promotionRequest, model: afterHuman.model }),
+        })
+        assert.equal(invalidPromotion.status, 422)
+
+        const interveningContribution = await fetch(`${endpoint}&action=contribute`, {
+            method: "POST",
+            headers: contributionHeaders,
+            body: JSON.stringify(createContribution("00000000000000000000000000000019", 8)),
+        })
+        assert.equal(interveningContribution.status, 200)
+        const beforePromotion = await (await fetch(endpoint, { headers: commonHeaders })).json()
+        assert.equal(beforePromotion.revision, 9)
+        assert.notEqual(beforePromotion.policyDigest, promotionRequest.expectedPolicyDigest)
+
+        const promoteResponse = await fetch(`${endpoint}&action=promote`, {
+            method: "POST",
+            headers: { ...commonHeaders, "Content-Type": "application/json", "X-AI-Policy-Promotion-Key": promotionKey },
+            body: JSON.stringify(promotionRequest),
+        })
+        assert.equal(promoteResponse.status, 200)
+        const promoteResult = await promoteResponse.json()
+        assert.equal(promoteResult.revision, 10)
+        assert.equal(promoteResult.duplicate, false)
+        assert.equal(promoteResult.candidatePolicyPreserved, true)
+        assert.equal(promoteResult.championGeneration, 1)
+        const afterPromotion = await (await fetch(endpoint, { headers: commonHeaders })).json()
+        assert.equal(afterPromotion.model.totalGames, 7)
+        assert.equal(afterPromotion.model.totalHumanDemonstrations, 1)
+        assert.deepEqual(afterPromotion.model.policy, beforePromotion.model.policy)
+        assert.deepEqual(afterPromotion.model.championPolicy, promotionRequest.policy)
+        assert.deepEqual(afterPromotion.model.populationPolicies, [initialModel.championPolicy])
+        assert.equal(afterPromotion.model.candidateGeneration, 1)
+        assert.equal(afterPromotion.model.championGeneration, 1)
+        assert.equal(afterPromotion.contributionEpoch, 1)
+
+        const replayPromotion = await fetch(`${endpoint}&action=promote`, {
+            method: "POST",
+            headers: { ...commonHeaders, "Content-Type": "application/json", "X-AI-Policy-Promotion-Key": promotionKey },
+            body: JSON.stringify(promotionRequest),
+        })
+        assert.equal(replayPromotion.status, 200)
+        const replayPromotionResult = await replayPromotion.json()
+        assert.equal(replayPromotionResult.duplicate, true)
+        assert.equal(replayPromotionResult.revision, 10)
+
+        const conflictingPromotion = structuredClone(promotionRequest)
+        conflictingPromotion.promotionId = `sha256:${"b".repeat(64)}`
+        conflictingPromotion.policy.b1[0] = 0.3
+        const conflictResponse = await fetch(`${endpoint}&action=promote`, {
+            method: "POST",
+            headers: { ...commonHeaders, "Content-Type": "application/json", "X-AI-Policy-Promotion-Key": promotionKey },
+            body: JSON.stringify(conflictingPromotion),
+        })
+        assert.equal(conflictResponse.status, 409)
+        assert.equal((await conflictResponse.json()).error.code, "promotion_conflict")
+
+        const retainedDuplicate = await fetch(`${endpoint}&action=contribute`, {
+            method: "POST",
+            headers: contributionHeaders,
+            body: JSON.stringify(firstContribution),
+        })
+        assert.equal(retainedDuplicate.status, 200)
+        assert.equal((await retainedDuplicate.json()).duplicate, true)
+
         const resetKey = "BTDB-AI-Reset-Test-Key"
         const resetHash = crypto.createHash("sha256").update(resetKey).digest("hex")
         fs.writeFileSync(path.join(dataDir, "ai-trainer-key.sha256"), `${resetHash}\n`)
@@ -263,15 +366,15 @@ async function main() {
         const resetResponse = await fetch(`${endpoint}&action=reset`, {
             method: "POST",
             headers: { ...commonHeaders, "Content-Type": "application/json", "Origin": origin, "X-AI-Trainer-Key": resetKey },
-            body: JSON.stringify({ expectedRevision: 8, model: freshModel }),
+            body: JSON.stringify({ expectedRevision: 10, model: freshModel }),
         })
         assert.equal(resetResponse.status, 200)
         const resetResult = await resetResponse.json()
-        assert.equal(resetResult.revision, 9)
+        assert.equal(resetResult.revision, 11)
         assert.equal(resetResult.contributionEpoch, 2)
         assert.equal(resetResult.knowledgeReset, true)
         const resetEnvelope = await (await fetch(endpoint, { headers: commonHeaders })).json()
-        assert.equal(resetEnvelope.revision, 9)
+        assert.equal(resetEnvelope.revision, 11)
         assert.equal(resetEnvelope.contributionEpoch, 2)
         assert.equal(resetEnvelope.model.totalGames, 0)
         assert.equal(resetEnvelope.model.totalHumanDemonstrations, 0)
@@ -279,8 +382,14 @@ async function main() {
         assert.equal(Object.keys(resetEnvelope.model.loadoutStats).length, 0)
         const resetState = JSON.parse(fs.readFileSync(path.join(dataDir, "ai-learning-global.json"), "utf8"))
         assert.deepEqual(resetState.contributionGuard, { recent: [], rates: [] })
+        resetState.model.totalLoadoutSamples = 5
+        fs.writeFileSync(path.join(dataDir, "ai-learning-global.json"), `${JSON.stringify(resetState)}\n`)
+        const normalizedLegacyEnvelope = await (await fetch(endpoint, { headers: commonHeaders })).json()
+        assert.equal(normalizedLegacyEnvelope.contributionEnabled, true)
+        assert.equal(normalizedLegacyEnvelope.model.totalLoadoutSamples, 0)
+        assert.equal(Array.isArray(normalizedLegacyEnvelope.model.loadoutStats), false)
 
-        const legacyContribution = createContribution("00000000000000000000000000000030", 8, 1)
+        const legacyContribution = createContribution("00000000000000000000000000000030", 10, 1)
         delete legacyContribution.contributionEpoch
         const legacyResponse = await fetch(`${endpoint}&action=contribute`, {
             method: "POST",
@@ -290,12 +399,12 @@ async function main() {
         assert.equal(legacyResponse.status, 200)
         const legacyResult = await legacyResponse.json()
         assert.equal(legacyResult.discarded, true)
-        assert.equal(legacyResult.revision, 9)
+        assert.equal(legacyResult.revision, 11)
 
         const staleEpochResponse = await fetch(`${endpoint}&action=contribute`, {
             method: "POST",
             headers: contributionHeaders,
-            body: JSON.stringify(createContribution("00000000000000000000000000000031", 9, 1)),
+            body: JSON.stringify(createContribution("00000000000000000000000000000031", 11, 1)),
         })
         assert.equal(staleEpochResponse.status, 409)
         const staleEpochResult = await staleEpochResponse.json()
@@ -305,14 +414,14 @@ async function main() {
         const currentEpochResponse = await fetch(`${endpoint}&action=contribute`, {
             method: "POST",
             headers: contributionHeaders,
-            body: JSON.stringify(createContribution("00000000000000000000000000000032", 9, 2)),
+            body: JSON.stringify(createContribution("00000000000000000000000000000032", 11, 2)),
         })
         assert.equal(currentEpochResponse.status, 200)
         const afterCurrentEpoch = await (await fetch(endpoint, { headers: commonHeaders })).json()
-        assert.equal(afterCurrentEpoch.revision, 10)
+        assert.equal(afterCurrentEpoch.revision, 12)
         assert.equal(afterCurrentEpoch.model.totalGames, 1)
 
-        const emptyObservationContribution = createContribution("00000000000000000000000000000033", 10, 2)
+        const emptyObservationContribution = createContribution("00000000000000000000000000000033", 12, 2)
         emptyObservationContribution.observations = []
         const emptyObservationResponse = await fetch(`${endpoint}&action=contribute`, {
             method: "POST",
@@ -321,13 +430,13 @@ async function main() {
         })
         assert.equal(emptyObservationResponse.status, 200)
         const afterEmptyObservation = await (await fetch(endpoint, { headers: commonHeaders })).json()
-        assert.equal(afterEmptyObservation.revision, 11)
+        assert.equal(afterEmptyObservation.revision, 13)
         assert.equal(afterEmptyObservation.model.totalGames, 2)
 
         const invalidResetResponse = await fetch(`${endpoint}&action=reset`, {
             method: "POST",
             headers: { ...commonHeaders, "Content-Type": "application/json", "Origin": origin, "X-AI-Trainer-Key": resetKey },
-            body: JSON.stringify({ expectedRevision: 11, model: afterEmptyObservation.model }),
+            body: JSON.stringify({ expectedRevision: 13, model: afterEmptyObservation.model }),
         })
         assert.equal(invalidResetResponse.status, 422)
 
@@ -339,7 +448,7 @@ async function main() {
         const rateLimitedResponse = await fetch(`${endpoint}&action=contribute`, {
             method: "POST",
             headers: contributionHeaders,
-            body: JSON.stringify(createContribution("00000000000000000000000000000021", 11, 2)),
+            body: JSON.stringify(createContribution("00000000000000000000000000000021", 13, 2)),
         })
         assert.equal(rateLimitedResponse.status, 429)
         assert.ok(Number(rateLimitedResponse.headers.get("retry-after")) > 0)
@@ -351,7 +460,7 @@ async function main() {
         })
         assert.equal(futureRevisionResponse.status, 409)
 
-        console.log("AI endpoint integration passed: public events are bounded and serialized, while resets invalidate stale knowledge epochs.")
+        console.log("AI endpoint integration passed: contributions, conflict-safe policy promotion, and reset epochs are serialized.")
     } finally {
         php.kill()
         await new Promise(resolve => php.once("exit", resolve).once("error", resolve))

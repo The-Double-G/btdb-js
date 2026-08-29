@@ -3240,15 +3240,15 @@ function getAIStatsSourceDescription() {
         return "Session model: local learning is discarded when this browser session closes."
     }
     if(aiPersistenceState.loadInFlight) {
-        return "Community model: refreshing authoritative statistics from the hosted backend."
+        return "Hosted Model: refreshing authoritative statistics from the backend."
     }
     if(aiPersistenceState.lastError) {
-        return "Community model unavailable: showing the latest valid model loaded in this tab."
+        return "Hosted Model unavailable: showing the latest valid model loaded in this tab."
     }
     if(aiPersistenceState.contributionEnabled) {
-        return "Community model: shared match perspectives and human demonstrations accepted by the hosted backend."
+        return "Hosted Model: shared match perspectives, human demonstrations, and verified self-play policies."
     }
-    return "Shared model: read-only statistics from the hosted backend."
+    return "Hosted Model: read-only statistics from the authoritative backend."
 }
 
 function getAIStatsFreshnessLabel() {
@@ -3272,7 +3272,7 @@ function getAIStatsFreshnessLabel() {
 
 function getAIStatsOverviewMetrics() {
     return [
-        { label: "Champion", value: "v" + aiLearning.championGeneration },
+        { label: "Hosted Champion", value: "v" + aiLearning.championGeneration },
         { label: "Match Perspectives", value: aiLearning.totalGames.toLocaleString() },
         { label: "Human Demos", value: aiLearning.totalHumanDemonstrations.toLocaleString() },
         { label: "Policy Samples", value: aiLearning.totalPolicySamples.toLocaleString() },
@@ -3415,7 +3415,7 @@ function drawAIStatsScreen() {
     var rightY = contentTop
 
     drawAIStatsCard(leftX, overviewY, leftWidth, topSectionHeight, "Overview", "rgba(94, 197, 255, 0.92)")
-    drawAIStatsCard(leftX, featureY, panelWidth - innerPadding * 2, featureHeight, AI_CROSS_MATCH_LEARNING_ENABLED ? "Community Player Profile" : "Session Player Profile", "rgba(110, 220, 168, 0.92)")
+    drawAIStatsCard(leftX, featureY, panelWidth - innerPadding * 2, featureHeight, AI_CROSS_MATCH_LEARNING_ENABLED ? "Hosted Player Profile" : "Session Player Profile", "rgba(110, 220, 168, 0.92)")
     drawAIStatsCard(rightX, rightY, rightWidth, topSectionHeight, "Top Archetype Records", "rgba(255, 189, 92, 0.92)")
 
     var infoX = leftX + leftWidth * 0.05
@@ -3423,7 +3423,7 @@ function drawAIStatsScreen() {
     ctx.textAlign = "left"
     ctx.font = "13px Arial"
     ctx.fillStyle = "rgba(214, 226, 255, 0.92)"
-    ctx.fillText("Source: " + (AI_CROSS_MATCH_LEARNING_ENABLED ? "Community rev " + aiPersistenceState.revision + " / epoch " + aiPersistenceState.contributionEpoch : "Session model"), infoX, infoY, leftWidth * 0.9)
+    ctx.fillText("Source: " + (AI_CROSS_MATCH_LEARNING_ENABLED ? "Hosted Model rev " + aiPersistenceState.revision + " / epoch " + aiPersistenceState.contributionEpoch : "Session model"), infoX, infoY, leftWidth * 0.9)
     ctx.fillText("Save backend: " + aiPersistenceState.backend, infoX, infoY + 18, leftWidth * 0.9)
     var syncSummary = AI_CROSS_MATCH_LEARNING_ENABLED ? getAIStatsFreshnessLabel() : "Learning: Session only"
     if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.lastError) {
@@ -3536,7 +3536,7 @@ function drawAIStatsScreen() {
     ctx.fillText(getAIStatsSourceDescription(), panelX + innerPadding, panelY + panelHeight - 38, panelWidth - innerPadding * 2)
     ctx.font = "13px Arial"
     ctx.fillStyle = "rgba(190, 204, 236, 0.78)"
-    ctx.fillText("Community statistics are separate from the repository's distributed-training checkpoint. Rankings use recorded games, tie-adjusted score, and recent reward.", panelX + innerPadding, panelY + panelHeight - 16, panelWidth - innerPadding * 2)
+    ctx.fillText("The Hosted Model is authoritative for browser play and distributed training; the repository checkpoint is its promotion audit mirror.", panelX + innerPadding, panelY + panelHeight - 16, panelWidth - innerPadding * 2)
 }
 
 function drawFrontMenu() {

@@ -121,6 +121,22 @@ jobs:
           }
           for(const [name, value] of Object.entries(outputs)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`)
           NODE
+      - name: Fetch canonical hosted model
+        env:
+          AI_HOSTED_ENDPOINT: ${{ vars.AI_HOSTED_ENDPOINT }}
+        run: |
+          if [ -z "$AI_HOSTED_ENDPOINT" ]; then
+            echo "AI_HOSTED_ENDPOINT is not configured." >&2
+            exit 1
+          fi
+          npm run ai:hosted -- --mode fetch --endpoint "$AI_HOSTED_ENDPOINT" --output "$RUNNER_TEMP/hosted-baseline/baseline.json" --manifest "$RUNNER_TEMP/hosted-baseline/hosted-source.json"
+          npm run ai:verify -- "$RUNNER_TEMP/hosted-baseline/baseline.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ai-hosted-baseline
+          path: ${{ runner.temp }}/hosted-baseline
+          retention-days: 14
+          if-no-files-found: error
 
   train:
     needs: prepare
@@ -137,6 +153,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-hosted-baseline
+          path: ${{ runner.temp }}/hosted-baseline
       - name: Train candidate shard
         env:
           BASE_SEED: ${{ needs.prepare.outputs.base_seed }}
@@ -144,7 +164,7 @@ jobs:
           MATCHES: ${{ needs.prepare.outputs.training_matches }}
         run: |
           seed=$((BASE_SEED + SHARD))
-          npm run ai:worker -- --mode train --checkpoint training/checkpoints/champion.json --seed "$seed" --shard "train-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/train-$SHARD.json"
+          npm run ai:worker -- --mode train --checkpoint "$RUNNER_TEMP/hosted-baseline/baseline.json" --seed "$seed" --shard "train-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/train-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-train-${{ matrix.shard }}
@@ -164,11 +184,15 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          name: ai-hosted-baseline
+          path: ${{ runner.temp }}/hosted-baseline
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
           pattern: ai-train-*
           path: ${{ runner.temp }}/train-results
           merge-multiple: true
       - name: Select deterministic candidate
-        run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train-results" --baseline training/checkpoints/champion.json --output "$RUNNER_TEMP/candidate/candidate.json" --report "$RUNNER_TEMP/candidate/candidate.selection.json"
+        run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train-results" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --output "$RUNNER_TEMP/candidate/candidate.json" --report "$RUNNER_TEMP/candidate/candidate.selection.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-candidate
@@ -193,6 +217,10 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          name: ai-hosted-baseline
+          path: ${{ runner.temp }}/hosted-baseline
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
           name: ai-candidate
           path: ${{ runner.temp }}/candidate
       - name: Evaluate frozen candidate shard
@@ -202,7 +230,7 @@ jobs:
           MATCHES: ${{ needs.prepare.outputs.evaluation_matches }}
         run: |
           seed=$((BASE_SEED + 100000 + SHARD))
-          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate/candidate.json" --baseline training/checkpoints/champion.json --seed "$seed" --shard "eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/eval-$SHARD.json"
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate/candidate.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --seed "$seed" --shard "eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/eval-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-eval-${{ matrix.shard }}
@@ -223,6 +251,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-hosted-baseline
+          path: ${{ runner.temp }}/bundle
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ai-candidate
@@ -246,7 +278,7 @@ jobs:
         with:
           name: ai-training-bundle
           path: ${{ runner.temp }}/bundle
-          retention-days: 14
+          retention-days: 90
           if-no-files-found: error
       - id: promotion
         name: Validate and stage continuous promotion
@@ -254,7 +286,7 @@ jobs:
         run: |
           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
-          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline training/checkpoints/champion.json --minimum-score 0.56 --minimum-games 32
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.56 --minimum-games 32
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for continuous promotion checks
@@ -266,7 +298,7 @@ jobs:
 
   promote:
     needs: [prepare, report]
-    if: ${{ needs.prepare.outputs.continuous == 'true' && needs.report.result == 'success' && needs.report.outputs.promotable == 'true' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' }}
+    if: ${{ needs.prepare.outputs.continuous == 'true' && needs.report.result == 'success' && needs.report.outputs.promotable == 'true' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: ai-checkpoint-promotion
@@ -361,8 +393,63 @@ jobs:
           echo "promotion_sha=$promotion_sha" >> "$GITHUB_OUTPUT"
           keep_branch=true
 
-  finalize-promotion:
+  publish-hosted:
     needs: [prepare, report, promote]
+    if: ${{ always() && needs.promote.result == 'success' && needs.promote.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production-ai
+    concurrency:
+      group: ai-hosted-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
+        with:
+          fetch-depth: 2
+          ref: ${{ needs.promote.outputs.promotion_sha }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-training-bundle
+          path: ${{ runner.temp }}/bundle
+      - name: Publish verified policy to the hosted model
+        env:
+          AI_HOSTED_ENDPOINT: ${{ vars.AI_HOSTED_ENDPOINT }}
+          AI_POLICY_PROMOTION_KEY: ${{ secrets.AI_POLICY_PROMOTION_KEY }}
+          CANDIDATE_SHA256: ${{ needs.report.outputs.candidate_sha256 }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PROMOTION_SHA: ${{ needs.promote.outputs.promotion_sha }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$GITHUB_SHA" ] || [ "$(git rev-parse HEAD)" != "$PROMOTION_SHA" ]; then
+            echo "Promotion commit or default branch changed before hosted publication." >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse "$PROMOTION_SHA^")" != "$GITHUB_SHA" ] || [ "$(git diff-tree --no-commit-id --name-only -r "$PROMOTION_SHA")" != "training/checkpoints/champion.json" ]; then
+            echo "Hosted publication was not built from the checked checkpoint-only commit." >&2
+            exit 1
+          fi
+          actual_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)
+          if [ -z "$CANDIDATE_SHA256" ] || [ "$actual_sha256" != "$CANDIDATE_SHA256" ]; then
+            echo "Candidate artifact checksum changed before hosted publication." >&2
+            exit 1
+          fi
+          npm run ai:hosted -- --mode publish --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.56 --minimum-games 32
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        continue-on-error: true
+        with:
+          name: ai-hosted-promotion-receipt
+          path: ${{ runner.temp }}/hosted-promotion-receipt.json
+          retention-days: 30
+          if-no-files-found: error
+
+  finalize-promotion:
+    needs: [prepare, report, promote, publish-hosted]
     if: ${{ always() && needs.promote.result == 'success' && needs.promote.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -372,8 +459,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.repository.default_branch }}
-      - name: Push the checked promotion commit
-        if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' }}
+      - id: push
+        name: Push the checked promotion commit
+        if: ${{ needs.publish-hosted.result == 'success' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PROMOTION_BRANCH: ${{ needs.promote.outputs.promotion_branch }}
@@ -402,14 +490,17 @@ jobs:
         if: ${{ always() }}
         env:
           PROMOTION_BRANCH: ${{ needs.promote.outputs.promotion_branch }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
         run: |
-          if [ -n "$PROMOTION_BRANCH" ]; then
+          if [ -n "$PROMOTION_BRANCH" ] && [ "$PUSH_OUTCOME" = "success" ]; then
             git push origin --delete "$PROMOTION_BRANCH" >/dev/null 2>&1 || true
+          elif [ -n "$PROMOTION_BRANCH" ]; then
+            echo "Retaining $PROMOTION_BRANCH for hosted/audit reconciliation." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   continue:
-    needs: [prepare, report, promote, finalize-promotion]
-    if: ${{ always() && needs.prepare.result == 'success' && needs.report.result == 'success' && needs.prepare.outputs.continuous == 'true' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && (needs.promote.result == 'skipped' || needs.promote.result == 'success' && (needs.promote.outputs.changed != 'true' || needs.finalize-promotion.result == 'success')) }}
+    needs: [prepare, report, promote, publish-hosted, finalize-promotion]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.report.result == 'success' && needs.prepare.outputs.continuous == 'true' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' && (needs.promote.result == 'skipped' || needs.promote.result == 'success' && (needs.promote.outputs.changed != 'true' || needs.publish-hosted.result == 'success' && needs.finalize-promotion.result == 'success')) }}
     runs-on: ubuntu-latest
     permissions:
       actions: write

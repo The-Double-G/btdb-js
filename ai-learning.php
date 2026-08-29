@@ -8,6 +8,7 @@ header('Referrer-Policy: no-referrer');
 
 const AI_PROTOCOL_VERSION = 1;
 const AI_MODEL_SCHEMA = 8;
+const AI_GAME_VERSION = 'v2.5.3';
 const AI_MAX_BODY_BYTES = 2097152;
 const AI_MAX_CONTRIBUTION_BYTES = 131072;
 const AI_MAX_CONTRIBUTION_OBSERVATIONS = 320;
@@ -25,6 +26,7 @@ $dataDir = __DIR__ . DIRECTORY_SEPARATOR . 'data';
 $stateFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-learning-global.json';
 $lockFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-learning-global.lock';
 $keyHashFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-trainer-key.sha256';
+$promotionKeyHashFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-policy-promotion-key.sha256';
 $contributionSecretFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-contribution-secret';
 
 function send_json(int $statusCode, array $payload): void {
@@ -46,6 +48,10 @@ function is_list_array(array $value): bool {
 
 function valid_number($value, float $limit = INF): bool {
     return (is_int($value) || is_float($value)) && is_finite((float)$value) && abs((float)$value) <= $limit;
+}
+
+function valid_nonnegative_integer($value): bool {
+    return is_int($value) && $value >= 0;
 }
 
 function valid_vector($value, int $length, float $limit): bool {
@@ -73,7 +79,7 @@ function valid_matrix($value, int $rows, int $columns, float $limit): bool {
 }
 
 function valid_policy($policy): bool {
-    if (!is_array($policy)) {
+    if (!is_array($policy) || !exact_keys($policy, ['hiddenSize1', 'hiddenSize2', 'learningRate', 'W1', 'b1', 'W2', 'b2', 'W3', 'b3'])) {
         return false;
     }
     if (($policy['hiddenSize1'] ?? null) !== AI_HIDDEN_1 || ($policy['hiddenSize2'] ?? null) !== AI_HIDDEN_2) {
@@ -116,10 +122,59 @@ function valid_finite_tree($value, int $depth = 0): bool {
 }
 
 function valid_model($model): bool {
-    if (!is_array($model) || ($model['version'] ?? null) !== AI_MODEL_SCHEMA) {
+    $modelKeys = [
+        'version', 'modelFamily', 'totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples',
+        'totalLoadoutSamples', 'totalHumanDemonstrations', 'playerProfile', 'strategyStats', 'loadoutStats',
+        'placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats',
+        'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats', 'totalTacticalSamples', 'candidateGeneration',
+        'championGeneration', 'policy', 'championPolicy', 'populationPolicies',
+    ];
+    if (!is_array($model)
+        || !exact_keys($model, $modelKeys)
+        || ($model['version'] ?? null) !== AI_MODEL_SCHEMA
+        || ($model['modelFamily'] ?? null) !== 'bounded-contextual-bandit-v1') {
         return false;
     }
-    if (!isset($model['strategyStats']) || !is_array($model['strategyStats']) || count($model['strategyStats']) !== AI_STRATEGY_COUNT) {
+    foreach (['totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples', 'totalLoadoutSamples', 'totalHumanDemonstrations', 'totalTacticalSamples', 'candidateGeneration', 'championGeneration'] as $counter) {
+        if (!valid_nonnegative_integer($model[$counter] ?? null)) {
+            return false;
+        }
+    }
+    if ($model['totalPolicySamples'] !== $model['totalGames'] + $model['totalSyntheticEpisodes']) {
+        return false;
+    }
+    $profile = $model['playerProfile'] ?? null;
+    if (!is_array($profile)
+        || !exact_keys($profile, ['games', 'features'])
+        || !valid_nonnegative_integer($profile['games'] ?? null)
+        || !valid_unit_vector($profile['features'] ?? null, AI_FEATURE_COUNT)) {
+        return false;
+    }
+    if (!isset($model['strategyStats'])
+        || !is_array($model['strategyStats'])
+        || !is_list_array($model['strategyStats'])
+        || count($model['strategyStats']) !== AI_STRATEGY_COUNT) {
+        return false;
+    }
+    $totalGames = 0;
+    $totalSyntheticEpisodes = 0;
+    foreach ($model['strategyStats'] as $record) {
+        if (!is_array($record) || !exact_keys($record, ['games', 'wins', 'losses', 'ties', 'syntheticEpisodes', 'lastReward'])) {
+            return false;
+        }
+        foreach (['games', 'wins', 'losses', 'ties', 'syntheticEpisodes'] as $counter) {
+            if (!valid_nonnegative_integer($record[$counter] ?? null)) {
+                return false;
+            }
+        }
+        if ($record['games'] < $record['wins'] + $record['losses'] + $record['ties']
+            || !valid_number($record['lastReward'] ?? null, 1.0)) {
+            return false;
+        }
+        $totalGames += $record['games'];
+        $totalSyntheticEpisodes += $record['syntheticEpisodes'];
+    }
+    if ($model['totalGames'] !== $totalGames || $model['totalSyntheticEpisodes'] !== $totalSyntheticEpisodes) {
         return false;
     }
     if (!valid_policy($model['policy'] ?? null) || !valid_policy($model['championPolicy'] ?? null)) {
@@ -127,6 +182,44 @@ function valid_model($model): bool {
     }
     foreach (['loadoutStats', 'placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats', 'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats'] as $storeName) {
         if (!isset($model[$storeName]) || !is_array($model[$storeName]) || count($model[$storeName]) > 12000) {
+            return false;
+        }
+    }
+    $loadoutSamples = 0;
+    foreach ($model['loadoutStats'] as $record) {
+        if (!is_array($record) || !exact_keys($record, ['games', 'wins', 'losses', 'ties', 'lastReward'])) {
+            return false;
+        }
+        foreach (['games', 'wins', 'losses', 'ties'] as $counter) {
+            if (!valid_nonnegative_integer($record[$counter] ?? null)) {
+                return false;
+            }
+        }
+        if ($record['games'] !== $record['wins'] + $record['losses'] + $record['ties']
+            || !valid_number($record['lastReward'] ?? null, 1.0)) {
+            return false;
+        }
+        $loadoutSamples += $record['games'];
+    }
+    foreach (['placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats', 'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats'] as $storeName) {
+        foreach ($model[$storeName] as $record) {
+            if (!is_array($record)
+                || !exact_keys($record, ['samples', 'score', 'mean', 'm2'])
+                || !valid_nonnegative_integer($record['samples'] ?? null)
+                || !valid_number($record['score'] ?? null, 1.0)
+                || !valid_number($record['mean'] ?? null, 1.0)
+                || !valid_number($record['m2'] ?? null)
+                || (float)$record['m2'] < 0) {
+                return false;
+            }
+        }
+    }
+    $population = $model['populationPolicies'] ?? null;
+    if (!is_array($population) || !is_list_array($population) || count($population) > 4) {
+        return false;
+    }
+    foreach ($population as $policy) {
+        if (!valid_policy($policy)) {
             return false;
         }
     }
@@ -161,7 +254,61 @@ function valid_fresh_model($model): bool {
 }
 
 function model_digest(array $model): string {
-    return 'sha256:' . hash('sha256', json_encode($model, JSON_UNESCAPED_SLASHES));
+    return 'sha256:' . hash('sha256', json_encode(model_for_response($model), JSON_UNESCAPED_SLASHES));
+}
+
+function valid_digest($value): bool {
+    return is_string($value) && preg_match('/^sha256:[a-f0-9]{64}$/D', $value) === 1;
+}
+
+function promotion_base_digest(array $model): string {
+    return model_digest([
+        'version' => $model['version'] ?? null,
+        'modelFamily' => $model['modelFamily'] ?? null,
+        'candidateGeneration' => $model['candidateGeneration'] ?? null,
+        'championGeneration' => $model['championGeneration'] ?? null,
+        'championPolicy' => $model['championPolicy'] ?? null,
+        'populationPolicies' => $model['populationPolicies'] ?? null,
+    ]);
+}
+
+function retained_population_policies(array $model): array {
+    $previousChampion = $model['championPolicy'];
+    $previousChampionDigest = model_digest($previousChampion);
+    $policies = [];
+    foreach (($model['populationPolicies'] ?? []) as $policy) {
+        if (model_digest($policy) !== $previousChampionDigest) {
+            $policies[] = $policy;
+        }
+    }
+    $policies[] = $previousChampion;
+    return array_slice($policies, -4);
+}
+
+function valid_policy_promotion($request): bool {
+    if (!is_array($request) || !exact_keys($request, [
+        'protocolVersion',
+        'promotionId',
+        'sourceRevision',
+        'expectedContributionEpoch',
+        'expectedPromotionBaseDigest',
+        'expectedPolicyDigest',
+        'expectedChampionGeneration',
+        'policy',
+    ])) {
+        return false;
+    }
+    return ($request['protocolVersion'] ?? null) === AI_PROTOCOL_VERSION
+        && valid_digest($request['promotionId'] ?? null)
+        && is_int($request['sourceRevision'] ?? null)
+        && $request['sourceRevision'] >= 0
+        && is_int($request['expectedContributionEpoch'] ?? null)
+        && $request['expectedContributionEpoch'] >= 1
+        && valid_digest($request['expectedPromotionBaseDigest'] ?? null)
+        && valid_digest($request['expectedPolicyDigest'] ?? null)
+        && is_int($request['expectedChampionGeneration'] ?? null)
+        && $request['expectedChampionGeneration'] >= 0
+        && valid_policy($request['policy'] ?? null);
 }
 
 function clamp_number(float $value, float $minimum, float $maximum): float {
@@ -520,6 +667,29 @@ function prune_loadout_stats(array &$store, int $limit): void {
     $store = array_slice($store, 0, $limit, true);
 }
 
+function loadout_sample_count(array $store): int {
+    $samples = 0;
+    foreach ($store as $record) {
+        $samples += max(0, (int)($record['games'] ?? 0));
+    }
+    return $samples;
+}
+
+function normalize_model_accounting(array &$model): void {
+    if (isset($model['loadoutStats']) && is_array($model['loadoutStats'])) {
+        $model['totalLoadoutSamples'] = loadout_sample_count($model['loadoutStats']);
+    }
+}
+
+function model_for_response(array $model): array {
+    foreach (['loadoutStats', 'placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats', 'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats'] as $storeName) {
+        if (($model[$storeName] ?? null) === []) {
+            $model[$storeName] = (object)[];
+        }
+    }
+    return $model;
+}
+
 function match_reward(float $aiLives, float $enemyLives): float {
     $result = $aiLives > $enemyLives ? 1.0 : ($aiLives < $enemyLives ? -1.0 : 0.0);
     $lifeMargin = clamp_number(($aiLives - $enemyLives) / 150.0, -1.0, 1.0);
@@ -586,6 +756,7 @@ function apply_public_contribution(array &$model, array $request): void {
         prune_score_store($model[$storeName], $limit);
     }
     prune_loadout_stats($model['loadoutStats'], 1800);
+    $model['totalLoadoutSamples'] = loadout_sample_count($model['loadoutStats']);
 }
 
 function apply_human_demonstration(array &$model, array $request): void {
@@ -612,6 +783,7 @@ function apply_human_demonstration(array &$model, array $request): void {
     $model['totalHumanDemonstrations'] = max(0, (int)($model['totalHumanDemonstrations'] ?? 0)) + 1;
     prune_score_store($model['loadoutCounterStats'], contribution_store_limits()['loadoutCounterStats']);
     prune_loadout_stats($model['loadoutStats'], 1800);
+    $model['totalLoadoutSamples'] = loadout_sample_count($model['loadoutStats']);
 }
 
 function normalized_contribution_guard(array $state): array {
@@ -761,6 +933,17 @@ function configured_key_hash(string $keyHashFile): string {
     return '';
 }
 
+function configured_promotion_key_hash(string $keyHashFile): string {
+    $environmentHash = trim((string)getenv('AI_POLICY_PROMOTION_KEY_SHA256'));
+    if ($environmentHash !== '') {
+        return strtolower($environmentHash);
+    }
+    if (is_file($keyHashFile)) {
+        return strtolower(trim((string)file_get_contents($keyHashFile)));
+    }
+    return '';
+}
+
 if (!is_dir($dataDir) && !mkdir($dataDir, 0775, true) && !is_dir($dataDir)) {
     fail_json(500, 'storage_unavailable', 'Unable to initialize AI model storage.');
 }
@@ -776,17 +959,27 @@ if ($protocol !== AI_PROTOCOL_VERSION) {
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method === 'GET') {
     $state = read_state_locked($stateFile, $lockFile);
-    $contributionEnabled = valid_model($state['model']);
+    $model = $state['model'];
+    normalize_model_accounting($model);
+    $contributionEnabled = valid_model($model);
     $token = $contributionEnabled ? contribution_token(contribution_secret($contributionSecretFile)) : '';
+    $policyDigest = $contributionEnabled ? model_digest($model['policy']) : '';
+    $championPolicyDigest = $contributionEnabled ? model_digest($model['championPolicy']) : '';
+    $promotionBaseDigest = $contributionEnabled ? promotion_base_digest($model) : '';
     send_json(200, [
         'ok' => true,
         'protocolVersion' => AI_PROTOCOL_VERSION,
+        'gameVersion' => AI_GAME_VERSION,
         'modelSchema' => AI_MODEL_SCHEMA,
         'revision' => (int)$state['revision'],
-        'modelDigest' => (string)($state['modelDigest'] ?? ''),
+        'modelDigest' => $contributionEnabled ? model_digest($model) : (string)($state['modelDigest'] ?? ''),
+        'policyDigest' => $policyDigest,
+        'championPolicyDigest' => $championPolicyDigest,
+        'promotionBaseDigest' => $promotionBaseDigest,
         'updatedAt' => $state['updatedAt'] ?? null,
-        'model' => $state['model'],
+        'model' => model_for_response($model),
         'writeEnabled' => configured_key_hash($keyHashFile) !== '',
+        'promotionEnabled' => configured_promotion_key_hash($promotionKeyHashFile) !== '',
         'contributionEnabled' => $contributionEnabled,
         'contributionToken' => $token,
         'contributionRateLimit' => AI_CONTRIBUTION_RATE_LIMIT,
@@ -829,6 +1022,7 @@ if ($action === 'contribute') {
         fail_json(503, 'storage_corrupt', 'AI model storage is invalid.');
     }
     $current = decode_state($currentContents);
+    normalize_model_accounting($current['model']);
     if (!valid_model($current['model'])) {
         flock($lock, LOCK_UN);
         fclose($lock);
@@ -908,8 +1102,114 @@ if ($action === 'contribute') {
     ]);
 }
 
+if ($action === 'promote') {
+    $configuredHash = configured_promotion_key_hash($promotionKeyHashFile);
+    if ($configuredHash === '') {
+        fail_json(503, 'promotion_not_configured', 'Hosted policy promotion is not configured.');
+    }
+    $providedKey = (string)($_SERVER['HTTP_X_AI_POLICY_PROMOTION_KEY'] ?? '');
+    if ($providedKey === '' || !hash_equals($configuredHash, hash('sha256', $providedKey))) {
+        fail_json(401, 'invalid_promotion_key', 'Policy promotion authentication failed.');
+    }
+    $request = read_json_request(AI_MAX_BODY_BYTES);
+    if (!valid_policy_promotion($request)) {
+        fail_json(422, 'invalid_promotion', 'AI policy promotion schema or values are invalid.');
+    }
+
+    $lock = @fopen($lockFile, 'c+');
+    if ($lock === false || !flock($lock, LOCK_EX)) {
+        fail_json(503, 'lock_unavailable', 'AI model storage is busy.');
+    }
+    $currentContents = @file_get_contents($stateFile);
+    if ($currentContents === false || trim($currentContents) === '') {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        fail_json(503, 'storage_corrupt', 'AI model storage is invalid.');
+    }
+    $current = decode_state($currentContents);
+    normalize_model_accounting($current['model']);
+    if (!valid_model($current['model'])) {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        fail_json(503, 'model_not_initialized', 'The hosted AI model must be initialized before promoting a policy.');
+    }
+
+    $currentModel = $current['model'];
+    $currentRevision = (int)$current['revision'];
+    $currentEpoch = state_contribution_epoch($current);
+    $currentChampionGeneration = (int)($currentModel['championGeneration'] ?? 0);
+    $promotedPolicyDigest = model_digest($request['policy']);
+    if ($currentChampionGeneration === $request['expectedChampionGeneration'] + 1
+        && model_digest($currentModel['championPolicy']) === $promotedPolicyDigest) {
+        $candidatePolicyPreserved = model_digest($currentModel['policy']) !== $promotedPolicyDigest;
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        send_json(200, [
+            'ok' => true,
+            'protocolVersion' => AI_PROTOCOL_VERSION,
+            'promotionId' => $request['promotionId'],
+            'duplicate' => true,
+            'revision' => $currentRevision,
+            'modelDigest' => (string)($current['modelDigest'] ?? ''),
+            'contributionEpoch' => $currentEpoch,
+            'championGeneration' => $currentChampionGeneration,
+            'promotedPolicyDigest' => $promotedPolicyDigest,
+            'candidatePolicyPreserved' => $candidatePolicyPreserved,
+        ]);
+    }
+
+    $currentPromotionBaseDigest = promotion_base_digest($currentModel);
+    if ($request['sourceRevision'] > $currentRevision
+        || $request['expectedContributionEpoch'] !== $currentEpoch
+        || $request['expectedChampionGeneration'] !== $currentChampionGeneration
+        || !hash_equals($currentPromotionBaseDigest, $request['expectedPromotionBaseDigest'])) {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        send_json(409, [
+            'ok' => false,
+            'error' => ['code' => 'promotion_conflict', 'message' => 'The hosted champion or knowledge epoch changed after training began.'],
+            'currentRevision' => $currentRevision,
+            'currentModelDigest' => (string)($current['modelDigest'] ?? ''),
+            'currentContributionEpoch' => $currentEpoch,
+            'currentChampionGeneration' => $currentChampionGeneration,
+            'currentPromotionBaseDigest' => $currentPromotionBaseDigest,
+        ]);
+    }
+
+    $candidatePolicyPreserved = model_digest($currentModel['policy']) !== $request['expectedPolicyDigest'];
+    $nextModel = $currentModel;
+    $nextModel['populationPolicies'] = retained_population_policies($currentModel);
+    $nextModel['championPolicy'] = $request['policy'];
+    if (!$candidatePolicyPreserved) {
+        $nextModel['policy'] = $request['policy'];
+    }
+    $nextModel['championGeneration'] = $currentChampionGeneration + 1;
+    $nextModel['candidateGeneration'] = $nextModel['championGeneration'];
+    if (!valid_model($nextModel)) {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        fail_json(500, 'promotion_failed_validation', 'The policy promotion did not produce a valid model.');
+    }
+
+    $nextState = write_model_state($stateFile, $currentRevision + 1, $nextModel, normalized_contribution_guard($current), $currentEpoch);
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    send_json(200, [
+        'ok' => true,
+        'protocolVersion' => AI_PROTOCOL_VERSION,
+        'promotionId' => $request['promotionId'],
+        'duplicate' => false,
+        'revision' => $nextState['revision'],
+        'modelDigest' => $nextState['modelDigest'],
+        'contributionEpoch' => $currentEpoch,
+        'championGeneration' => $nextModel['championGeneration'],
+        'promotedPolicyDigest' => $promotedPolicyDigest,
+        'candidatePolicyPreserved' => $candidatePolicyPreserved,
+    ]);
+}
+
 if ($action !== 'commit' && $action !== 'reset') {
-    fail_json(405, 'method_not_allowed', 'Only public contribution, authenticated commit, and authenticated reset POST requests are supported.');
+    fail_json(405, 'method_not_allowed', 'Only public contribution, authenticated policy promotion, commit, and reset POST requests are supported.');
 }
 
 $configuredHash = configured_key_hash($keyHashFile);
@@ -924,6 +1224,9 @@ if ($providedKey === '' || !hash_equals($configuredHash, hash('sha256', $provide
 $request = read_json_request(AI_MAX_BODY_BYTES);
 $expectedRevision = $request['expectedRevision'] ?? null;
 $model = $request['model'] ?? null;
+if (is_array($model)) {
+    normalize_model_accounting($model);
+}
 $isKnowledgeReset = $action === 'reset';
 if (!is_int($expectedRevision) || $expectedRevision < 0 || ($isKnowledgeReset ? !valid_fresh_model($model) : !valid_model($model))) {
     fail_json(422, 'invalid_model', 'AI model schema or values are invalid.');

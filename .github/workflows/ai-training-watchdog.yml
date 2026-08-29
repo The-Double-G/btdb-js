@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   ensure-running:
-    if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' }}
+    if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Start training only when idle

@@ -6,6 +6,11 @@ on:
       training_run_id:
         description: Successful Distributed AI Training workflow run ID
         required: true
+      reconcile_hosted_promotion:
+        description: Audit a candidate already published to the Hosted Model after a failed final push
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -13,11 +18,12 @@ permissions:
 
 jobs:
   validate:
-    if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED != 'true' }}
+    if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED != 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       candidate_sha256: ${{ steps.bundle.outputs.candidate_sha256 }}
       training_sha: ${{ steps.metadata.outputs.training_sha }}
+      base_sha: ${{ steps.metadata.outputs.base_sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
         with:
@@ -32,6 +38,7 @@ jobs:
         name: Validate training run metadata
         env:
           GH_TOKEN: ${{ github.token }}
+          RECONCILE: ${{ inputs.reconcile_hosted_promotion }}
           RUN_ID: ${{ inputs.training_run_id }}
         run: |
           if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
@@ -42,13 +49,21 @@ jobs:
           workflow_id=$(node -e "const run=require(process.argv[1]);process.stdout.write(String(run.workflow_id));" "$RUNNER_TEMP/training-run.json")
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id" > "$RUNNER_TEMP/training-workflow.json"
           gh api "repos/$GITHUB_REPOSITORY" > "$RUNNER_TEMP/repository.json"
-          node -e "const run=require(process.argv[1]);const workflow=require(process.argv[2]);const repo=require(process.argv[3]);if(workflow.path!=='.github/workflows/ai-training.yml'||workflow.name!=='Distributed AI Training')throw new Error('Run is not from the distributed training workflow');if(run.event!=='workflow_dispatch'||run.conclusion!=='success')throw new Error('Training run must be a successful workflow_dispatch');if(run.head_branch!==repo.default_branch)throw new Error('Training run is not from the current default branch');if(!run.head_sha||!repo.default_branch)throw new Error('Training run metadata is incomplete');" "$RUNNER_TEMP/training-run.json" "$RUNNER_TEMP/training-workflow.json" "$RUNNER_TEMP/repository.json"
+          node -e "const run=require(process.argv[1]);const workflow=require(process.argv[2]);const repo=require(process.argv[3]);const reconcile=process.env.RECONCILE==='true';if(workflow.path!=='.github/workflows/ai-training.yml'||workflow.name!=='Distributed AI Training')throw new Error('Run is not from the distributed training workflow');if(run.event!=='workflow_dispatch'||run.status!=='completed'||(!reconcile&&run.conclusion!=='success'))throw new Error(reconcile?'Reconciliation requires a completed workflow_dispatch':'Training run must be a successful workflow_dispatch');if(run.head_branch!==repo.default_branch)throw new Error('Training run is not from the default branch');if(!run.head_sha||!repo.default_branch)throw new Error('Training run metadata is incomplete');" "$RUNNER_TEMP/training-run.json" "$RUNNER_TEMP/training-workflow.json" "$RUNNER_TEMP/repository.json"
           training_sha=$(node -e "const run=require(process.argv[1]);process.stdout.write(run.head_sha);" "$RUNNER_TEMP/training-run.json")
-          if [ "$training_sha" != "$(git rev-parse HEAD)" ]; then
-            echo "Training run is not from the exact current default-branch commit." >&2
-            exit 1
+          base_sha=$(git rev-parse HEAD)
+          if [ "$training_sha" != "$base_sha" ]; then
+            if [ "$RECONCILE" != "true" ]; then
+              echo "Training run is not from the exact current default-branch commit." >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$training_sha" "$base_sha"; then
+              echo "Reconciliation training commit is not an ancestor of the current default branch." >&2
+              exit 1
+            fi
           fi
           echo "training_sha=$training_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
       - name: Download evaluated bundle
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,7 +74,7 @@ jobs:
         run: |
           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
-          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline training/checkpoints/champion.json --minimum-score 0.56 --minimum-games 32
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.56 --minimum-games 32
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for promotion checks
@@ -76,6 +91,10 @@ jobs:
     permissions:
       actions: write
       contents: write
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+      promotion_branch: ${{ steps.promotion.outputs.promotion_branch }}
+      promotion_sha: ${{ steps.promotion.outputs.promotion_sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
         with:
@@ -87,15 +106,16 @@ jobs:
           path: ${{ runner.temp }}/bundle
           run-id: ${{ inputs.training_run_id }}
           github-token: ${{ github.token }}
-      - name: Prepare validated checkpoint commit
+      - id: commit
+        name: Prepare validated checkpoint commit
         env:
           CANDIDATE_SHA256: ${{ needs.validate.outputs.candidate_sha256 }}
           RUN_ID: ${{ inputs.training_run_id }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          TRAINING_SHA: ${{ needs.validate.outputs.training_sha }}
+          BASE_SHA: ${{ needs.validate.outputs.base_sha }}
         run: |
           git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
-          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$TRAINING_SHA" ] || [ "$(git rev-parse HEAD)" != "$TRAINING_SHA" ]; then
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$BASE_SHA" ] || [ "$(git rev-parse HEAD)" != "$BASE_SHA" ]; then
             echo "Default branch changed after training began; refusing stale promotion." >&2
             exit 1
           fi
@@ -116,6 +136,7 @@ jobs:
           git add training/checkpoints/champion.json
           if git diff --cached --quiet; then
             echo "Checkpoint is already current."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "$(git diff --cached --name-only)" != "training/checkpoints/champion.json" ]; then
@@ -123,16 +144,22 @@ jobs:
             exit 1
           fi
           git commit -m "Promote AI checkpoint from run $RUN_ID"
-      - name: Require CI on the exact promotion commit
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - id: promotion
+        name: Require CI on the exact promotion commit
+        if: ${{ steps.commit.outputs.changed == 'true' }}
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
-          TRAINING_SHA: ${{ needs.validate.outputs.training_sha }}
+          BASE_SHA: ${{ needs.validate.outputs.base_sha }}
         run: |
           promotion_branch="ai-promotion/manual-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           promotion_sha=$(git rev-parse HEAD)
+          keep_branch=false
           cleanup() {
-            git push origin --delete "$promotion_branch" >/dev/null 2>&1 || true
+            if [ "$keep_branch" != "true" ]; then
+              git push origin --delete "$promotion_branch" >/dev/null 2>&1 || true
+            fi
           }
           trap cleanup EXIT
 
@@ -150,10 +177,115 @@ jobs:
             exit 1
           fi
           gh run watch "$ci_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          echo "promotion_branch=$promotion_branch" >> "$GITHUB_OUTPUT"
+          echo "promotion_sha=$promotion_sha" >> "$GITHUB_OUTPUT"
+          keep_branch=true
 
+  publish-hosted:
+    needs: [validate, promote]
+    if: ${{ always() && needs.promote.result == 'success' && needs.promote.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production-ai
+    concurrency:
+      group: ai-hosted-promotion
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
+        with:
+          fetch-depth: 2
+          ref: ${{ needs.promote.outputs.promotion_sha }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-training-bundle
+          path: ${{ runner.temp }}/bundle
+          run-id: ${{ inputs.training_run_id }}
+          github-token: ${{ github.token }}
+      - name: Publish verified policy to the hosted model
+        env:
+          AI_HOSTED_ENDPOINT: ${{ vars.AI_HOSTED_ENDPOINT }}
+          AI_POLICY_PROMOTION_KEY: ${{ secrets.AI_POLICY_PROMOTION_KEY }}
+          CANDIDATE_SHA256: ${{ needs.validate.outputs.candidate_sha256 }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PROMOTION_SHA: ${{ needs.promote.outputs.promotion_sha }}
+          BASE_SHA: ${{ needs.validate.outputs.base_sha }}
+          RECONCILE: ${{ inputs.reconcile_hosted_promotion }}
+        run: |
           git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
-          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$TRAINING_SHA" ]; then
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$BASE_SHA" ] || [ "$(git rev-parse HEAD)" != "$PROMOTION_SHA" ]; then
+            echo "Promotion commit or default branch changed before hosted publication." >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse "$PROMOTION_SHA^")" != "$BASE_SHA" ] || [ "$(git diff-tree --no-commit-id --name-only -r "$PROMOTION_SHA")" != "training/checkpoints/champion.json" ]; then
+            echo "Hosted publication was not built from the checked checkpoint-only commit." >&2
+            exit 1
+          fi
+          actual_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)
+          if [ -z "$CANDIDATE_SHA256" ] || [ "$actual_sha256" != "$CANDIDATE_SHA256" ]; then
+            echo "Candidate artifact checksum changed before hosted publication." >&2
+            exit 1
+          fi
+          mode=publish
+          if [ "$RECONCILE" = "true" ]; then mode=reconcile; fi
+          npm run ai:hosted -- --mode "$mode" --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.56 --minimum-games 32
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        continue-on-error: true
+        with:
+          name: ai-hosted-promotion-receipt
+          path: ${{ runner.temp }}/hosted-promotion-receipt.json
+          retention-days: 30
+          if-no-files-found: error
+
+  finalize-promotion:
+    needs: [validate, promote, publish-hosted]
+    if: ${{ always() && needs.promote.result == 'success' && needs.promote.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+      - id: push
+        name: Push the checked promotion commit
+        if: ${{ needs.publish-hosted.result == 'success' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PROMOTION_BRANCH: ${{ needs.promote.outputs.promotion_branch }}
+          PROMOTION_SHA: ${{ needs.promote.outputs.promotion_sha }}
+          BASE_SHA: ${{ needs.validate.outputs.base_sha }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git fetch --no-tags origin "+refs/heads/$PROMOTION_BRANCH:refs/remotes/origin/$PROMOTION_BRANCH"
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$BASE_SHA" ]; then
             echo "Default branch changed while promotion CI ran; refusing stale promotion." >&2
             exit 1
           fi
-          git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"
+          if [ -z "$PROMOTION_SHA" ] || [ "$(git rev-parse "origin/$PROMOTION_BRANCH")" != "$PROMOTION_SHA" ]; then
+            echo "Temporary promotion branch does not match the checked commit." >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse "$PROMOTION_SHA^")" != "$BASE_SHA" ] || [ "$(git diff-tree --no-commit-id --name-only -r "$PROMOTION_SHA")" != "training/checkpoints/champion.json" ]; then
+            echo "Promotion commit ancestry or contents changed." >&2
+            exit 1
+          fi
+          git push origin "$PROMOTION_SHA:refs/heads/$DEFAULT_BRANCH"
+      - name: Remove temporary promotion branch
+        if: ${{ always() }}
+        env:
+          PROMOTION_BRANCH: ${{ needs.promote.outputs.promotion_branch }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+        run: |
+          if [ -n "$PROMOTION_BRANCH" ] && [ "$PUSH_OUTCOME" = "success" ]; then
+            git push origin --delete "$PROMOTION_BRANCH" >/dev/null 2>&1 || true
+          elif [ -n "$PROMOTION_BRANCH" ]; then
+            echo "Retaining $PROMOTION_BRANCH for hosted/audit reconciliation." >> "$GITHUB_STEP_SUMMARY"
+          fi

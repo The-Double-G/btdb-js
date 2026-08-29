@@ -116,7 +116,7 @@ var aiTrainingFrameSimulationMultiplier = 1
 var aiTrainingLastSimulationFrameAt = 0
 var aiTrainingHeadlessRenderContext = null
 var aiTrainingSessionLearning = null
-var aiTrainingCommunityLearning = null
+var aiTrainingHostedLearning = null
 var aiTrainingSessionModelActive = false
 
 function createAITrainingState() {
@@ -207,7 +207,7 @@ function installAITrainingHostedLearning(model) {
     if(aiTrainingSessionModelActive == false) {
         return false
     }
-    aiTrainingCommunityLearning = model
+    aiTrainingHostedLearning = model
     return true
 }
 
@@ -219,7 +219,7 @@ function activateAITrainingSessionModel() {
     if(!aiLearning) {
         return false
     }
-    aiTrainingCommunityLearning = aiLearning
+    aiTrainingHostedLearning = aiLearning
     if(!aiTrainingSessionLearning) {
         aiTrainingSessionLearning = cloneAITrainingLearning(aiLearning)
     }
@@ -233,8 +233,8 @@ function deactivateAITrainingSessionModel() {
         return false
     }
     aiTrainingSessionLearning = aiLearning
-    aiLearning = aiTrainingCommunityLearning || aiLearning
-    aiTrainingCommunityLearning = null
+    aiLearning = aiTrainingHostedLearning || aiLearning
+    aiTrainingHostedLearning = null
     aiTrainingSessionModelActive = false
     return true
 }
@@ -242,9 +242,9 @@ function deactivateAITrainingSessionModel() {
 function syncAITrainingCommittedLearning(model) {
     var committedLearning = cloneAITrainingLearning(model)
     if(aiTrainingSessionModelActive) {
-        aiTrainingCommunityLearning = committedLearning
+        aiTrainingHostedLearning = committedLearning
     } else {
-        aiTrainingCommunityLearning = null
+        aiTrainingHostedLearning = null
         aiLearning = committedLearning
     }
 }
@@ -766,9 +766,6 @@ function getAITrainingPersistenceMode() {
     if(aiTrainingState.persistenceMode) {
         return aiTrainingState.persistenceMode
     }
-    if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.writeEnabled && getAITrainerKey() != "") {
-        return "snapshot"
-    }
     return AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.contributionEnabled ? "contributions" : "session"
 }
 
@@ -793,14 +790,8 @@ function getAITrainingSaveButtonState() {
     if(aiPersistenceState.pendingContributions > 0) {
         return aiPersistenceState.contributionEnabled ? { label: "Sync " + aiPersistenceState.pendingContributions + " Queued", disabled: false, action: "contributions" } : { label: "Sync Unavailable", disabled: true, action: "none" }
     }
-    if(shouldAITrainingUseSnapshotPersistence()) {
-        if(canAITrainingCommitSnapshot()) {
-            return { label: "Save Snapshot", disabled: false, action: "snapshot" }
-        }
-        return { label: "Trainer Key Needed", disabled: true, action: "none" }
-    }
     if(shouldAITrainingPublishContributions() && aiPersistenceState.contributionEnabled) {
-        return { label: "Global Synced", disabled: true, action: "none" }
+        return { label: "Hosted Contributions Synced", disabled: true, action: "none" }
     }
     if(getAITrainingPersistenceMode() == "session") {
         return { label: "Session Only", disabled: true, action: "none" }
@@ -810,14 +801,6 @@ function getAITrainingSaveButtonState() {
 
 function requestAITrainingControlSave() {
     var saveState = getAITrainingSaveButtonState()
-    if(saveState.action == "snapshot") {
-        if(saveAILearning()) {
-            setAITrainingNotice("Saving authenticated AI snapshot...", 1800)
-            return true
-        }
-        setAITrainingNotice("AI snapshot could not be saved.", 2200)
-        return false
-    }
     if(saveState.action == "contributions") {
         flushAIPublicContributionQueue()
         setAITrainingNotice("Queued global contributions are syncing.", 2200)
@@ -1731,7 +1714,7 @@ function finishAITrainingEvaluation() {
         aiLearning.candidateGeneration = aiLearning.championGeneration
         aiLearning.policy = cloneAIPolicy(aiLearning.championPolicy)
         aiTrainingState.promotions++
-        setAITrainingNotice("Candidate promoted at " + Math.round(score * 100) + "% evaluation score.", 2600)
+        setAITrainingNotice("Candidate promoted within the temporary Lab copy at " + Math.round(score * 100) + "%.", 2800)
     } else if(score < 0.48) {
         aiLearning.policy = cloneAIPolicy(aiLearning.championPolicy)
         aiLearning.candidateGeneration = aiLearning.championGeneration
@@ -2098,8 +2081,8 @@ function getAITrainingTrueSelfPlayOverlayButtons() {
     var startY = canvas.height * 0.07
     var gap = canvas.height * 0.012
     return [
-        { id: "stop-after-game", x: x, y: startY, width: buttonWidth, height: buttonHeight, label: aiTrainingState.trueSelfPlayStopAfterCurrentGame ? "Stop After Game: On" : "Stop After Game" },
-        { id: "stop-now", x: x, y: startY + buttonHeight + gap, width: buttonWidth, height: buttonHeight, label: "Stop Now" },
+        { id: "stop-after-game", x: x, y: startY, width: buttonWidth, height: buttonHeight, label: aiTrainingState.trueSelfPlayStopAfterCurrentGame ? "Pause After Match: On" : "Pause After Match" },
+        { id: "stop-now", x: x, y: startY + buttonHeight + gap, width: buttonWidth, height: buttonHeight, label: "Pause + Discard Match" },
     ]
 }
 
@@ -2205,7 +2188,7 @@ function drawAITrainingScreen() {
         { label: "Matches", value: aiTrainingState.trueSelfPlayMatches.toLocaleString(), color: "#62c5ff" },
         { label: "Phase", value: aiTrainingState.evaluationActive ? "Eval " + aiTrainingState.evaluationGames + "/32" : "Train " + aiTrainingState.candidateTrainingMatches + "/64", color: "#7fe0a2" },
         { label: evaluationDisplay.label, value: Math.round(evaluationDisplay.score * 100) + "%", color: "#f7c76d" },
-        { label: "Session Promoted", value: aiTrainingState.promotions.toLocaleString(), color: "#87f0ad" },
+        { label: "Lab Promotions", value: aiTrainingState.promotions.toLocaleString(), color: "#87f0ad" },
         { label: "Rejected", value: aiTrainingState.rejectedCandidates.toLocaleString(), color: "#ff9f8f" },
         { label: "Avg Round", value: averageSelfPlayRound.toFixed(1), color: "#7bd8d4" },
     ] : [
@@ -2243,15 +2226,18 @@ function drawAITrainingScreen() {
     var progressY = middleY + middleHeight - 22
     var progressWidth = statusWidth * 0.88
     var compactBackendLabel = aiPersistenceState.backend == "session only" ? "session only" : aiPersistenceState.backend.replace("php backend shared", "shared").replace(" unavailable", " down")
+    var publishingLabel = getAITrainingPersistenceMode() == "contributions" ? "Hosted contributions" : "Session only"
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
+        "Model: Temporary Lab Copy",
+        "Publishing: " + publishingLabel,
         (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,
     ]
     if(trainingMode.id == "selfplay") {
         statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
-        statusLines.push("Session champion generation: " + aiLearning.championGeneration.toLocaleString())
+        statusLines.push("Lab champion generation: " + aiLearning.championGeneration.toLocaleString())
         statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())
     }
     var statusTextY = middleY + 40
@@ -2277,7 +2263,7 @@ function drawAITrainingScreen() {
         drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Wins", aiTrainingState.evaluationWins.toLocaleString(), "#7fe0a2")
         drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Losses", aiTrainingState.evaluationLosses.toLocaleString(), "#ff9f8f")
         drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Ties", aiTrainingState.evaluationTies.toLocaleString(), "#62c5ff")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Session Champion", "v" + aiLearning.championGeneration, "#f7c76d")
+        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Lab Champion", "v" + aiLearning.championGeneration, "#f7c76d")
     } else {
         drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Positive", aiTrainingState.sessionWins.toLocaleString(), "#7fe0a2")
         drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Negative", aiTrainingState.sessionLosses.toLocaleString(), "#ff9f8f")

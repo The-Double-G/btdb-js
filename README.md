@@ -2,7 +2,7 @@
 
 A browser tower-defense game with adaptive AI, deterministic self-play, and distributed candidate evaluation.
 
-The current game release is `v2.5.3`. The hosted AI uses bounded public match contributions, revisioned model storage, contribution epochs, and authenticated administrative resets.
+The current game release is `v2.5.3`. One authoritative Hosted Model combines bounded public match contributions, Browser Lab contributions, and verified GitHub self-play promotions.
 
 ## Run Locally
 
@@ -26,13 +26,13 @@ The endpoint integration test also requires PHP on `PATH`.
 
 ## Distributed AI
 
-GitHub Actions can run deterministic Chromium self-play without a laptop remaining online. Workers start from one shared checkpoint and train independent policies with unique seeds. Selection materializes only the winning policy into a clone of the baseline model, and a balanced frozen evaluation compares that exact checkpoint with the current champion. An hourly watchdog keeps a bounded continuous generation loop alive; only passing, current-branch candidates can advance the committed champion.
+GitHub Actions can run deterministic Chromium self-play without a laptop remaining online. Each generation fetches one immutable snapshot of the Hosted Model, and all workers train independent policies from that exact snapshot with unique seeds. A balanced frozen evaluation gates a policy-only hosted promotion; `training/checkpoints/champion.json` records the checked promotion as an audit mirror.
 
 See [DISTRIBUTED-AI.md](DISTRIBUTED-AI.md) for operation, checkpoint promotion, limits, and safety guarantees.
 
 ## Repository Safety
 
-Runtime files under `data/`, browser automation captures, production credentials, and local screenshots are excluded from Git. Distributed workers run only on `127.0.0.1`, block hosted writes, and have read-only repository access. Separate least-privilege promotion jobs can commit only a verified checkpoint; no workflow can deploy a model or access production.
+Runtime files under `data/`, browser automation captures, production credentials, and local screenshots are excluded from Git. Distributed workers run only on `127.0.0.1`, block hosted writes, and have read-only repository access. Only the protected publisher job receives a policy-promotion credential; it cannot perform full-model commits or resets.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
 

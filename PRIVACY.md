@@ -10,7 +10,9 @@ Standard hosted Local matches can contribute two aggregate human perspectives. P
 
 ## Public Training Artifacts
 
-GitHub Actions workers use AI-versus-AI matches only. Promotable checkpoints clone the public baseline model and copy only the selected policy; shard-learned statistics and stores are discarded. Public checkpoints and artifacts must not be initialized from hosted state containing contribution guards, identifiers, rate-limit records, secrets, or human-derived records. Runtime `data/` is excluded from Git.
+GitHub Actions workers use AI-versus-AI matches only. Each generation uses an immutable snapshot of the publicly readable Hosted Model, which can include aggregate human-derived statistics and policies. Promotable checkpoints clone that snapshot and copy only the selected policy; shard-learned statistics and stores are discarded.
+
+Public artifacts include the model snapshot and a credential-free source manifest. They must never contain contribution tokens, guards, contribution identifiers, rate-limit records, network-address hashes, trainer or promotion credentials, or the private runtime state envelope. Runtime `data/` is excluded from Git.
 
 ## Repository Data
 

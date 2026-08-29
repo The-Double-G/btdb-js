@@ -345,7 +345,14 @@ async function main() {
 
             aiTrainingState.persistenceMode = "session"
             aiPersistenceState.contributionEnabled = true
-            aiMatchTelemetry = { contributionEpoch: 2 }
+            aiMatchTelemetry = {
+                aiLoadoutKey: "",
+                contributionEpoch: 2,
+                observedLoadoutSummary: null,
+                selectionFeatures: Array(AI_FEATURE_KEYS.length).fill(0.5),
+                strategyIndex: 0,
+                tacticalTrace: [],
+            }
             const recoveredSessionContribution = createAIPublicMatchContribution(150, 0, 1, [], true)
             setAIPublicContributionQueue([{ contributionId: "session-sync", contributionEpoch: 2 }])
             const recoveredSessionQueuedSaveState = getAITrainingSaveButtonState()
@@ -386,34 +393,27 @@ async function main() {
             setAIPublicContributionQueue([])
             openAITrainingDashboard()
             const authenticatedSaveState = getAITrainingSaveButtonState()
-            aiMatchTelemetry = { contributionEpoch: 2 }
-            const snapshotModeContribution = createAIPublicMatchContribution(150, 0, 1, [], true)
+            aiMatchTelemetry = {
+                aiLoadoutKey: "",
+                contributionEpoch: 2,
+                observedLoadoutSummary: null,
+                selectionFeatures: Array(AI_FEATURE_KEYS.length).fill(0.5),
+                strategyIndex: 0,
+                tacticalTrace: [],
+            }
+            const credentialedLabContribution = createAIPublicMatchContribution(150, 0, 1, [], true)
             aiLearning.championGeneration = 22
             aiLearning.candidateGeneration = 22
-            let resolveSnapshotCommit
-            let submittedSnapshotGeneration = -1
-            window.fetch = (url, options) => {
-                const body = JSON.parse(options.body)
-                submittedSnapshotGeneration = body.model.championGeneration
-                return new Promise(resolve => { resolveSnapshotCommit = resolve })
-            }
-            const snapshotSaveStarted = requestAITrainingSave(true)
-            aiLearning.championGeneration = 23
-            aiLearning.candidateGeneration = 23
+            let credentialedLabFetches = 0
+            window.fetch = async () => { credentialedLabFetches++; throw new Error("Lab attempted a full-model request") }
+            const credentialedLabSyncStarted = requestAITrainingSave(true)
+            const credentialedLabControlStarted = requestAITrainingControlSave()
             closeAITrainingDashboard()
-            resolveSnapshotCommit({
-                ok: true,
-                json: async () => ({ ok: true, revision: 14, modelDigest: "sha256:snapshot-14" }),
-            })
-            for(let settleIndex = 0; settleIndex < 20 && aiPersistenceState.saveInFlight; settleIndex++) {
-                await Promise.resolve()
-            }
-            const snapshotCommit = {
-                communityGeneration: aiLearning.championGeneration,
-                revision: aiPersistenceState.revision,
-                saveInFlight: aiPersistenceState.saveInFlight,
-                started: snapshotSaveStarted,
-                submittedGeneration: submittedSnapshotGeneration,
+            const credentialedLabPersistence = {
+                controlStarted: credentialedLabControlStarted,
+                fetches: credentialedLabFetches,
+                hostedGeneration: aiLearning.championGeneration,
+                syncStarted: credentialedLabSyncStarted,
             }
             sessionStorage.removeItem("aiTrainerKey")
             aiPersistenceState.writeEnabled = false
@@ -483,8 +483,8 @@ async function main() {
                 sameEpochRefresh,
                 sameEpochRefreshSucceeded,
                 sessionGenerationAfterHostedRefresh,
-                snapshotCommit,
-                snapshotModeContribution,
+                credentialedLabContribution,
+                credentialedLabPersistence,
                 staleContributionMetadata,
                 successfulRefreshPreservedBackoff,
                 staleActionCleared,
@@ -557,16 +557,15 @@ async function main() {
         assert.deepEqual(result.pendingContributionSaveState, { label: "Sync 1 Queued", disabled: false, action: "contributions" })
         assert.equal(result.pendingContributionSyncStarted, true)
         assert.equal(result.pendingContributionFlushes, 1)
-        assert.deepEqual(result.authenticatedSaveState, { label: "Save Snapshot", disabled: false, action: "snapshot" })
-        assert.equal(result.snapshotModeContribution, null)
-        assert.deepEqual(result.snapshotCommit, {
-            communityGeneration: 22,
-            revision: 14,
-            saveInFlight: false,
-            started: true,
-            submittedGeneration: 22,
+        assert.deepEqual(result.authenticatedSaveState, { label: "Hosted Contributions Synced", disabled: true, action: "none" })
+        assert.ok(result.credentialedLabContribution)
+        assert.deepEqual(result.credentialedLabPersistence, {
+            controlStarted: false,
+            fetches: 0,
+            hostedGeneration: 13,
+            syncStarted: true,
         })
-        assert.deepEqual(result.overviewLabels, ["Champion", "Match Perspectives", "Human Demos", "Policy Samples", "Loadout Samples", "Counter Records"])
+        assert.deepEqual(result.overviewLabels, ["Hosted Champion", "Match Perspectives", "Human Demos", "Policy Samples", "Loadout Samples", "Counter Records"])
         assert.match(result.queuedContributionMessage, /finishes syncing/)
         assert.match(result.acceptedContributionMessage, /accepted/)
         assert.match(result.ineligibleContributionMessage, /No global AI contribution/)

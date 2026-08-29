@@ -1,7 +1,9 @@
 # AI Checkpoints
 
-`champion.json` is the shared starting checkpoint for distributed training runs.
+`champion.json` is the repository audit mirror of the latest checked distributed promotion. It is not the training authority.
 
-Only sanitized AI-versus-AI model data belongs here. Distributed promotion clones this baseline and replaces only the selected policy, generation metadata, and bounded population history; shard-learned stores are not promoted. Never copy a production state envelope into this directory. Production contribution guards, identifiers, rate-limit records, tokens, secrets, and trainer authorization are prohibited.
+Each training generation starts from one immutable Hosted Model snapshot artifact. Distributed selection replaces only the selected policy, generation metadata, and bounded population history in that snapshot; shard-learned stores are not promoted. This audit checkpoint can therefore contain the public aggregate model fields present in the hosted GET response.
 
-Manual and continuous promotion replace only `champion.json` after a frozen evaluation passes the fixed gate against the exact current baseline.
+Never copy the private production state envelope into this directory. Contribution guards, identifiers, rate-limit records, tokens, secrets, and trainer or promotion authorization are prohibited.
+
+Manual and continuous promotion replace only `champion.json` after the exact hosted snapshot and candidate pass frozen evaluation, hosted publication, and exact-commit CI.

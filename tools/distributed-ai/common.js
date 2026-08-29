@@ -12,7 +12,12 @@ const TRAIN_RESULT_KIND = "btdb-ai-train-result"
 const EVALUATION_RESULT_KIND = "btdb-ai-evaluation-result"
 const SELECTION_REPORT_KIND = "btdb-ai-selection-report"
 const EVALUATION_AGGREGATE_KIND = "btdb-ai-evaluation-aggregate"
+const HOSTED_SNAPSHOT_KIND = "btdb-ai-hosted-snapshot"
+const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
+const GAME_VERSION = "v2.5.3"
+const MODEL_SCHEMA_VERSION = 8
+const MODEL_FAMILY = "bounded-contextual-bandit-v1"
 const FEATURE_COUNT = 17
 const HIDDEN_SIZE_1 = 12
 const HIDDEN_SIZE_2 = 8
@@ -55,6 +60,10 @@ function assertNumber(value, label, minimum = -Infinity, maximum = Infinity) {
 
 function assertDigest(value, label) {
     if(typeof value != "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) fail(`${label} must be a canonical SHA-256 identifier`)
+}
+
+function assertBoolean(value, label) {
+    if(typeof value != "boolean") fail(`${label} must be boolean`)
 }
 
 function assertFiniteTree(value, label = "value", seen = new Set()) {
@@ -230,6 +239,142 @@ function createCheckpoint({ gameVersion, model, parentCheckpointId = null, mode,
     }
     checkpoint.checkpointId = digest(checkpointIdentity(checkpoint))
     return validateCheckpoint(checkpoint)
+}
+
+const HOSTED_ENVELOPE_KEYS = [
+    "ok", "protocolVersion", "gameVersion", "modelSchema", "revision", "modelDigest", "policyDigest", "championPolicyDigest",
+    "promotionBaseDigest", "updatedAt", "model", "writeEnabled", "promotionEnabled", "contributionEnabled",
+    "contributionToken", "contributionRateLimit", "contributionEpoch",
+]
+const HOSTED_SNAPSHOT_KEYS = [
+    "kind", "formatVersion", "snapshotId", "protocolVersion", "gameVersion", "revision", "contributionEpoch",
+    "hostedModelDigest", "sourcePolicyDigest", "promotionBaseDigest", "championGeneration", "checkpointModelDigest", "checkpointId",
+]
+
+function validateHostedEnvelope(envelope, label = "hosted envelope") {
+    assertExactKeys(envelope, HOSTED_ENVELOPE_KEYS, label)
+    if(envelope.ok !== true || envelope.protocolVersion != 1) fail(`${label} has an unsupported protocol response`)
+    assertString(envelope.gameVersion, `${label}.gameVersion`)
+    assertInteger(envelope.modelSchema, `${label}.modelSchema`, 1)
+    if(envelope.gameVersion != GAME_VERSION || envelope.modelSchema != MODEL_SCHEMA_VERSION) fail(`${label} is incompatible with this game build`)
+    assertInteger(envelope.revision, `${label}.revision`)
+    assertDigest(envelope.modelDigest, `${label}.modelDigest`)
+    assertDigest(envelope.policyDigest, `${label}.policyDigest`)
+    assertDigest(envelope.championPolicyDigest, `${label}.championPolicyDigest`)
+    assertDigest(envelope.promotionBaseDigest, `${label}.promotionBaseDigest`)
+    if(envelope.updatedAt !== null) assertString(envelope.updatedAt, `${label}.updatedAt`)
+    for(const key of ["writeEnabled", "promotionEnabled", "contributionEnabled"]) assertBoolean(envelope[key], `${label}.${key}`)
+    assertString(envelope.contributionToken, `${label}.contributionToken`, true)
+    assertInteger(envelope.contributionRateLimit, `${label}.contributionRateLimit`, 1)
+    assertInteger(envelope.contributionEpoch, `${label}.contributionEpoch`, 1)
+    validateModel(envelope.model, envelope.modelSchema, MODEL_FAMILY, `${label}.model`)
+    return envelope
+}
+
+function hostedSnapshotIdentity(manifest) {
+    const identity = {}
+    for(const key of HOSTED_SNAPSHOT_KEYS) if(key != "snapshotId") identity[key] = manifest[key]
+    return identity
+}
+
+function validateHostedSnapshotManifest(manifest, checkpoint, label = "hosted snapshot") {
+    assertExactKeys(manifest, HOSTED_SNAPSHOT_KEYS, label)
+    if(manifest.kind != HOSTED_SNAPSHOT_KIND || manifest.formatVersion != FORMAT_VERSION || manifest.protocolVersion != 1) fail(`${label} has an unsupported kind, format, or protocol`)
+    assertDigest(manifest.snapshotId, `${label}.snapshotId`)
+    assertString(manifest.gameVersion, `${label}.gameVersion`)
+    assertInteger(manifest.revision, `${label}.revision`)
+    assertInteger(manifest.contributionEpoch, `${label}.contributionEpoch`, 1)
+    for(const key of ["hostedModelDigest", "sourcePolicyDigest", "promotionBaseDigest", "checkpointModelDigest", "checkpointId"]) assertDigest(manifest[key], `${label}.${key}`)
+    assertInteger(manifest.championGeneration, `${label}.championGeneration`)
+    if(manifest.snapshotId != digest(hostedSnapshotIdentity(manifest))) fail(`${label}.snapshotId does not match its contents`)
+    if(checkpoint != null) {
+        validateCheckpoint(checkpoint, "hosted baseline")
+        if(manifest.gameVersion != checkpoint.gameVersion || manifest.checkpointModelDigest != checkpoint.modelDigest || manifest.checkpointId != checkpoint.checkpointId) fail(`${label} does not identify the supplied checkpoint`)
+        if(manifest.championGeneration != checkpoint.model.championGeneration) fail(`${label}.championGeneration does not match the supplied checkpoint`)
+    }
+    return manifest
+}
+
+function createHostedSnapshot(envelope) {
+    validateHostedEnvelope(envelope)
+    const checkpoint = createCheckpoint({
+        gameVersion: envelope.gameVersion,
+        model: envelope.model,
+        mode: "initialize",
+        seed: envelope.revision,
+        shard: `hosted-revision-${envelope.revision}`,
+        matches: 0,
+    })
+    const manifest = {
+        kind: HOSTED_SNAPSHOT_KIND,
+        formatVersion: FORMAT_VERSION,
+        snapshotId: "",
+        protocolVersion: envelope.protocolVersion,
+        gameVersion: envelope.gameVersion,
+        revision: envelope.revision,
+        contributionEpoch: envelope.contributionEpoch,
+        hostedModelDigest: envelope.modelDigest,
+        sourcePolicyDigest: envelope.policyDigest,
+        promotionBaseDigest: envelope.promotionBaseDigest,
+        championGeneration: envelope.model.championGeneration,
+        checkpointModelDigest: checkpoint.modelDigest,
+        checkpointId: checkpoint.checkpointId,
+    }
+    manifest.snapshotId = digest(hostedSnapshotIdentity(manifest))
+    return { checkpoint, manifest: validateHostedSnapshotManifest(manifest, checkpoint) }
+}
+
+function buildPolicyPromotionRequest(manifest, candidate, baseline) {
+    validateHostedSnapshotManifest(manifest, baseline)
+    validatePolicyOnlyCandidate(candidate, baseline)
+    return {
+        protocolVersion: 1,
+        promotionId: candidate.checkpointId,
+        sourceRevision: manifest.revision,
+        expectedContributionEpoch: manifest.contributionEpoch,
+        expectedPromotionBaseDigest: manifest.promotionBaseDigest,
+        expectedPolicyDigest: manifest.sourcePolicyDigest,
+        expectedChampionGeneration: manifest.championGeneration,
+        policy: clone(candidate.model.policy),
+    }
+}
+
+const HOSTED_PROMOTION_RESPONSE_KEYS = [
+    "ok", "protocolVersion", "promotionId", "duplicate", "revision", "modelDigest", "contributionEpoch",
+    "championGeneration", "promotedPolicyDigest", "candidatePolicyPreserved",
+]
+
+function validateHostedPromotionResponse(response, request, label = "hosted promotion response") {
+    assertExactKeys(response, HOSTED_PROMOTION_RESPONSE_KEYS, label)
+    if(response.ok !== true || response.protocolVersion != 1 || response.promotionId != request.promotionId) fail(`${label} does not identify the requested promotion`)
+    assertBoolean(response.duplicate, `${label}.duplicate`)
+    assertInteger(response.revision, `${label}.revision`, request.sourceRevision)
+    assertDigest(response.modelDigest, `${label}.modelDigest`)
+    assertInteger(response.contributionEpoch, `${label}.contributionEpoch`, 1)
+    assertInteger(response.championGeneration, `${label}.championGeneration`)
+    assertDigest(response.promotedPolicyDigest, `${label}.promotedPolicyDigest`)
+    assertBoolean(response.candidatePolicyPreserved, `${label}.candidatePolicyPreserved`)
+    if(response.contributionEpoch != request.expectedContributionEpoch) fail(`${label} changed the contribution epoch`)
+    if(response.championGeneration != request.expectedChampionGeneration + 1) fail(`${label} has the wrong champion generation`)
+    return response
+}
+
+function createHostedPromotionReceipt(manifest, response) {
+    const receipt = {
+        kind: HOSTED_PROMOTION_RECEIPT_KIND,
+        formatVersion: FORMAT_VERSION,
+        snapshotId: manifest.snapshotId,
+        promotionId: response.promotionId,
+        duplicate: response.duplicate,
+        revision: response.revision,
+        modelDigest: response.modelDigest,
+        contributionEpoch: response.contributionEpoch,
+        championGeneration: response.championGeneration,
+        promotedPolicyDigest: response.promotedPolicyDigest,
+        candidatePolicyPreserved: response.candidatePolicyPreserved,
+    }
+    assertFiniteTree(receipt)
+    return receipt
 }
 
 const METRICS_KEYS = ["games", "wins", "losses", "ties", "score", "averageRound", "totalFrames", "discarded", "stalls", "frameBudgetExhausted", "builtInEvaluationScore"]
@@ -792,6 +937,9 @@ module.exports = {
     EVALUATION_AGGREGATE_KIND,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
+    GAME_VERSION,
+    HOSTED_PROMOTION_RECEIPT_KIND,
+    HOSTED_SNAPSHOT_KIND,
     ROOT,
     SELECTION_REPORT_KIND,
     TRAIN_RESULT_KIND,
@@ -801,6 +949,8 @@ module.exports = {
     clone,
     computeMetrics,
     createCheckpoint,
+    createHostedPromotionReceipt,
+    createHostedSnapshot,
     createStaticServer,
     defaultMarkdownPath,
     digest,
@@ -811,6 +961,7 @@ module.exports = {
     jsonFilesRecursively,
     makeSelectionReport,
     materializePolicyOnlyCandidate,
+    buildPolicyPromotionRequest,
     numberArg,
     parseArgs,
     readJson,
@@ -819,6 +970,9 @@ module.exports = {
     validateCheckpoint,
     validateEvaluationAggregate,
     validateEvaluationResult,
+    validateHostedEnvelope,
+    validateHostedPromotionResponse,
+    validateHostedSnapshotManifest,
     validateModel,
     validatePolicyOnlyCandidate,
     validatePromotionBundle,

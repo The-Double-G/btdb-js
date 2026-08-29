@@ -1,6 +1,6 @@
 # AI Training v2.5.3
 
-The AI uses a bounded candidate policy and trainable tactical residuals. Normal games use the frozen champion. Self-play alternates sides and maps, trains the candidate for 64 matches, then runs 32 no-learning evaluation matches against a frozen champion or historical policy.
+The AI uses one authoritative Hosted Model with a bounded live candidate policy, a verified champion policy, aggregate records, and trainable tactical residuals. Hosted games use the live candidate when contributions are enabled. Self-play alternates sides and maps, trains a candidate, then evaluates it with learning disabled against the frozen champion or a historical policy.
 
 Candidates scoring at least 56% are promoted. Candidates below 48% are reset. Intermediate candidates continue training. Tactical samples cover development, farming, eco sends, rush sends, and boost use.
 
@@ -16,6 +16,8 @@ Contribution requests use short-lived same-origin tokens, unique IDs, per-addres
 
 Failed contributions remain in a small `localStorage` queue and retry automatically. The game-over screen reports whether the match is still syncing. The global candidate remains bounded, while the frozen champion provides an administrative rollback and self-play evaluation baseline.
 
+The Browser Lab trains a Temporary Lab Copy so an experiment cannot replace the Hosted Model while it is running. Completed training matches send bounded contributions to the Hosted Model. Trainer credentials do not enable full-copy Lab publication; pause and close retain the temporary copy without replacing hosted state.
+
 Each match captures the global contribution epoch when it begins. An authenticated knowledge reset advances that epoch atomically, so queued or in-progress events from the previous model are discarded. Active tabs disable contributions while loading the new model before they can submit events for the new epoch.
 
 ## Hosted Trainer Key
@@ -30,6 +32,12 @@ location.reload()
 ```
 
 Never put the plaintext key in JavaScript, a URL, source control, or the hosted data directory. The endpoint uses revisioned compare-and-swap commits, rejects stale snapshots, validates schema and finite parameters, and writes through an atomic rename.
+
+## GitHub Policy Promotion Key
+
+GitHub self-play uses a separate least-privilege key. Configure its server-side hash as `AI_POLICY_PROMOTION_KEY_SHA256` or `data/ai-policy-promotion-key.sha256`, and store the plaintext value only as `AI_POLICY_PROMOTION_KEY` in the protected `production-ai` GitHub environment.
+
+The `action=promote` route cannot submit a full model or reset knowledge. It compares the source contribution epoch and frozen champion identity, then updates the verified champion and bounded history under the model lock. Current aggregate records are always retained. If hosted contributions changed the live candidate policy during training, that newer candidate is retained rather than overwritten.
 
 ## Knowledge Reset
 
@@ -47,6 +55,6 @@ node tools/test-ai-endpoint.js
 
 ## Distributed Training
 
-The public GitHub workflow runs deterministic AI-versus-AI candidates in isolated localhost Chromium workers. Every shard starts from the same committed checkpoint, uses a unique seed, and cannot access hosted persistence. Selection copies only the winning policy into a clone of the baseline model, synchronizes candidate and champion policy, advances the generation once, and discards all shard-learned stores and statistics. The exact materialized checkpoint is evaluated in balanced eight-match blocks by map, candidate side, and responder role. Passing continuous runs can advance the committed checkpoint through a least-privilege automatic gate; manually dispatched runs retain the separate manual promotion workflow.
+The public GitHub workflow fetches the Hosted Model once per generation and distributes that immutable snapshot to isolated localhost Chromium workers. Every shard uses the same snapshot and a unique seed and cannot access hosted persistence. Selection copies only the winning policy into a clone of the snapshot and discards shard-learned stores and statistics. The exact materialized checkpoint is evaluated in balanced eight-match blocks by map, candidate side, and responder role. After exact-commit CI, a protected publisher applies the verified policy to the Hosted Model; `training/checkpoints/champion.json` records the promotion as an audit mirror.
 
 See `DISTRIBUTED-AI.md` for operation and safety details.

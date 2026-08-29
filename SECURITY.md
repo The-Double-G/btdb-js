@@ -6,9 +6,13 @@ Report security vulnerabilities through GitHub private vulnerability reporting w
 
 ## Secrets
 
-Never commit FTP passwords, trainer keys, key hashes, contribution secrets, production AI state, `.env` files, or browser automation snapshots. Training workflows require no production credentials. Rotate any credential that has been pasted into a chat, terminal transcript, issue, artifact, or workflow log.
+Never commit FTP passwords, trainer or policy-promotion keys, key hashes, contribution secrets, private production state envelopes, `.env` files, or browser automation snapshots. Rotate any credential that has been pasted into a chat, terminal transcript, issue, artifact, or workflow log.
 
-Checkpoint promotion accepts only a verified exact-current-commit distributed-training run, binds the candidate and evaluation to the current committed baseline, and runs publication, endpoint, and browser checks before committing. Training and evaluation jobs are read-only. Narrowly scoped promotion jobs can write only the checked `training/checkpoints/champion.json` commit and temporary promotion branch, and they run no repository JavaScript. They never deploy production data or use production credentials.
+Training and evaluation jobs are read-only and receive no production credential. They consume one sanitized, immutable Hosted Model snapshot artifact and cannot contact the hosted endpoint from Chromium. The protected `publish-hosted` job receives only `AI_POLICY_PROMOTION_KEY`, which authorizes policy promotion but not full commits or resets.
+
+Promotion is bound to the source knowledge epoch, frozen champion identity, evaluated candidate, exact checkpoint-only commit, and required CI result. The endpoint applies it under the model lock, preserves concurrent contribution records, and retains a human-updated live candidate policy when it changed after the snapshot. Only after hosted publication succeeds may the exact `training/checkpoints/champion.json` audit commit reach the default branch.
+
+Because hosted publication and Git cannot be atomic, uncertain failures retain the exact CI-tested temporary branch for reconciliation. Promotion replay is idempotent, and receipt artifact upload is best-effort rather than a publication gate.
 
 ## Supported Version
 
