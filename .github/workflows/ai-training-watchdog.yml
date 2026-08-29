@@ -48,14 +48,6 @@ jobs:
             exit 0
           fi
 
-          retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
-          if [ -n "$retained" ]; then
-            echo "Retained AI promotion branch(es) indicate an unresolved hosted/audit transaction:" >&2
-            echo "$retained" >&2
-            echo "Reconcile or remove the retained branch before continuous training resumes." >&2
-            exit 1
-          fi
-
           checkpoint_parent=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
             'if ((.parents | length) == 1 and (.files | length) == 1 and .files[0].filename == "training/checkpoints/champion.json") then .parents[0].sha else "" end')
           source_run_id=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
@@ -64,6 +56,26 @@ jobs:
           active=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
             -f branch="$DEFAULT_BRANCH" -f per_page=100 --jq \
             '[.workflow_runs[] | select(.status != "completed") | select(.display_title == "Distributed AI Training" or (.display_title | startswith("Continuous AI training for ")))]')
+
+          retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
+          stale_retained=""
+          for ref in $retained; do
+            transaction_name="${ref##*/}"
+            transaction_run_id="${transaction_name%%-*}"
+            if ! jq -e --arg id "$transaction_run_id" '[.[] | select((.id | tostring) == $id)] | length > 0' <<<"$active" >/dev/null; then
+              stale_retained="$stale_retained$ref\n"
+            fi
+          done
+          if [ -n "$stale_retained" ]; then
+            echo "Retained AI promotion branch(es) indicate an unresolved hosted/audit transaction:" >&2
+            printf '%b' "$stale_retained" >&2
+            echo "Reconcile or remove the retained branch before continuous training resumes." >&2
+            exit 1
+          fi
+          if [ -n "$retained" ]; then
+            echo "An active promotion transaction is still finalizing; waiting for it to finish."
+            exit 0
+          fi
 
           if [ -n "$checkpoint_parent" ]; then
             source_active=$(jq --arg parent "$checkpoint_parent" --arg source "$source_run_id" \
