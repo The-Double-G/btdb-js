@@ -17,19 +17,22 @@ const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
 const POLICY_FORMAT_VERSION = 2
 const GAME_VERSION = "v2.6.0"
-const MODEL_SCHEMA_VERSION = 9
-const MODEL_FAMILY = "shared-neural-controller-v1"
+const MODEL_SCHEMA_VERSION = 10
+const MODEL_FAMILY = "shared-recurrent-actor-critic-v2"
 const MAX_JSON_BYTES = 8 * 1024 * 1024
 const FEATURE_COUNT = 17
 const STRATEGY_HIDDEN_SIZE_1 = 64
 const STRATEGY_HIDDEN_SIZE_2 = 32
 const STRATEGY_COUNT = 75
-const DECISION_STATE_INPUT_SIZE = 48
-const DECISION_CANDIDATE_INPUT_SIZE = 32
+const DECISION_STATE_INPUT_SIZE = 72
+const DECISION_CANDIDATE_INPUT_SIZE = 40
 const DECISION_STATE_HIDDEN_SIZE = 96
 const DECISION_CANDIDATE_HIDDEN_SIZE = 48
 const DECISION_EMBEDDING_SIZE = 48
+const DECISION_MEMORY_SIZE = 16
+const DECISION_SURVIVAL_CLASS_COUNT = 4
 const DECISION_FAMILY_COUNT = 8
+const POLICY_PARAMETER_COUNT = 23752
 const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
@@ -161,15 +164,18 @@ function validatePolicy(policy, label, strategyCount) {
     const decision = policy.decision
     const decisionLabel = `${label}.decision`
     assertExactKeys(decision, [
-        "stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize",
+        "stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount",
         "trainingSamples",
-        "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "familyBias",
+        "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2",
+        "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias",
     ], decisionLabel)
     if(decision.stateInputSize !== DECISION_STATE_INPUT_SIZE
         || decision.candidateInputSize !== DECISION_CANDIDATE_INPUT_SIZE
         || decision.stateHiddenSize !== DECISION_STATE_HIDDEN_SIZE
         || decision.candidateHiddenSize !== DECISION_CANDIDATE_HIDDEN_SIZE
-        || decision.embeddingSize !== DECISION_EMBEDDING_SIZE) fail(`${decisionLabel} has incompatible dimensions`)
+        || decision.embeddingSize !== DECISION_EMBEDDING_SIZE
+        || decision.memorySize !== DECISION_MEMORY_SIZE
+        || decision.survivalClassCount !== DECISION_SURVIVAL_CLASS_COUNT) fail(`${decisionLabel} has incompatible dimensions`)
     if(!Array.isArray(decision.trainingSamples) || decision.trainingSamples.length != DECISION_FAMILY_COUNT) fail(`${decisionLabel}.trainingSamples must contain ${DECISION_FAMILY_COUNT} counters`)
     decision.trainingSamples.forEach((value, index) => assertInteger(value, `${decisionLabel}.trainingSamples[${index}]`))
     matrix(decision.WState1, DECISION_STATE_HIDDEN_SIZE, DECISION_STATE_INPUT_SIZE, `${decisionLabel}.WState1`)
@@ -180,7 +186,29 @@ function validatePolicy(policy, label, strategyCount) {
     vector(decision.bCandidate1, DECISION_CANDIDATE_HIDDEN_SIZE, `${decisionLabel}.bCandidate1`)
     matrix(decision.WCandidate2, DECISION_EMBEDDING_SIZE, DECISION_CANDIDATE_HIDDEN_SIZE, `${decisionLabel}.WCandidate2`)
     vector(decision.bCandidate2, DECISION_EMBEDDING_SIZE, `${decisionLabel}.bCandidate2`)
+    matrix(decision.WStateToMemory, DECISION_MEMORY_SIZE, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WStateToMemory`)
+    matrix(decision.WMemoryToMemory, DECISION_MEMORY_SIZE, DECISION_MEMORY_SIZE, `${decisionLabel}.WMemoryToMemory`)
+    vector(decision.bMemory, DECISION_MEMORY_SIZE, `${decisionLabel}.bMemory`)
+    matrix(decision.WMemoryToState, DECISION_EMBEDDING_SIZE, DECISION_MEMORY_SIZE, `${decisionLabel}.WMemoryToState`)
+    vector(decision.WValue, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WValue`)
+    assertNumber(decision.bValue, `${decisionLabel}.bValue`, -POLICY_LIMIT, POLICY_LIMIT)
+    matrix(decision.WSurvival, DECISION_SURVIVAL_CLASS_COUNT, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WSurvival`)
+    vector(decision.bSurvival, DECISION_SURVIVAL_CLASS_COUNT, `${decisionLabel}.bSurvival`)
     vector(decision.familyBias, DECISION_FAMILY_COUNT, `${decisionLabel}.familyBias`)
+    const parameterCount = strategy.W1.length * strategy.W1[0].length + strategy.b1.length
+        + strategy.W2.length * strategy.W2[0].length + strategy.b2.length
+        + strategy.W3.length * strategy.W3[0].length + strategy.b3.length
+        + decision.WState1.length * decision.WState1[0].length + decision.bState1.length
+        + decision.WState2.length * decision.WState2[0].length + decision.bState2.length
+        + decision.WCandidate1.length * decision.WCandidate1[0].length + decision.bCandidate1.length
+        + decision.WCandidate2.length * decision.WCandidate2[0].length + decision.bCandidate2.length
+        + decision.WStateToMemory.length * decision.WStateToMemory[0].length
+        + decision.WMemoryToMemory.length * decision.WMemoryToMemory[0].length + decision.bMemory.length
+        + decision.WMemoryToState.length * decision.WMemoryToState[0].length
+        + decision.WValue.length + 1
+        + decision.WSurvival.length * decision.WSurvival[0].length + decision.bSurvival.length
+        + decision.familyBias.length
+    if(parameterCount != POLICY_PARAMETER_COUNT) fail(`${label} must contain exactly ${POLICY_PARAMETER_COUNT} policy parameters`)
 }
 
 const MODEL_KEYS = [
@@ -457,7 +485,23 @@ function createHostedPromotionReceipt(manifest, response) {
         promotedPolicyDigest: response.promotedPolicyDigest,
         candidatePolicyPreserved: response.candidatePolicyPreserved,
     }
-    assertFiniteTree(receipt)
+    return validateHostedPromotionReceipt(receipt)
+}
+
+const HOSTED_PROMOTION_RECEIPT_KEYS = [
+    "kind", "formatVersion", "snapshotId", "promotionId", "duplicate", "revision", "modelDigest",
+    "contributionEpoch", "championGeneration", "promotedPolicyDigest", "candidatePolicyPreserved",
+]
+
+function validateHostedPromotionReceipt(receipt, label = "hosted promotion receipt") {
+    assertExactKeys(receipt, HOSTED_PROMOTION_RECEIPT_KEYS, label)
+    if(receipt.kind !== HOSTED_PROMOTION_RECEIPT_KIND || receipt.formatVersion !== FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
+    for(const key of ["snapshotId", "promotionId", "modelDigest", "promotedPolicyDigest"]) assertDigest(receipt[key], `${label}.${key}`)
+    assertBoolean(receipt.duplicate, `${label}.duplicate`)
+    assertInteger(receipt.revision, `${label}.revision`)
+    assertInteger(receipt.contributionEpoch, `${label}.contributionEpoch`, 1)
+    assertInteger(receipt.championGeneration, `${label}.championGeneration`)
+    assertBoolean(receipt.candidatePolicyPreserved, `${label}.candidatePolicyPreserved`)
     return receipt
 }
 
@@ -593,6 +637,63 @@ function materializePolicyOnlyCandidate(result, baseline) {
     })
 }
 
+function aggregateTrainResultPolicies(results, baseline) {
+    if(!Array.isArray(results) || results.length == 0) fail("No train shard results were found")
+    selectBestTrainResult(results, baseline)
+    const validated = results.map((result, index) => validateTrainResultAgainstBaseline(result, baseline, `train result ${index}`))
+    const maximumScore = Math.max(...validated.map(result => Number.isFinite(result.metrics.builtInEvaluationScore) ? result.metrics.builtInEvaluationScore : result.metrics.score))
+    const rawWeights = validated.map(result => Math.exp(((Number.isFinite(result.metrics.builtInEvaluationScore) ? result.metrics.builtInEvaluationScore : result.metrics.score) - maximumScore) * 8))
+    const weightTotal = rawWeights.reduce((sum, weight) => sum + weight, 0)
+    const weights = rawWeights.map(weight => weight / weightTotal)
+    const policy = clone(baseline.model.policy)
+
+    function averageValues(values) {
+        if(Array.isArray(values[0])) return values[0].map((value, index) => averageValues(values.map(candidate => candidate[index])))
+        return values.reduce((sum, value, index) => sum + value * weights[index], 0)
+    }
+
+    for(const key of ["W1", "b1", "W2", "b2", "W3", "b3"]) {
+        policy.strategy[key] = averageValues(validated.map(result => result.candidate.model.policy.strategy[key]))
+    }
+    for(const key of [
+        "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2",
+        "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias",
+    ]) {
+        policy.decision[key] = averageValues(validated.map(result => result.candidate.model.policy.decision[key]))
+    }
+    policy.decision.trainingSamples = policy.decision.trainingSamples.map((baselineCount, familyIndex) => {
+        const learnedSamples = validated.reduce((sum, result) => {
+            const candidateCount = result.candidate.model.policy.decision.trainingSamples[familyIndex]
+            if(candidateCount < baselineCount) fail(`train result ${result.resultId} reduced decision trainingSamples[${familyIndex}]`)
+            return sum + candidateCount - baselineCount
+        }, 0)
+        if(baselineCount + learnedSamples > Number.MAX_SAFE_INTEGER) fail(`aggregated decision trainingSamples[${familyIndex}] exceeds the safe integer range`)
+        return baselineCount + learnedSamples
+    })
+    validatePolicy(policy, "aggregated policy", STRATEGY_COUNT)
+    return policy
+}
+
+function materializeAggregatedPolicyCandidate(results, baseline) {
+    const selected = selectBestTrainResult(results, baseline)
+    const model = clone(baseline.model)
+    const policy = aggregateTrainResultPolicies(results, baseline)
+    model.policy = policy
+    model.championPolicy = clone(policy)
+    model.populationPolicies = retainedPopulationPolicies(baseline.model)
+    model.championGeneration = baseline.model.championGeneration + 1
+    model.candidateGeneration = model.championGeneration
+    return createCheckpoint({
+        gameVersion: baseline.gameVersion,
+        model,
+        parentCheckpointId: baseline.checkpointId,
+        mode: "train",
+        seed: selected.seed,
+        shard: `aggregate-${results.length}`,
+        matches: results.reduce((sum, result) => sum + result.completedMatches, 0),
+    })
+}
+
 function validatePolicyOnlyCandidate(candidate, baseline, label = "candidate") {
     validateCheckpoint(baseline, "baseline")
     validateCheckpoint(candidate, label)
@@ -689,6 +790,8 @@ function makeSelectionReport(results, selected, materialized) {
         materializedCheckpointId: materialized.checkpointId,
         selectedScoreSource: "built-in-evaluation",
         selectedScore: selected.metrics.builtInEvaluationScore,
+        aggregationMethod: "score-weighted-policy-average",
+        contributorCount: results.length,
         candidates: summaries,
     }
 }
@@ -705,7 +808,9 @@ function addMatch(bucket, match) {
 }
 
 const BUCKET_KEYS = ["games", "wins", "losses", "ties", "score"]
-const EVALUATION_AGGREGATE_KEYS = ["kind", "formatVersion", "aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest", "gameVersion", "modelSchemaVersion", "thresholds", "passed", "overall", "byMap", "bySide", "byRole", "coverage", "sourceResultIds"]
+const EVALUATION_AGGREGATE_KEYS = ["kind", "formatVersion", "aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest", "gameVersion", "modelSchemaVersion", "thresholds", "passed", "overall", "byMap", "bySide", "byRole", "coverage", "safety", "sourceResultIds"]
+const EVALUATION_THRESHOLD_KEYS = ["minimumScore", "minimumGames", "minimumBucketScore", "minimumSurvivalRate", "maximumSevereCollapseRate"]
+const EVALUATION_SAFETY_KEYS = ["games", "survivals", "severeCollapses", "survivalRate", "severeCollapseRate", "averageCandidateLives", "averageOpponentLives"]
 
 function validateBucket(bucket, label) {
     assertExactKeys(bucket, BUCKET_KEYS, label)
@@ -729,6 +834,36 @@ function coverageFor(maps, sides, roles, minimumGames) {
     }
 }
 
+function evaluationThresholds(minimumScore, minimumGames) {
+    const stableRate = value => Math.round(value * 1e12) / 1e12
+    return {
+        minimumScore,
+        minimumGames,
+        minimumBucketScore: stableRate(Math.max(0, minimumScore - 0.1)),
+        minimumSurvivalRate: stableRate(Math.max(0, minimumScore - 0.08)),
+        maximumSevereCollapseRate: stableRate(Math.min(1, Math.max(0, 1 - minimumScore - 0.15))),
+    }
+}
+
+function safetyForMatches(matches) {
+    const games = matches.length
+    const survivals = matches.filter(match => match.candidateLives > 0).length
+    const severeCollapses = matches.filter(match => match.candidateLives <= 0 && match.opponentLives >= 75).length
+    return {
+        games,
+        survivals,
+        severeCollapses,
+        survivalRate: games ? survivals / games : 0,
+        severeCollapseRate: games ? severeCollapses / games : 0,
+        averageCandidateLives: games ? matches.reduce((sum, match) => sum + match.candidateLives, 0) / games : 0,
+        averageOpponentLives: games ? matches.reduce((sum, match) => sum + match.opponentLives, 0) / games : 0,
+    }
+}
+
+function bucketsMeetMinimum(maps, sides, roles, minimumScore) {
+    return [...Object.values(maps), ...Object.values(sides), ...Object.values(roles)].every(bucket => bucket.score >= minimumScore)
+}
+
 function aggregateIdentity(aggregate) {
     const identity = {}
     for(const key of Object.keys(aggregate)) if(key != "aggregateId") identity[key] = aggregate[key]
@@ -741,9 +876,11 @@ function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") 
     for(const key of ["aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest"]) assertDigest(aggregate[key], `${label}.${key}`)
     assertString(aggregate.gameVersion, `${label}.gameVersion`)
     assertInteger(aggregate.modelSchemaVersion, `${label}.modelSchemaVersion`, 1)
-    assertExactKeys(aggregate.thresholds, ["minimumScore", "minimumGames"], `${label}.thresholds`)
+    assertExactKeys(aggregate.thresholds, EVALUATION_THRESHOLD_KEYS, `${label}.thresholds`)
     assertNumber(aggregate.thresholds.minimumScore, `${label}.thresholds.minimumScore`, 0, 1)
     assertInteger(aggregate.thresholds.minimumGames, `${label}.thresholds.minimumGames`, 1)
+    for(const key of ["minimumBucketScore", "minimumSurvivalRate", "maximumSevereCollapseRate"]) assertNumber(aggregate.thresholds[key], `${label}.thresholds.${key}`, 0, 1)
+    if(canonicalStringify(aggregate.thresholds) != canonicalStringify(evaluationThresholds(aggregate.thresholds.minimumScore, aggregate.thresholds.minimumGames))) fail(`${label}.thresholds are inconsistent`)
     if(typeof aggregate.passed != "boolean") fail(`${label}.passed must be boolean`)
     validateBucket(aggregate.overall, `${label}.overall`)
     assertExactKeys(aggregate.byMap, ["0", "1"], `${label}.byMap`)
@@ -760,11 +897,24 @@ function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") 
     const expectedCoverage = coverageFor(aggregate.byMap, aggregate.bySide, aggregate.byRole, aggregate.thresholds.minimumGames)
     assertExactKeys(aggregate.coverage, Object.keys(expectedCoverage), `${label}.coverage`)
     if(canonicalStringify(aggregate.coverage) != canonicalStringify(expectedCoverage)) fail(`${label}.coverage is inconsistent`)
+    assertExactKeys(aggregate.safety, EVALUATION_SAFETY_KEYS, `${label}.safety`)
+    for(const key of ["games", "survivals", "severeCollapses"]) assertInteger(aggregate.safety[key], `${label}.safety.${key}`)
+    if(aggregate.safety.games != aggregate.overall.games || aggregate.safety.survivals > aggregate.safety.games || aggregate.safety.severeCollapses > aggregate.safety.games) fail(`${label}.safety counts are inconsistent`)
+    for(const key of ["survivalRate", "severeCollapseRate"]) assertNumber(aggregate.safety[key], `${label}.safety.${key}`, 0, 1)
+    for(const key of ["averageCandidateLives", "averageOpponentLives"]) assertNumber(aggregate.safety[key], `${label}.safety.${key}`, 0)
+    const expectedSurvivalRate = aggregate.safety.games ? aggregate.safety.survivals / aggregate.safety.games : 0
+    const expectedSevereCollapseRate = aggregate.safety.games ? aggregate.safety.severeCollapses / aggregate.safety.games : 0
+    if(Math.abs(aggregate.safety.survivalRate - expectedSurvivalRate) > 1e-12 || Math.abs(aggregate.safety.severeCollapseRate - expectedSevereCollapseRate) > 1e-12) fail(`${label}.safety rates are inconsistent`)
     if(!Array.isArray(aggregate.sourceResultIds) || aggregate.sourceResultIds.length == 0) fail(`${label}.sourceResultIds must be non-empty`)
     aggregate.sourceResultIds.forEach((id, index) => assertDigest(id, `${label}.sourceResultIds[${index}]`))
     if(new Set(aggregate.sourceResultIds).size != aggregate.sourceResultIds.length) fail(`${label}.sourceResultIds contains duplicates`)
     if(aggregate.sourceResultIds.some((id, index) => index > 0 && aggregate.sourceResultIds[index - 1] >= id)) fail(`${label}.sourceResultIds must be sorted`)
-    const expectedPassed = aggregate.overall.games >= aggregate.thresholds.minimumGames && aggregate.overall.score >= aggregate.thresholds.minimumScore && expectedCoverage.mapsCovered && expectedCoverage.sidesCovered && expectedCoverage.rolesCovered && expectedCoverage.balanced
+    const expectedPassed = aggregate.overall.games >= aggregate.thresholds.minimumGames
+        && aggregate.overall.score >= aggregate.thresholds.minimumScore
+        && bucketsMeetMinimum(aggregate.byMap, aggregate.bySide, aggregate.byRole, aggregate.thresholds.minimumBucketScore)
+        && aggregate.safety.survivalRate >= aggregate.thresholds.minimumSurvivalRate
+        && aggregate.safety.severeCollapseRate <= aggregate.thresholds.maximumSevereCollapseRate
+        && expectedCoverage.mapsCovered && expectedCoverage.sidesCovered && expectedCoverage.rolesCovered && expectedCoverage.balanced
     if(aggregate.passed != expectedPassed) fail(`${label}.passed is inconsistent`)
     if(aggregate.aggregateId != digest(aggregateIdentity(aggregate))) fail(`${label}.aggregateId does not match its contents`)
     return aggregate
@@ -808,6 +958,9 @@ function aggregateEvaluationResults(results, minimumScore, minimumGames) {
         addMatch(roles[match.candidateRole], match)
     }
     const coverage = coverageFor(maps, sides, roles, minimumGames)
+    const thresholds = evaluationThresholds(minimumScore, minimumGames)
+    const matches = validated.flatMap(result => result.matches)
+    const safety = safetyForMatches(matches)
     const aggregate = {
         kind: EVALUATION_AGGREGATE_KIND,
         formatVersion: FORMAT_VERSION,
@@ -818,13 +971,19 @@ function aggregateEvaluationResults(results, minimumScore, minimumGames) {
         baselineModelDigest: first.baselineModelDigest,
         gameVersion: first.gameVersion,
         modelSchemaVersion: first.modelSchemaVersion,
-        thresholds: { minimumScore, minimumGames },
-        passed: overall.games >= minimumGames && overall.score >= minimumScore && coverage.mapsCovered && coverage.sidesCovered && coverage.rolesCovered && coverage.balanced,
+        thresholds,
+        passed: overall.games >= minimumGames
+            && overall.score >= minimumScore
+            && bucketsMeetMinimum(maps, sides, roles, thresholds.minimumBucketScore)
+            && safety.survivalRate >= thresholds.minimumSurvivalRate
+            && safety.severeCollapseRate <= thresholds.maximumSevereCollapseRate
+            && coverage.mapsCovered && coverage.sidesCovered && coverage.rolesCovered && coverage.balanced,
         overall,
         byMap: maps,
         bySide: sides,
         byRole: roles,
         coverage,
+        safety,
         sourceResultIds: validated.map(result => result.resultId).sort(),
     }
     aggregate.aggregateId = digest(aggregateIdentity(aggregate))
@@ -842,7 +1001,9 @@ function evaluationMarkdown(aggregate) {
         `Candidate: \`${aggregate.candidateCheckpointId}\`  `,
         `Baseline: \`${aggregate.baselineCheckpointId}\`  `,
         `Required: at least ${aggregate.thresholds.minimumGames} games and ${percent(aggregate.thresholds.minimumScore)} score`,
+        `Safety: every split at least ${percent(aggregate.thresholds.minimumBucketScore)}, survival at least ${percent(aggregate.thresholds.minimumSurvivalRate)}, severe collapses at most ${percent(aggregate.thresholds.maximumSevereCollapseRate)}`,
         `Coverage: at least ${aggregate.coverage.minimumGamesPerMap} games per map, ${aggregate.coverage.minimumGamesPerSide} per candidate side, and ${aggregate.coverage.minimumGamesPerRole} per candidate role; all splits must be balanced`,
+        `Observed: ${percent(aggregate.safety.survivalRate)} survival, ${percent(aggregate.safety.severeCollapseRate)} severe collapses, ${aggregate.safety.averageCandidateLives.toFixed(2)} average candidate lives`,
         "",
         "| Split | Games | Wins | Losses | Ties | Score |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
@@ -1051,6 +1212,7 @@ module.exports = {
     MODEL_FAMILY,
     MODEL_SCHEMA_VERSION,
     POLICY_FORMAT_VERSION,
+    POLICY_PARAMETER_COUNT,
     ROOT,
     SELECTION_REPORT_KIND,
     TRAIN_RESULT_KIND,
@@ -1058,6 +1220,7 @@ module.exports = {
     TRAINING_LEARNING_MATCHES,
     TRAINING_MATCHES,
     aggregateEvaluationResults,
+    aggregateTrainResultPolicies,
     assertFiniteTree,
     canonicalStringify,
     clone,
@@ -1075,6 +1238,7 @@ module.exports = {
     integerArg,
     jsonFilesRecursively,
     makeSelectionReport,
+    materializeAggregatedPolicyCandidate,
     materializePolicyOnlyCandidate,
     buildPolicyPromotionRequest,
     numberArg,
@@ -1086,6 +1250,7 @@ module.exports = {
     validateEvaluationAggregate,
     validateEvaluationResult,
     validateHostedEnvelope,
+    validateHostedPromotionReceipt,
     validateHostedPromotionResponse,
     validateHostedSnapshotManifest,
     validateModel,

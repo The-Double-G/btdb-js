@@ -7,7 +7,7 @@ const {
     fail,
     jsonFilesRecursively,
     makeSelectionReport,
-    materializePolicyOnlyCandidate,
+    materializeAggregatedPolicyCandidate,
     parseArgs,
     readJson,
     requiredArg,
@@ -41,11 +41,11 @@ function main() {
     }
     if(results.length == 0) fail(`No train shard result JSON files found under ${path.resolve(resultsDirectory)}`)
     const selected = selectBestTrainResult(results, baseline)
-    const candidate = materializePolicyOnlyCandidate(selected, baseline)
+    const candidate = materializeAggregatedPolicyCandidate(results, baseline)
     const report = makeSelectionReport(results, selected, candidate)
     const candidatePath = writeJson(output, candidate)
     const reportPath = writeJson(args.report || defaultReportPath(output), report)
-    console.log(`Selected policy bundle from ${selected.candidate.checkpointId} and materialized ${candidate.checkpointId} from ${results.length} shard(s): ${candidatePath}`)
+    console.log(`Aggregated ${results.length} policy bundle(s), anchored by ${selected.candidate.checkpointId}, into ${candidate.checkpointId}: ${candidatePath}`)
     console.log(`Selection report: ${reportPath}`)
 }
 

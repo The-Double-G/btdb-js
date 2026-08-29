@@ -273,6 +273,7 @@ function createAIProfileState() {
         explorationEnabled: false,
         pendingTacticalDecision: null,
         tacticalTrace: [],
+        decisionMemory: aiCreateVector(AI_DECISION_MEMORY_SIZE, 0),
     }
 }
 
@@ -1581,15 +1582,6 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
     ensureAILearningLoaded()
     ensureAILoadoutLibraryInitialized()
     var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, excludedSelection && excludedSelection.loadoutKey ? excludedSelection.loadoutKey : null)
-    aiStrategySelection = excludedSelection && excludedSelection.archetypeIndex != null ? chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, excludedSelection.archetypeIndex, chosenLoadout.key) : chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), null, chosenLoadout.key)
-    aiStrategySelection.loadoutKey = chosenLoadout.key
-    aiStrategySelection.loadoutSummary = chosenLoadout.summary
-    aiCurrentStrategy = createAIRuntimeStrategyForLoadout(chosenLoadout, AI_STRATEGY_LIBRARY[aiStrategySelection.index], observedLoadoutSummary)
-    aiDesiredLoadoutTowers = chosenLoadout.towers.slice(0)
-    aiDesiredLoadoutBoosts = chosenLoadout.boosts.slice(0)
-    aiMatchTelemetry = createAIMatchTelemetry(aiStrategySelection.index, aiStrategySelection.features, observedLoadoutSummary)
-    aiMatchTelemetry.aiLoadoutKey = chosenLoadout.key
-    aiMatchTelemetry.aiLoadoutSummary = chosenLoadout.summary
     var loadoutDecisionSample = chosenLoadout.decisionSample || scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.loadout, {
         id: chosenLoadout.key,
         type: chosenLoadout.summary.towerTypes.join(","),
@@ -1603,6 +1595,15 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
         countScale: 5,
     }, null, buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null))
     recordAIDecisionTraceSample(loadoutDecisionSample, 0)
+    aiStrategySelection = excludedSelection && excludedSelection.archetypeIndex != null ? chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, excludedSelection.archetypeIndex, chosenLoadout.key) : chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), null, chosenLoadout.key)
+    aiStrategySelection.loadoutKey = chosenLoadout.key
+    aiStrategySelection.loadoutSummary = chosenLoadout.summary
+    aiCurrentStrategy = createAIRuntimeStrategyForLoadout(chosenLoadout, AI_STRATEGY_LIBRARY[aiStrategySelection.index], observedLoadoutSummary)
+    aiDesiredLoadoutTowers = chosenLoadout.towers.slice(0)
+    aiDesiredLoadoutBoosts = chosenLoadout.boosts.slice(0)
+    aiMatchTelemetry = createAIMatchTelemetry(aiStrategySelection.index, aiStrategySelection.features, observedLoadoutSummary)
+    aiMatchTelemetry.aiLoadoutKey = chosenLoadout.key
+    aiMatchTelemetry.aiLoadoutSummary = chosenLoadout.summary
     recordAIDecisionTraceSample(aiStrategySelection.decisionSample, 0)
     aiProfile.loadoutPlanReady = true
 }
@@ -2192,7 +2193,7 @@ function drawAITrainingScreen() {
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
-        "Model: Temporary ~19k Neural Controller",
+        "Model: Temporary ~24k Recurrent Actor-Critic",
         "Publishing: " + publishingLabel,
         (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,

@@ -1,4 +1,5 @@
 name: Distributed AI Training
+run-name: ${{ inputs.continuous && format('Continuous AI training for {0}', inputs.expected_sha) || 'Manual AI training' }}
 
 on:
   workflow_dispatch:
@@ -29,12 +30,16 @@ on:
         required: true
         default: "64"
       continuous:
-        description: Automatically promote passing candidates and queue the next run
+        description: Automatically promote passing candidates in a watchdog-coordinated series
         required: true
         type: boolean
         default: false
+      expected_sha:
+        description: Exact current main commit required for continuous training
+        required: false
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -56,6 +61,7 @@ jobs:
       minimum_score: ${{ steps.config.outputs.minimum_score }}
       minimum_games: ${{ steps.config.outputs.minimum_games }}
       continuous: ${{ steps.config.outputs.continuous }}
+      expected_sha: ${{ steps.config.outputs.expected_sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -74,6 +80,8 @@ jobs:
           MINIMUM_SCORE: ${{ inputs.minimum_score }}
           MINIMUM_GAMES: ${{ inputs.minimum_games }}
           CONTINUOUS: ${{ inputs.continuous }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EVENT_SHA: ${{ github.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
@@ -96,6 +104,7 @@ jobs:
           const minimumGames = integer("MINIMUM_GAMES", 1)
           const minimumScore = Number(process.env.MINIMUM_SCORE)
           const continuous = process.env.CONTINUOUS === "true"
+          const expectedSha = process.env.EXPECTED_SHA || ""
           let seed
           if((process.env.BASE_SEED || "") === "") {
               seed = integer("RUN_NUMBER", 1, 42934) * 100032
@@ -112,6 +121,9 @@ jobs:
           if(continuous && (minimumScore < 0.58 || minimumGames < 160)) throw new Error("Continuous promotion requires at least a 0.58 score and 160 balanced games")
           if(continuous && (process.env.BASE_SEED || "") !== "") throw new Error("Continuous training allocates its own seed block; BASE_SEED must be blank")
           if(continuous && (process.env.REF_TYPE !== "branch" || process.env.REF_NAME !== process.env.DEFAULT_BRANCH)) throw new Error("Continuous training must run from the default branch")
+          if(continuous && !/^[0-9a-f]{40}$/.test(expectedSha)) throw new Error("Continuous training requires expected_sha as a full lowercase commit SHA")
+          if(continuous && expectedSha !== process.env.EVENT_SHA) throw new Error("Continuous training checkout does not match expected_sha")
+          if(!continuous && expectedSha !== "") throw new Error("expected_sha is reserved for continuous training")
 
           const outputs = {
               matrix: JSON.stringify({ shard: Array.from({ length: workers }, (_, index) => index) }),
@@ -122,9 +134,28 @@ jobs:
               minimum_score: minimumScore,
               minimum_games: minimumGames,
               continuous,
+              expected_sha: expectedSha,
           }
           for(const [name, value] of Object.entries(outputs)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`)
           NODE
+      - name: Require current main and successful exact-SHA CI
+        if: ${{ steps.config.outputs.continuous == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SHA: ${{ steps.config.outputs.expected_sha }}
+        run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          if [ "$current_sha" != "$EXPECTED_SHA" ] || [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            echo "Continuous training must use the exact current main SHA $EXPECTED_SHA." >&2
+            exit 1
+          fi
+          ci_success=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$EXPECTED_SHA" -f status=success -f per_page=1 --jq '.total_count')
+          if [ "$ci_success" -lt 1 ]; then
+            echo "No successful CI run exists for exact SHA $EXPECTED_SHA." >&2
+            exit 1
+          fi
       - name: Refuse an unresolved promotion transaction
         if: ${{ steps.config.outputs.continuous == 'true' }}
         env:
@@ -208,7 +239,7 @@ jobs:
           pattern: ai-train-*
           path: ${{ runner.temp }}/train-results
           merge-multiple: true
-      - name: Select deterministic candidate
+      - name: Aggregate deterministic candidate
         run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train-results" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --output "$RUNNER_TEMP/candidate/candidate.json" --report "$RUNNER_TEMP/candidate/candidate.selection.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -532,28 +563,3 @@ jobs:
           elif [ -n "$PROMOTION_BRANCH" ]; then
             echo "Retaining $PROMOTION_BRANCH for hosted/audit reconciliation." >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  continue:
-    needs: [prepare, report, promote, publish-hosted, finalize-promotion]
-    if: ${{ always() && needs.prepare.result == 'success' && needs.report.result == 'success' && needs.prepare.outputs.continuous == 'true' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' && (needs.promote.result == 'skipped' || needs.promote.result == 'success' && (needs.promote.outputs.changed != 'true' || needs.publish-hosted.result == 'success' && needs.finalize-promotion.result == 'success')) }}
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Queue next continuous generation
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          WORKERS: ${{ needs.prepare.outputs.workers }}
-          TRAINING_MATCHES: ${{ needs.prepare.outputs.training_matches }}
-          EVALUATION_MATCHES: ${{ needs.prepare.outputs.evaluation_matches }}
-          MINIMUM_SCORE: ${{ needs.prepare.outputs.minimum_score }}
-          MINIMUM_GAMES: ${{ needs.prepare.outputs.minimum_games }}
-        run: |
-          gh workflow run ai-training.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
-            -f workers="$WORKERS" \
-            -f training_matches="$TRAINING_MATCHES" \
-            -f evaluation_matches="$EVALUATION_MATCHES" \
-            -f minimum_score="$MINIMUM_SCORE" \
-            -f minimum_games="$MINIMUM_GAMES" \
-            -f continuous=true

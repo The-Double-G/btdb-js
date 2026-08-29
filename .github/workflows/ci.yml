@@ -15,6 +15,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
+      - name: Lint GitHub Actions workflows
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        with:
+          version: 1.7.12
+          files: .github/workflows/*.yml
+          pyflakes: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
@@ -23,6 +29,7 @@ jobs:
       - run: npm run check
       - run: npm run validate
       - run: npm run test:distributed
+      - run: npm run test:status
       - run: npm run audit:public
       - run: php -v
       - run: npm run test:endpoint

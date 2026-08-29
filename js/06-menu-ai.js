@@ -29,6 +29,7 @@ var aiProfile = {
     explorationEnabled: false,
     pendingTacticalDecision: null,
     tacticalTrace: [],
+    decisionMemory: [],
 }
 
 var aiDesiredLoadoutTowers = ["000farm.png", "000wizard.png", "000bomb.png"]
@@ -37,9 +38,13 @@ var AI_BOOST_IMAGES = ["towerboost.png", "bloonboost.png", "lightningboost.png",
 var AI_IS_LOCAL_RUNTIME = typeof window != "undefined" && (window.location.protocol == "file:" || window.location.hostname == "" || window.location.hostname == "localhost" || window.location.hostname == "127.0.0.1")
 var AI_CROSS_MATCH_LEARNING_ENABLED = !AI_IS_LOCAL_RUNTIME
 var AI_LEARNING_ENDPOINT = "ai-learning.php?protocol=1"
+var AI_TRAINING_STATUS_ENDPOINT = "https://raw.githubusercontent.com/The-Double-G/btdb-js/ai-status/ai-training-status.json"
+var AI_TRAINING_STATUS_MAX_BYTES = 32768
+var AI_TRAINING_STATUS_REFRESH_INTERVAL = 60000
 var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV1"
 var AI_MAX_PENDING_CONTRIBUTIONS = 8
 var AI_MAX_CONTRIBUTION_OBSERVATIONS = 320
+var AI_MAX_PUBLIC_CONTRIBUTION_BYTES = 131072
 var AI_FEATURE_KEYS = ["farm", "eco", "rush", "heavy", "late", "support", "camo", "greed", "preEco", "prePressure", "preHeavy", "preCamo", "preSupport", "preLate", "preEcoBoost", "preDefenseBoost", "preOffenseBoost"]
 var AI_FEATURE_LABELS = {
     farm: "Farm",
@@ -69,14 +74,16 @@ var AI_ACTION_PRIORITY = {
 }
 var AI_POLICY_HIDDEN_SIZE_1 = 64
 var AI_POLICY_HIDDEN_SIZE_2 = 32
-var AI_DECISION_STATE_INPUT_SIZE = 48
-var AI_DECISION_CANDIDATE_INPUT_SIZE = 32
+var AI_DECISION_STATE_INPUT_SIZE = 72
+var AI_DECISION_CANDIDATE_INPUT_SIZE = 40
 var AI_DECISION_STATE_HIDDEN_SIZE = 96
 var AI_DECISION_CANDIDATE_HIDDEN_SIZE = 48
 var AI_DECISION_EMBEDDING_SIZE = 48
+var AI_DECISION_MEMORY_SIZE = 16
+var AI_DECISION_SURVIVAL_CLASS_COUNT = 4
 var AI_DECISION_FAMILY_COUNT = 8
 var AI_DECISION_BOOTSTRAP_SAMPLES = 5000
-var AI_MAX_PUBLIC_DECISION_SAMPLES = 32
+var AI_MAX_PUBLIC_DECISION_SAMPLES = 12
 var AI_MAX_DECISION_SAMPLE_AGE = 1000000
 var AI_DECISION_FAMILY = {
     loadout: 0,
@@ -89,8 +96,8 @@ var AI_DECISION_FAMILY = {
     boost: 7,
 }
 var AI_POLICY_PARAMETER_LIMIT = 4
-var AI_LEARNING_SCHEMA_VERSION = 9
-var AI_MODEL_FAMILY = "shared-neural-controller-v1"
+var AI_LEARNING_SCHEMA_VERSION = 10
+var AI_MODEL_FAMILY = "shared-recurrent-actor-critic-v2"
 var aiDecisionStateCache = null
 var aiPersistenceState = {
     backend: AI_CROSS_MATCH_LEARNING_ENABLED ? "php backend shared" : "session only",
@@ -113,6 +120,13 @@ var aiPersistenceState = {
     lastContributionAt: 0,
     contributionEpoch: 1,
 }
+var aiTrainerStatusState = {
+    status: null,
+    loadInFlight: false,
+    lastLoadedAt: 0,
+    lastError: "",
+}
+var aiTrainerStatusRefreshPromise = null
 var aiTowerDpsCache = {}
 var aiLearningRefreshPromise = null
 var aiLearningRefreshForceQueued = false
@@ -754,6 +768,8 @@ function resetAIProfile() {
     aiProfile.explorationEnabled = false
     aiProfile.pendingTacticalDecision = null
     aiProfile.tacticalTrace = []
+    aiProfile.decisionMemory = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
+    aiDecisionStateCache = null
     aiTickState.lastLogicAt = gameNow()
     aiTickState.lastCursorAt = gameNow()
 }
@@ -814,7 +830,7 @@ function startVsAIGameSetup(side) {
 
 function isFrontMenuButtonDisabled(button) {
     if(button.id == "ai-refresh") {
-        return AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.loadInFlight
+        return AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.loadInFlight || aiTrainerStatusState.loadInFlight
     }
     return false
 }
@@ -1155,29 +1171,11 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
                 continue
             }
         }
-        var heuristicScore = getAILoadoutCounterHeuristicBonus(loadout.summary, observedLoadoutSummary)
-        heuristicScore += getAILoadoutCounterLearningBonus(loadout.key, observedLoadoutSummary)
-        heuristicScore += getAILoadoutPerformanceBonus(loadout.key)
-        heuristicScore += getAILoadoutExplorationBonus(loadout.key)
-        heuristicScore += aiRandomWeight(0.035) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.loadout)
-        scoredLoadouts.push({ loadout: loadout, heuristicScore: heuristicScore })
+        scoredLoadouts.push({ loadout: loadout })
     }
-    var loadoutPolicy = getAIPolicyForDecision()
-    var loadoutBootstrap = getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.loadout, loadoutPolicy)
-    var loadoutSeed = observedLoadoutSummary && observedLoadoutSummary.signature ? observedLoadoutSummary.signature : "unobserved"
-    loadoutSeed += "|" + loadoutPolicy.decision.trainingSamples[AI_DECISION_FAMILY.loadout]
-    for(var shortlistIndex = 0; shortlistIndex < scoredLoadouts.length; shortlistIndex++) {
-        var shortlistEntry = scoredLoadouts[shortlistIndex]
-        var stablePriority = getAIStableStringHash(loadoutSeed + "|" + shortlistEntry.loadout.key) / 4294967295 * 2 - 1
-        shortlistEntry.shortlistPriority = Math.tanh(shortlistEntry.heuristicScore / 0.75) * loadoutBootstrap + stablePriority * (1 - loadoutBootstrap)
-    }
-    scoredLoadouts.sort(function(a, b) {
-        if(b.shortlistPriority != a.shortlistPriority) return b.shortlistPriority - a.shortlistPriority
-        return a.loadout.key < b.loadout.key ? -1 : 1
-    })
     var bestEntry = null
     var stateFeatures = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null)
-    var candidateLimit = Math.min(128, scoredLoadouts.length)
+    var candidateLimit = scoredLoadouts.length
     for(var candidateIndex = 0; candidateIndex < candidateLimit; candidateIndex++) {
         var entry = scoredLoadouts[candidateIndex]
         var summary = entry.loadout.summary
@@ -1186,10 +1184,6 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
             type: summary.towerTypes.join(","),
             role: summary.boostImages.join(","),
             actionKey: "loadout|" + entry.loadout.key,
-            heuristic: entry.heuristicScore,
-            heuristicScale: 0.75,
-            effect: summary.eco + summary.pressure + summary.heavy + summary.late,
-            effectScale: 4,
             index: candidateIndex,
             maxIndex: Math.max(1, candidateLimit - 1),
             count: summary.filledTowerSlots + summary.filledBoostSlots,
@@ -1433,6 +1427,8 @@ function createDefaultAIDecisionPolicy() {
         stateHiddenSize: AI_DECISION_STATE_HIDDEN_SIZE,
         candidateHiddenSize: AI_DECISION_CANDIDATE_HIDDEN_SIZE,
         embeddingSize: AI_DECISION_EMBEDDING_SIZE,
+        memorySize: AI_DECISION_MEMORY_SIZE,
+        survivalClassCount: AI_DECISION_SURVIVAL_CLASS_COUNT,
         trainingSamples: aiCreateVector(AI_DECISION_FAMILY_COUNT, 0),
         WState1: aiCreateDeterministicMatrix(AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE, 0.08, 11),
         bState1: aiCreateVector(AI_DECISION_STATE_HIDDEN_SIZE, 0),
@@ -1442,6 +1438,14 @@ function createDefaultAIDecisionPolicy() {
         bCandidate1: aiCreateVector(AI_DECISION_CANDIDATE_HIDDEN_SIZE, 0),
         WCandidate2: aiCreateDeterministicMatrix(AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE, 0.07, 53),
         bCandidate2: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
+        WStateToMemory: aiCreateDeterministicMatrix(AI_DECISION_MEMORY_SIZE, AI_DECISION_EMBEDDING_SIZE, 0.05, 67),
+        WMemoryToMemory: aiCreateDeterministicMatrix(AI_DECISION_MEMORY_SIZE, AI_DECISION_MEMORY_SIZE, 0.04, 79),
+        bMemory: aiCreateVector(AI_DECISION_MEMORY_SIZE, 0),
+        WMemoryToState: aiCreateMatrix(AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE, 0),
+        WValue: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
+        bValue: 0,
+        WSurvival: aiCreateMatrix(AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE, 0),
+        bSurvival: aiCreateVector(AI_DECISION_SURVIVAL_CLASS_COUNT, 0),
         familyBias: aiCreateVector(AI_DECISION_FAMILY_COUNT, 0),
     }
 }
@@ -1481,6 +1485,8 @@ function cloneAIPolicy(policy) {
             stateHiddenSize: policy.decision.stateHiddenSize,
             candidateHiddenSize: policy.decision.candidateHiddenSize,
             embeddingSize: policy.decision.embeddingSize,
+            memorySize: policy.decision.memorySize,
+            survivalClassCount: policy.decision.survivalClassCount,
             trainingSamples: policy.decision.trainingSamples.slice(0),
             WState1: cloneAIMatrix(policy.decision.WState1),
             bState1: policy.decision.bState1.slice(0),
@@ -1490,6 +1496,14 @@ function cloneAIPolicy(policy) {
             bCandidate1: policy.decision.bCandidate1.slice(0),
             WCandidate2: cloneAIMatrix(policy.decision.WCandidate2),
             bCandidate2: policy.decision.bCandidate2.slice(0),
+            WStateToMemory: cloneAIMatrix(policy.decision.WStateToMemory),
+            WMemoryToMemory: cloneAIMatrix(policy.decision.WMemoryToMemory),
+            bMemory: policy.decision.bMemory.slice(0),
+            WMemoryToState: cloneAIMatrix(policy.decision.WMemoryToState),
+            WValue: policy.decision.WValue.slice(0),
+            bValue: policy.decision.bValue,
+            WSurvival: cloneAIMatrix(policy.decision.WSurvival),
+            bSurvival: policy.decision.bSurvival.slice(0),
             familyBias: policy.decision.familyBias.slice(0),
         },
     }
@@ -1543,10 +1557,10 @@ function isValidAIPolicy(policy) {
         return false
     }
     var decision = policy.decision
-    if(decision.stateInputSize != AI_DECISION_STATE_INPUT_SIZE || decision.candidateInputSize != AI_DECISION_CANDIDATE_INPUT_SIZE || decision.stateHiddenSize != AI_DECISION_STATE_HIDDEN_SIZE || decision.candidateHiddenSize != AI_DECISION_CANDIDATE_HIDDEN_SIZE || decision.embeddingSize != AI_DECISION_EMBEDDING_SIZE) {
+    if(decision.stateInputSize != AI_DECISION_STATE_INPUT_SIZE || decision.candidateInputSize != AI_DECISION_CANDIDATE_INPUT_SIZE || decision.stateHiddenSize != AI_DECISION_STATE_HIDDEN_SIZE || decision.candidateHiddenSize != AI_DECISION_CANDIDATE_HIDDEN_SIZE || decision.embeddingSize != AI_DECISION_EMBEDDING_SIZE || decision.memorySize != AI_DECISION_MEMORY_SIZE || decision.survivalClassCount != AI_DECISION_SURVIVAL_CLASS_COUNT) {
         return false
     }
-    return isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, AI_DECISION_CANDIDATE_INPUT_SIZE) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
+    return isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, AI_DECISION_CANDIDATE_INPUT_SIZE) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WStateToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WMemoryToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.bMemory, AI_DECISION_MEMORY_SIZE) && isValidAIMatrix(decision.WMemoryToState, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.WValue, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bValue) && Math.abs(decision.bValue) <= AI_POLICY_PARAMETER_LIMIT && isValidAIMatrix(decision.WSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.bSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
 }
 
 function getAIPolicyParameterCount(policy) {
@@ -1555,7 +1569,7 @@ function getAIPolicyParameterCount(policy) {
     }
     var strategy = policy.strategy
     var decision = policy.decision
-    return strategy.W1.length * strategy.W1[0].length + strategy.b1.length + strategy.W2.length * strategy.W2[0].length + strategy.b2.length + strategy.W3.length * strategy.W3[0].length + strategy.b3.length + decision.WState1.length * decision.WState1[0].length + decision.bState1.length + decision.WState2.length * decision.WState2[0].length + decision.bState2.length + decision.WCandidate1.length * decision.WCandidate1[0].length + decision.bCandidate1.length + decision.WCandidate2.length * decision.WCandidate2[0].length + decision.bCandidate2.length + decision.familyBias.length
+    return strategy.W1.length * strategy.W1[0].length + strategy.b1.length + strategy.W2.length * strategy.W2[0].length + strategy.b2.length + strategy.W3.length * strategy.W3[0].length + strategy.b3.length + decision.WState1.length * decision.WState1[0].length + decision.bState1.length + decision.WState2.length * decision.WState2[0].length + decision.bState2.length + decision.WCandidate1.length * decision.WCandidate1[0].length + decision.bCandidate1.length + decision.WCandidate2.length * decision.WCandidate2[0].length + decision.bCandidate2.length + decision.WStateToMemory.length * decision.WStateToMemory[0].length + decision.WMemoryToMemory.length * decision.WMemoryToMemory[0].length + decision.bMemory.length + decision.WMemoryToState.length * decision.WMemoryToState[0].length + decision.WValue.length + 1 + decision.WSurvival.length * decision.WSurvival[0].length + decision.bSurvival.length + decision.familyBias.length
 }
 
 function createDefaultPolicyOutputBias() {
@@ -1566,7 +1580,41 @@ function createDefaultPolicyOutputBias() {
     return outputBias
 }
 
+function isValidAISchema9Decision(decision) {
+    return decision && decision.stateInputSize == 48 && decision.candidateInputSize == 32 && decision.stateHiddenSize == AI_DECISION_STATE_HIDDEN_SIZE && decision.candidateHiddenSize == AI_DECISION_CANDIDATE_HIDDEN_SIZE && decision.embeddingSize == AI_DECISION_EMBEDDING_SIZE && isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, 48) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, 32) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
+}
+
+function isValidAISchema9Policy(policy) {
+    if(!policy || policy.formatVersion != 2 || !policy.strategy || !isValidAISchema9Decision(policy.decision)) {
+        return false
+    }
+    var strategy = policy.strategy
+    return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
+}
+
+function migrateAISchema9Decision(oldDecision) {
+    var decision = createDefaultAIDecisionPolicy()
+    decision.trainingSamples = oldDecision.trainingSamples.slice(0)
+    decision.bState1 = oldDecision.bState1.slice(0)
+    decision.WState2 = cloneAIMatrix(oldDecision.WState2)
+    decision.bState2 = oldDecision.bState2.slice(0)
+    decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
+    decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
+    decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
+    decision.familyBias = oldDecision.familyBias.slice(0)
+    for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) {
+        decision.WState1[stateRow] = oldDecision.WState1[stateRow].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 48, 0))
+    }
+    for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
+        decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 32, 0))
+    }
+    return decision
+}
+
 function migrateAIPolicy(candidatePolicy) {
+    if(isValidAIPolicy(candidatePolicy)) {
+        return cloneAIPolicy(candidatePolicy)
+    }
     var outputBias = createDefaultPolicyOutputBias()
     if(candidatePolicy && candidatePolicy.strategy && Array.isArray(candidatePolicy.strategy.b3) && candidatePolicy.strategy.b3.length == AI_STRATEGY_LIBRARY.length) {
         outputBias = candidatePolicy.strategy.b3.slice(0)
@@ -1577,6 +1625,22 @@ function migrateAIPolicy(candidatePolicy) {
     }
 
     var migrated = createDefaultAIPolicy(outputBias)
+    if(isValidAISchema9Policy(candidatePolicy)) {
+        migrated.strategyLearningRate = candidatePolicy.strategyLearningRate
+        migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
+        migrated.strategy = {
+            hiddenSize1: candidatePolicy.strategy.hiddenSize1,
+            hiddenSize2: candidatePolicy.strategy.hiddenSize2,
+            W1: cloneAIMatrix(candidatePolicy.strategy.W1),
+            b1: candidatePolicy.strategy.b1.slice(0),
+            W2: cloneAIMatrix(candidatePolicy.strategy.W2),
+            b2: candidatePolicy.strategy.b2.slice(0),
+            W3: cloneAIMatrix(candidatePolicy.strategy.W3),
+            b3: candidatePolicy.strategy.b3.slice(0),
+        }
+        migrated.decision = migrateAISchema9Decision(candidatePolicy.decision)
+        return migrated
+    }
     var oldStrategy = candidatePolicy && candidatePolicy.strategy ? candidatePolicy.strategy : candidatePolicy
     if(oldStrategy && isValidAIMatrix(oldStrategy.W1, 12, AI_FEATURE_KEYS.length) && isFiniteAIVector(oldStrategy.b1, 12) && isValidAIMatrix(oldStrategy.W2, 8, 12) && isFiniteAIVector(oldStrategy.b2, 8) && isValidAIMatrix(oldStrategy.W3, AI_STRATEGY_LIBRARY.length, 8) && isFiniteAIVector(oldStrategy.b3, AI_STRATEGY_LIBRARY.length)) {
         var strategy = migrated.strategy
@@ -1615,6 +1679,21 @@ function migrateAIPolicy(candidatePolicy) {
         migrated.strategyLearningRate = Number(candidatePolicy.strategyLearningRate || candidatePolicy.learningRate) || migrated.strategyLearningRate
     }
     return migrated
+}
+
+function migrateAIModelPolicyBundle(candidate) {
+    var candidatePolicy = migrateAIPolicy(candidate.policy)
+    var championPolicy = migrateAIPolicy(candidate.championPolicy || candidate.policy)
+    var history = Array.isArray(candidate.populationPolicies) ? candidate.populationPolicies.slice(-2) : []
+    var populationPolicies = history.map(migrateAIPolicy)
+    if(!isValidAIPolicy(candidatePolicy) || !isValidAIPolicy(championPolicy) || populationPolicies.some(function(policy) { return isValidAIPolicy(policy) == false })) {
+        return null
+    }
+    return {
+        policy: candidatePolicy,
+        championPolicy: championPolicy,
+        populationPolicies: populationPolicies,
+    }
 }
 
 function createDefaultAILearning() {
@@ -1728,22 +1807,13 @@ function normalizeAILearningData(candidate) {
     var preservedTotalSyntheticEpisodes = Math.max(0, Math.floor(Number(candidate.totalSyntheticEpisodes) || 0))
     var preservedTotalPolicySamples = Math.max(0, Math.floor(Number(candidate.totalPolicySamples) || 0))
     var preservedTotalLoadoutSamples = Math.max(0, Math.floor(Number(candidate.totalLoadoutSamples) || 0))
-    if(isValidAIPolicy(candidate.policy) == false) {
-        candidate.policy = migrateAIPolicy(candidate.policy)
+    var migratedPolicies = migrateAIModelPolicyBundle(candidate)
+    if(!migratedPolicies) {
+        return createDefaultAILearning()
     }
-    if(isValidAIPolicy(candidate.championPolicy) == false) {
-        candidate.championPolicy = candidate.championPolicy ? migrateAIPolicy(candidate.championPolicy) : cloneAIPolicy(candidate.policy)
-    }
-    if(Array.isArray(candidate.populationPolicies) == false) {
-        candidate.populationPolicies = []
-    }
-    candidate.populationPolicies = candidate.populationPolicies.map(function(policy) {
-        return isValidAIPolicy(policy) ? policy : migrateAIPolicy(policy)
-    }).filter(function(policy) {
-        return isValidAIPolicy(policy)
-    }).slice(-2).map(function(policy) {
-        return cloneAIPolicy(policy)
-    })
+    candidate.policy = migratedPolicies.policy
+    candidate.championPolicy = migratedPolicies.championPolicy
+    candidate.populationPolicies = migratedPolicies.populationPolicies
 
     var totalGames = 0
     var totalSyntheticEpisodes = 0
@@ -2061,6 +2131,12 @@ function createAIContributionId() {
         result += bytes[byteIndex].toString(16).padStart(2, "0")
     }
     return result
+}
+
+function getAIUTF8ByteLength(text) {
+    text = String(text)
+    if(typeof TextEncoder == "function") return new TextEncoder().encode(text).byteLength
+    return unescape(encodeURIComponent(text)).length
 }
 
 function requestAIPublicContributionToken() {
@@ -2429,6 +2505,64 @@ function getAIDecisionBootstrapWeight(familyIndex, policyOverride) {
     return 1 - clamp(samples / AI_DECISION_BOOTSTRAP_SAMPLES, 0, 1)
 }
 
+function summarizeAIDecisionEntities(side) {
+    var towerCount = 0
+    var towerTierTotal = 0
+    var towerTierMaximum = 0
+    var towerCostTotal = 0
+    var towerXTotal = 0
+    var towerYTotal = 0
+    if(typeof towers != "undefined" && Array.isArray(towers)) {
+        for(var towerIndex = 0; towerIndex < towers.length; towerIndex++) {
+            var tower = towers[towerIndex]
+            if(!tower || tower.playerSide != side) continue
+            var tierTotal = Math.max(0, Number(tower.path1Upgrades) || 0) + Math.max(0, Number(tower.path2Upgrades) || 0) + Math.max(0, Number(tower.path3Upgrades) || 0)
+            towerCount++
+            towerTierTotal += tierTotal
+            towerTierMaximum = Math.max(towerTierMaximum, tierTotal)
+            towerCostTotal += Math.max(0, Number(tower.totalCost) || 0)
+            towerXTotal += Math.max(0, Number(tower.x) || 0)
+            towerYTotal += Math.max(0, Number(tower.y) || 0)
+        }
+    }
+    var bloonCount = 0
+    var bloonHealthTotal = 0
+    var bloonHealthMaximum = 0
+    var bloonPathTotal = 0
+    var bloonPathMaximum = 0
+    var boostedBloons = 0
+    if(typeof bloons != "undefined" && Array.isArray(bloons)) {
+        for(var bloonIndex = 0; bloonIndex < bloons.length; bloonIndex++) {
+            var bloon = bloons[bloonIndex]
+            if(!bloon || bloon.playerSide != side) continue
+            var health = Math.max(0, Number(bloon.health) || 0)
+            var pathPosition = Math.max(0, Number(bloon.pathPos) || 0)
+            bloonCount++
+            bloonHealthTotal += health
+            bloonHealthMaximum = Math.max(bloonHealthMaximum, health)
+            bloonPathTotal += pathPosition
+            bloonPathMaximum = Math.max(bloonPathMaximum, pathPosition)
+            if((Number(bloon.bloonBoosted) || 1) > 1) boostedBloons++
+        }
+    }
+    var width = Math.max(1, typeof canvas != "undefined" ? canvas.width : 1366)
+    var height = Math.max(1, typeof canvas != "undefined" ? canvas.height : 768)
+    return [
+        clamp(towerCount / 24, 0, 1),
+        clamp(towerTierTotal / 72, 0, 1),
+        clamp(towerTierMaximum / 15, 0, 1),
+        clamp(Math.log1p(towerCostTotal) / Math.log(100001), 0, 1),
+        clamp(towerXTotal / Math.max(1, towerCount) / width, 0, 1),
+        clamp(towerYTotal / Math.max(1, towerCount) / height, 0, 1),
+        clamp(bloonCount / 48, 0, 1),
+        clamp(Math.log1p(bloonHealthTotal) / Math.log(100001), 0, 1),
+        clamp(Math.log1p(bloonHealthMaximum) / Math.log(10001), 0, 1),
+        clamp(bloonPathTotal / Math.max(1, bloonCount) / 100, 0, 1),
+        clamp(bloonPathMaximum / 100, 0, 1),
+        clamp(boostedBloons / Math.max(1, bloonCount), 0, 1),
+    ]
+}
+
 function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeatures) {
     var features = aiCreateVector(AI_DECISION_STATE_INPUT_SIZE, 0)
     if(familyIndex >= 0 && familyIndex < AI_DECISION_FAMILY_COUNT) {
@@ -2439,11 +2573,8 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
     var enemy = typeof players != "undefined" && players[enemySide] ? players[enemySide] : {}
     var ownLives = own.lives == Infinity ? 150 : Number(own.lives) || 0
     var enemyLives = enemy.lives == Infinity ? 150 : Number(enemy.lives) || 0
-    var defenseMath = matchup && matchup.defenseMath ? matchup.defenseMath : {}
-    var offenseMath = matchup && matchup.offenseMath ? matchup.offenseMath : {}
-    var threat = matchup && matchup.playerThreat ? matchup.playerThreat : {}
-    var pressure = matchup && matchup.aiPressure ? matchup.aiPressure : {}
-    var strategy = getCurrentAIStrategy()
+    var ownPops = side == PLAYER_SIDE.left ? typeof p1TotalPopCount == "undefined" ? 0 : p1TotalPopCount : typeof p2TotalPopCount == "undefined" ? 0 : p2TotalPopCount
+    var enemyPops = enemySide == PLAYER_SIDE.left ? typeof p1TotalPopCount == "undefined" ? 0 : p1TotalPopCount : typeof p2TotalPopCount == "undefined" ? 0 : p2TotalPopCount
     var values = [
         clamp((typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : 0) / 50, 0, 1),
         clamp(Math.log1p(Math.max(0, Number(own.money) || 0)) / Math.log(30001), 0, 1),
@@ -2457,37 +2588,35 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         clamp(typeof getSideTowerCountExcluding == "function" ? getSideTowerCountExcluding(enemySide, ["farmer"]) / 16 : 0, 0, 1),
         clamp(typeof getSideTowersByType == "function" ? getSideTowersByType(side, "farm").length / 6 : 0, 0, 1),
         clamp(typeof getSideTowersByType == "function" ? getSideTowersByType(enemySide, "farm").length / 6 : 0, 0, 1),
-        clamp((Number(threat.count) || 0) / 24, 0, 1),
-        clamp((Number(threat.heavyCount) || 0) / 4, 0, 1),
-        clamp((Number(threat.score) || 0) / 60, 0, 1),
-        clamp((Number(threat.closeScore) || 0) / 40, 0, 1),
-        clamp((Number(threat.maxPathPos) || 0) / 100, 0, 1),
-        clamp((Number(pressure.count) || 0) / 24, 0, 1),
-        clamp((Number(pressure.heavyCount) || 0) / 4, 0, 1),
-        clamp((Number(pressure.score) || 0) / 60, 0, 1),
-        clamp(((Number(defenseMath.currentDps) || 0) - (Number(defenseMath.requiredDps) || 0)) / Math.max(20, (Number(defenseMath.currentDps) || 0) + (Number(defenseMath.requiredDps) || 0)), -1, 1),
-        clamp(((Number(offenseMath.requiredDps) || 0) - (Number(offenseMath.currentDps) || 0)) / Math.max(20, (Number(offenseMath.currentDps) || 0) + (Number(offenseMath.requiredDps) || 0)), -1, 1),
-        matchup && matchup.dangerHigh ? 1 : 0,
-        matchup && matchup.safeToGreed ? 1 : 0,
-        matchup && matchup.enemyVulnerable ? 1 : 0,
-        clamp(matchup && matchup.enemyLiquidity ? Number(matchup.enemyLiquidity.liquidityRatio) / 3 : 0, 0, 1),
-        clamp(strategy && Number(strategy.rushBias) || 0, 0, 1),
-        clamp(strategy && Number(strategy.rushRound) / 40 || 0, 0, 1),
-        clamp(strategy && Number(strategy.ecoFloor) / 8000 || 0, 0, 1),
-        own.autoEco ? 1 : 0,
+        clamp(Math.log1p(Math.max(0, Number(ownPops) || 0)) / Math.log(1000001), 0, 1),
+        clamp(Math.log1p(Math.max(0, Number(enemyPops) || 0)) / Math.log(1000001), 0, 1),
+        clamp(own && Array.isArray(own.bloonQueue) ? own.bloonQueue.length / 12 : 0, 0, 1),
+        clamp(enemy && Array.isArray(enemy.bloonQueue) ? enemy.bloonQueue.length / 12 : 0, 0, 1),
+        clamp(own && Number(own.selectedBloon) || 0, 0, 19) / 19,
+        clamp(enemy && Number(enemy.selectedBloon) || 0, 0, 19) / 19,
+        own && own.autoEco ? 1 : 0,
+        enemy && enemy.autoEco ? 1 : 0,
         aiProfile && aiProfile.currentAction ? 1 : 0,
+        clamp(aiProfile && aiProfile.tacticalTrace ? aiProfile.tacticalTrace.length / 128 : 0, 0, 1),
+        clamp(typeof bananas != "undefined" && Array.isArray(bananas) ? bananas.length / 24 : 0, 0, 1),
+        clamp(typeof boostCount != "undefined" && Array.isArray(boostCount) ? boostCount.length / 12 : 0, 0, 1),
+        own.autoEco ? 1 : 0,
+        ownLives <= 0 ? 1 : 0,
+        enemyLives <= 0 ? 1 : 0,
     ]
-    var supplied = Array.isArray(contextFeatures) ? contextFeatures : aiMatchTelemetry && Array.isArray(aiMatchTelemetry.selectionFeatures) ? aiMatchTelemetry.selectionFeatures : []
+    var supplied = Array.isArray(contextFeatures) ? contextFeatures : []
     for(var suppliedIndex = 0; suppliedIndex < supplied.length && values.length < AI_DECISION_STATE_INPUT_SIZE - AI_DECISION_FAMILY_COUNT; suppliedIndex++) {
         values.push(clamp(Number(supplied[suppliedIndex]) || 0, 0, 1))
     }
     for(var valueIndex = 0; valueIndex < values.length && AI_DECISION_FAMILY_COUNT + valueIndex < features.length; valueIndex++) {
         features[AI_DECISION_FAMILY_COUNT + valueIndex] = clampAIDecisionFeature(values[valueIndex])
     }
+    var entityFeatures = summarizeAIDecisionEntities(side).concat(summarizeAIDecisionEntities(enemySide))
+    for(var entityIndex = 0; entityIndex < entityFeatures.length; entityIndex++) features[48 + entityIndex] = clampAIDecisionFeature(entityFeatures[entityIndex])
     return features
 }
 
-function buildAIDecisionCandidateFeatures(familyIndex, metadata) {
+function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     metadata = metadata || {}
     var features = aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE, 0)
     if(familyIndex >= 0 && familyIndex < AI_DECISION_FAMILY_COUNT) {
@@ -2498,12 +2627,10 @@ function buildAIDecisionCandidateFeatures(familyIndex, metadata) {
     var typeHash = getAIStableStringHash(metadata.type || "")
     var roleHash = getAIStableStringHash(metadata.role || "")
     var actionHash = getAIStableStringHash(metadata.actionKey || stableId)
-    var heuristicScale = Math.max(0.001, Number(metadata.heuristicScale) || 100)
     var money = Math.max(1, Number(metadata.money) || 1)
     var values = [
-        Math.tanh((Number(metadata.heuristic) || 0) / heuristicScale),
         clamp((Number(metadata.cost) || 0) / money, 0, 2) - 1,
-        Math.tanh((Number(metadata.effect) || 0) / Math.max(0.001, Number(metadata.effectScale) || 50)),
+        clamp(Math.log1p(Math.max(0, Number(metadata.cost) || 0)) / Math.log(100001), 0, 1),
         clamp((Number(metadata.x) || 0) / Math.max(1, typeof canvas != "undefined" ? canvas.width : 1366), 0, 1),
         clamp((Number(metadata.y) || 0) / Math.max(1, typeof canvas != "undefined" ? canvas.height : 768), 0, 1),
         clamp(Number(metadata.position) || 0, 0, 1),
@@ -2519,22 +2646,57 @@ function buildAIDecisionCandidateFeatures(familyIndex, metadata) {
         clamp((Number(metadata.tier1) || 0) / 5, 0, 1),
         clamp((Number(metadata.tier2) || 0) / 5, 0, 1),
         clamp((Number(metadata.tier3) || 0) / 5, 0, 1),
-        clamp(Number(metadata.urgency) || 0, 0, 1),
-        clamp(Number(metadata.safety) || 0, -1, 1),
         ((stableHash >>> 0) & 65535) / 32767.5 - 1,
         ((stableHash >>> 16) & 65535) / 32767.5 - 1,
         ((actionHash >>> 8) & 65535) / 32767.5 - 1,
         metadata.noop ? 1 : 0,
+        metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1,
+        clamp(Math.log1p(money) / Math.log(100001), 0, 1),
+        0,
     ]
     for(var i = 0; i < values.length && AI_DECISION_FAMILY_COUNT + i < features.length; i++) {
         features[AI_DECISION_FAMILY_COUNT + i] = clampAIDecisionFeature(values[i])
     }
+    var width = Math.max(1, typeof canvas != "undefined" ? canvas.width : 1366)
+    var height = Math.max(1, typeof canvas != "undefined" ? canvas.height : 768)
+    var candidateX = Number(metadata.x)
+    var candidateY = Number(metadata.y)
+    var hasPosition = Number.isFinite(candidateX) && Number.isFinite(candidateY)
+    var nearestOwnDistance = 1
+    var nearestEnemyDistance = 1
+    var sameTypeCount = 0
+    if(typeof towers != "undefined" && Array.isArray(towers)) {
+        var enemySide = side == PLAYER_SIDE.left ? PLAYER_SIDE.right : PLAYER_SIDE.left
+        for(var towerIndex = 0; towerIndex < towers.length; towerIndex++) {
+            var tower = towers[towerIndex]
+            if(!tower) continue
+            if(tower.playerSide == side && String(tower.towerType) == String(metadata.type || "")) sameTypeCount++
+            if(!hasPosition) continue
+            var normalizedDistance = Math.sqrt(Math.pow((Number(tower.x) || 0) - candidateX, 2) + Math.pow((Number(tower.y) || 0) - candidateY, 2)) / Math.sqrt(width * width + height * height)
+            if(tower.playerSide == side) nearestOwnDistance = Math.min(nearestOwnDistance, normalizedDistance)
+            if(tower.playerSide == enemySide) nearestEnemyDistance = Math.min(nearestEnemyDistance, normalizedDistance)
+        }
+    }
+    var candidateCost = Math.max(0, Number(metadata.cost) || 0)
+    var availableMoney = Math.max(1, Number(metadata.money) || Number(typeof players != "undefined" && players[side] && players[side].money) || 1)
+    var relationshipFeatures = [
+        clamp((availableMoney - candidateCost) / availableMoney, -1, 1),
+        hasPosition ? (side == PLAYER_SIDE.left ? candidateX < width / 2 : candidateX >= width / 2) ? 1 : -1 : 0,
+        hasPosition ? 1 - clamp(nearestOwnDistance, 0, 1) : 0,
+        hasPosition ? 1 - clamp(nearestEnemyDistance, 0, 1) : 0,
+        clamp(sameTypeCount / 12, 0, 1),
+        clamp(((Number(metadata.tier1) || 0) + (Number(metadata.tier2) || 0) + (Number(metadata.tier3) || 0)) / 15, 0, 1),
+        metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1,
+        metadata.noop ? 1 : -1,
+    ]
+    for(var relationshipIndex = 0; relationshipIndex < relationshipFeatures.length; relationshipIndex++) features[32 + relationshipIndex] = clampAIDecisionFeature(relationshipFeatures[relationshipIndex])
     return features
 }
 
 function aiDecisionEncode(inputs, firstWeights, firstBias, secondWeights, secondBias) {
     var hidden = []
     var embedding = []
+    var preactivation = []
     for(var row = 0; row < firstWeights.length; row++) {
         var sum = firstBias[row]
         for(var col = 0; col < inputs.length; col++) {
@@ -2547,12 +2709,28 @@ function aiDecisionEncode(inputs, firstWeights, firstBias, secondWeights, second
         for(var hiddenIndex = 0; hiddenIndex < hidden.length; hiddenIndex++) {
             embeddingSum += secondWeights[embeddingIndex][hiddenIndex] * hidden[hiddenIndex]
         }
+        preactivation.push(embeddingSum)
         embedding.push(Math.tanh(embeddingSum))
     }
-    return { hidden: hidden, embedding: embedding }
+    return { hidden: hidden, embedding: embedding, preactivation: preactivation }
 }
 
-function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, policyOverride) {
+function getAIDecisionMemory() {
+    if(!aiProfile) return aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
+    if(!isFiniteAIVector(aiProfile.decisionMemory, AI_DECISION_MEMORY_SIZE)) {
+        aiProfile.decisionMemory = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
+    }
+    return aiProfile.decisionMemory
+}
+
+function aiSoftmax(logits) {
+    var maximum = Math.max.apply(null, logits)
+    var exponentials = logits.map(function(value) { return Math.exp(clamp(value - maximum, -40, 40)) })
+    var total = exponentials.reduce(function(sum, value) { return sum + value }, 0)
+    return exponentials.map(function(value) { return value / Math.max(1e-12, total) })
+}
+
+function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, memoryIn, policyOverride) {
     ensureAILearningLoaded()
     var policy = policyOverride || getAIPolicyForDecision()
     if(isValidAIPolicy(policy) == false || familyIndex < 0 || familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(stateFeatures) || !Array.isArray(candidateFeatures)) {
@@ -2560,17 +2738,49 @@ function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, policy
     }
     var safeState = stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE).map(clampAIDecisionFeature)
     var safeCandidate = candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE).map(clampAIDecisionFeature)
-    if(safeState.length != AI_DECISION_STATE_INPUT_SIZE || safeCandidate.length != AI_DECISION_CANDIDATE_INPUT_SIZE) {
+    var resolvedMemory = Array.isArray(memoryIn) ? memoryIn : getAIDecisionMemory()
+    var safeMemory = resolvedMemory.slice(0, AI_DECISION_MEMORY_SIZE).map(clampAIDecisionFeature)
+    if(safeState.length != AI_DECISION_STATE_INPUT_SIZE || safeCandidate.length != AI_DECISION_CANDIDATE_INPUT_SIZE || safeMemory.length != AI_DECISION_MEMORY_SIZE) {
         return null
     }
     var decision = policy.decision
     var state = null
-    if(aiDecisionStateCache && aiDecisionStateCache.features == stateFeatures && aiDecisionStateCache.policy == policy) {
+    if(aiDecisionStateCache && aiDecisionStateCache.features == stateFeatures && aiDecisionStateCache.memory == resolvedMemory && aiDecisionStateCache.policy == policy) {
         safeState = aiDecisionStateCache.safeState
+        safeMemory = aiDecisionStateCache.safeMemory
         state = aiDecisionStateCache.state
     } else {
-        state = aiDecisionEncode(safeState, decision.WState1, decision.bState1, decision.WState2, decision.bState2)
-        aiDecisionStateCache = { features: stateFeatures, policy: policy, safeState: safeState, state: state }
+        var baseState = aiDecisionEncode(safeState, decision.WState1, decision.bState1, decision.WState2, decision.bState2)
+        var memoryOut = []
+        for(var memoryIndex = 0; memoryIndex < AI_DECISION_MEMORY_SIZE; memoryIndex++) {
+            var memorySum = decision.bMemory[memoryIndex]
+            for(var stateInputIndex = 0; stateInputIndex < AI_DECISION_EMBEDDING_SIZE; stateInputIndex++) memorySum += decision.WStateToMemory[memoryIndex][stateInputIndex] * baseState.embedding[stateInputIndex]
+            for(var memoryInputIndex = 0; memoryInputIndex < AI_DECISION_MEMORY_SIZE; memoryInputIndex++) memorySum += decision.WMemoryToMemory[memoryIndex][memoryInputIndex] * safeMemory[memoryInputIndex]
+            memoryOut.push(Math.tanh(memorySum))
+        }
+        var stateEmbedding = []
+        for(var embeddingIndex = 0; embeddingIndex < AI_DECISION_EMBEDDING_SIZE; embeddingIndex++) {
+            var stateSum = baseState.preactivation[embeddingIndex]
+            for(var memoryColumn = 0; memoryColumn < AI_DECISION_MEMORY_SIZE; memoryColumn++) stateSum += decision.WMemoryToState[embeddingIndex][memoryColumn] * memoryOut[memoryColumn]
+            stateEmbedding.push(Math.tanh(stateSum))
+        }
+        var valueLogit = decision.bValue
+        for(var valueIndex = 0; valueIndex < AI_DECISION_EMBEDDING_SIZE; valueIndex++) valueLogit += decision.WValue[valueIndex] * stateEmbedding[valueIndex]
+        var survivalLogits = []
+        for(var survivalIndex = 0; survivalIndex < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalIndex++) {
+            var survivalLogit = decision.bSurvival[survivalIndex]
+            for(var survivalFeature = 0; survivalFeature < AI_DECISION_EMBEDDING_SIZE; survivalFeature++) survivalLogit += decision.WSurvival[survivalIndex][survivalFeature] * stateEmbedding[survivalFeature]
+            survivalLogits.push(survivalLogit)
+        }
+        state = {
+            hidden: baseState.hidden,
+            baseEmbedding: baseState.embedding,
+            embedding: stateEmbedding,
+            memoryOut: memoryOut,
+            value: Math.tanh(valueLogit),
+            survivalProbabilities: aiSoftmax(survivalLogits),
+        }
+        aiDecisionStateCache = { features: stateFeatures, memory: resolvedMemory, policy: policy, safeState: safeState, safeMemory: safeMemory, state: state }
     }
     var candidate = aiDecisionEncode(safeCandidate, decision.WCandidate1, decision.bCandidate1, decision.WCandidate2, decision.bCandidate2)
     var dot = 0
@@ -2584,17 +2794,24 @@ function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, policy
     var stateNorm = Math.sqrt(stateSquared + 1e-6)
     var candidateNorm = Math.sqrt(candidateSquared + 1e-6)
     var normalizedDot = dot / (stateNorm * candidateNorm)
+    var actorLogit = normalizedDot + decision.familyBias[familyIndex]
     return {
         stateFeatures: safeState,
         candidateFeatures: safeCandidate,
+        memoryIn: safeMemory,
+        memoryOut: state.memoryOut,
         stateHidden: state.hidden,
+        baseStateEmbedding: state.baseEmbedding,
         stateEmbedding: state.embedding,
         candidateHidden: candidate.hidden,
         candidateEmbedding: candidate.embedding,
         stateNorm: stateNorm,
         candidateNorm: candidateNorm,
         normalizedDot: normalizedDot,
-        score: Math.tanh(normalizedDot + decision.familyBias[familyIndex]),
+        actorLogit: actorLogit,
+        score: Math.tanh(actorLogit),
+        value: state.value,
+        survivalProbabilities: state.survivalProbabilities,
     }
 }
 
@@ -2602,84 +2819,152 @@ function scoreAIDecisionCandidate(side, familyIndex, metadata, matchup, stateFea
     metadata = metadata || {}
     var stableId = getAIStableCandidateId(familyIndex, metadata)
     var resolvedState = stateFeatures || buildAIDecisionStateFeatures(side, familyIndex, matchup, metadata.contextFeatures)
-    var candidateFeatures = buildAIDecisionCandidateFeatures(familyIndex, metadata)
-    var forward = aiDecisionForward(resolvedState, candidateFeatures, familyIndex, policyOverride)
-    var heuristic = Math.tanh((Number(metadata.heuristic) || 0) / Math.max(0.001, Number(metadata.heuristicScale) || 100))
-    return {
+    var candidateFeatures = buildAIDecisionCandidateFeatures(side, familyIndex, metadata)
+    var memoryIn = getAIDecisionMemory()
+    var forward = aiDecisionForward(resolvedState, candidateFeatures, familyIndex, memoryIn, policyOverride)
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * Math.pow(0.997, (policyOverride || getAIPolicyForDecision()).decision.trainingSamples[familyIndex] || 0)) : 0
+    var result = {
         id: stableId,
+        side: side,
         familyIndex: familyIndex,
         stateFeatures: resolvedState,
         candidateFeatures: candidateFeatures,
+        memoryIn: forward ? forward.memoryIn : memoryIn.slice(0),
+        memoryOut: forward ? forward.memoryOut : memoryIn.slice(0),
         neuralScore: forward ? forward.score : 0,
-        score: (forward ? forward.score : 0) + heuristic * getAIDecisionBootstrapWeight(familyIndex, policyOverride) * 2.5,
+        score: (forward ? forward.score : 0) + aiRandomWeight(explorationScale),
     }
+    if(!Array.isArray(resolvedState.aiCandidateBatch)) {
+        Object.defineProperty(resolvedState, "aiCandidateBatch", { value: [], configurable: true })
+    }
+    resolvedState.aiCandidateBatch.push(result)
+    return result
 }
 
 function isAIDecisionScoreBetter(candidateScore, bestScore) {
     return !bestScore || candidateScore.score > bestScore.score || candidateScore.score == bestScore.score && candidateScore.id < bestScore.id
 }
 
-function trainAIDecision(stateFeatures, candidateFeatures, familyIndex, target, policyOverride) {
-    ensureAILearningLoaded()
-    var policy = policyOverride || aiLearning.policy
-    var forward = aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, policy)
-    if(!forward || Number.isFinite(target) == false) {
-        return false
-    }
-    var decision = policy.decision
-    var prediction = forward.score
-    var error = clamp(clamp(target, -1, 1) - prediction, -1, 1)
-    var outputDelta = error * (1 - prediction * prediction)
-    var stateEmbeddingDelta = []
-    var candidateEmbeddingDelta = []
+function getAICosineEmbeddingDeltas(forward, outputDelta) {
+    var stateDeltas = []
+    var candidateDeltas = []
     for(var embeddingIndex = 0; embeddingIndex < AI_DECISION_EMBEDDING_SIZE; embeddingIndex++) {
         var stateValue = forward.stateEmbedding[embeddingIndex]
         var candidateValue = forward.candidateEmbedding[embeddingIndex]
-        var stateCosineGradient = candidateValue / (forward.stateNorm * forward.candidateNorm) - forward.normalizedDot * stateValue / (forward.stateNorm * forward.stateNorm)
-        var candidateCosineGradient = stateValue / (forward.stateNorm * forward.candidateNorm) - forward.normalizedDot * candidateValue / (forward.candidateNorm * forward.candidateNorm)
-        stateEmbeddingDelta.push(clamp(outputDelta * stateCosineGradient * (1 - stateValue * stateValue), -1, 1))
-        candidateEmbeddingDelta.push(clamp(outputDelta * candidateCosineGradient * (1 - candidateValue * candidateValue), -1, 1))
+        var stateGradient = candidateValue / (forward.stateNorm * forward.candidateNorm) - forward.normalizedDot * stateValue / (forward.stateNorm * forward.stateNorm)
+        var candidateGradient = stateValue / (forward.stateNorm * forward.candidateNorm) - forward.normalizedDot * candidateValue / (forward.candidateNorm * forward.candidateNorm)
+        stateDeltas.push(clamp(outputDelta * stateGradient * (1 - stateValue * stateValue), -1, 1))
+        candidateDeltas.push(clamp(outputDelta * candidateGradient * (1 - candidateValue * candidateValue), -1, 1))
+    }
+    return { state: stateDeltas, candidate: candidateDeltas }
+}
+
+function trainAIDecision(sample, terminalReward, survivalClass, policyOverride) {
+    ensureAILearningLoaded()
+    var policy = policyOverride || aiLearning.policy
+    if(!sample || !Array.isArray(sample.stateFeatures) || !Array.isArray(sample.chosenCandidateFeatures) || !Array.isArray(sample.rejectedCandidateFeatures) || !Array.isArray(sample.memoryIn) || !Number.isInteger(sample.familyIndex) || Number.isFinite(terminalReward) == false) {
+        return false
+    }
+    var familyIndex = sample.familyIndex
+    var chosen = aiDecisionForward(sample.stateFeatures, sample.chosenCandidateFeatures, familyIndex, sample.memoryIn, policy)
+    var rejected = aiDecisionForward(sample.stateFeatures, sample.rejectedCandidateFeatures, familyIndex, sample.memoryIn, policy)
+    if(!chosen || !rejected) return false
+    var decision = policy.decision
+    var target = clamp(0.7 * (Number(sample.localReward) || 0) + terminalReward * (0.3 * Math.pow(0.985, Math.max(0, Math.floor(Number(sample.age) || 0)))), -1, 1)
+    var advantage = clamp(target - chosen.value, -1, 1)
+    var pairPrediction = Math.tanh((chosen.actorLogit - rejected.actorLogit) / 2)
+    var actorDelta = clamp((advantage - pairPrediction) * (1 - pairPrediction * pairPrediction) * 0.5, -1, 1)
+    var chosenActorDeltas = getAICosineEmbeddingDeltas(chosen, actorDelta)
+    var rejectedActorDeltas = getAICosineEmbeddingDeltas(rejected, -actorDelta)
+    var valueDelta = clamp(target - chosen.value, -1, 1) * (1 - chosen.value * chosen.value)
+    var survivalDeltas = aiCreateVector(AI_DECISION_SURVIVAL_CLASS_COUNT, 0)
+    var hasSurvivalTarget = Number.isInteger(survivalClass) && survivalClass >= 0 && survivalClass < AI_DECISION_SURVIVAL_CLASS_COUNT
+    if(hasSurvivalTarget) {
+        for(var survivalIndex = 0; survivalIndex < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalIndex++) survivalDeltas[survivalIndex] = (survivalIndex == survivalClass ? 1 : 0) - chosen.survivalProbabilities[survivalIndex]
+    }
+    var originalStateWeights = cloneAIMatrix(decision.WState2)
+    var originalCandidateWeights = cloneAIMatrix(decision.WCandidate2)
+    var originalMemoryToState = cloneAIMatrix(decision.WMemoryToState)
+    var originalStateToMemory = cloneAIMatrix(decision.WStateToMemory)
+    var originalValueWeights = decision.WValue.slice(0)
+    var originalSurvivalWeights = cloneAIMatrix(decision.WSurvival)
+    var stateEmbeddingDelta = []
+    for(var stateEmbeddingIndex = 0; stateEmbeddingIndex < AI_DECISION_EMBEDDING_SIZE; stateEmbeddingIndex++) {
+        var headActivationDelta = originalValueWeights[stateEmbeddingIndex] * valueDelta
+        if(hasSurvivalTarget) {
+            for(var survivalClassIndex = 0; survivalClassIndex < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalClassIndex++) headActivationDelta += originalSurvivalWeights[survivalClassIndex][stateEmbeddingIndex] * survivalDeltas[survivalClassIndex]
+        }
+        var stateDelta = chosenActorDeltas.state[stateEmbeddingIndex] + rejectedActorDeltas.state[stateEmbeddingIndex] + headActivationDelta * (1 - chosen.stateEmbedding[stateEmbeddingIndex] * chosen.stateEmbedding[stateEmbeddingIndex])
+        stateEmbeddingDelta.push(clamp(stateDelta, -1, 1))
+    }
+    var memoryDelta = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
+    for(var memoryIndex = 0; memoryIndex < AI_DECISION_MEMORY_SIZE; memoryIndex++) {
+        var memoryDownstream = 0
+        for(var memoryStateIndex = 0; memoryStateIndex < AI_DECISION_EMBEDDING_SIZE; memoryStateIndex++) memoryDownstream += originalMemoryToState[memoryStateIndex][memoryIndex] * stateEmbeddingDelta[memoryStateIndex]
+        memoryDelta[memoryIndex] = clamp(memoryDownstream * (1 - chosen.memoryOut[memoryIndex] * chosen.memoryOut[memoryIndex]), -1, 1)
+    }
+    var baseEmbeddingDelta = []
+    for(var baseIndex = 0; baseIndex < AI_DECISION_EMBEDDING_SIZE; baseIndex++) {
+        var baseDownstream = stateEmbeddingDelta[baseIndex]
+        for(var baseMemoryIndex = 0; baseMemoryIndex < AI_DECISION_MEMORY_SIZE; baseMemoryIndex++) baseDownstream += originalStateToMemory[baseMemoryIndex][baseIndex] * memoryDelta[baseMemoryIndex] * (1 - chosen.baseStateEmbedding[baseIndex] * chosen.baseStateEmbedding[baseIndex])
+        baseEmbeddingDelta.push(clamp(baseDownstream, -1, 1))
     }
     var stateHiddenDelta = aiCreateVector(AI_DECISION_STATE_HIDDEN_SIZE, 0)
-    var candidateHiddenDelta = aiCreateVector(AI_DECISION_CANDIDATE_HIDDEN_SIZE, 0)
     for(var stateHiddenIndex = 0; stateHiddenIndex < stateHiddenDelta.length; stateHiddenIndex++) {
         var stateDownstream = 0
-        for(var stateEmbeddingIndex = 0; stateEmbeddingIndex < AI_DECISION_EMBEDDING_SIZE; stateEmbeddingIndex++) {
-            stateDownstream += decision.WState2[stateEmbeddingIndex][stateHiddenIndex] * stateEmbeddingDelta[stateEmbeddingIndex]
-        }
-        stateHiddenDelta[stateHiddenIndex] = clamp(stateDownstream * (1 - forward.stateHidden[stateHiddenIndex] * forward.stateHidden[stateHiddenIndex]), -1, 1)
+        for(var hiddenEmbeddingIndex = 0; hiddenEmbeddingIndex < AI_DECISION_EMBEDDING_SIZE; hiddenEmbeddingIndex++) stateDownstream += originalStateWeights[hiddenEmbeddingIndex][stateHiddenIndex] * baseEmbeddingDelta[hiddenEmbeddingIndex]
+        stateHiddenDelta[stateHiddenIndex] = clamp(stateDownstream * (1 - chosen.stateHidden[stateHiddenIndex] * chosen.stateHidden[stateHiddenIndex]), -1, 1)
     }
-    for(var candidateHiddenIndex = 0; candidateHiddenIndex < candidateHiddenDelta.length; candidateHiddenIndex++) {
-        var candidateDownstream = 0
-        for(var candidateEmbeddingIndex = 0; candidateEmbeddingIndex < AI_DECISION_EMBEDDING_SIZE; candidateEmbeddingIndex++) {
-            candidateDownstream += decision.WCandidate2[candidateEmbeddingIndex][candidateHiddenIndex] * candidateEmbeddingDelta[candidateEmbeddingIndex]
+    function candidateHiddenDeltas(forward, embeddingDeltas) {
+        var deltas = aiCreateVector(AI_DECISION_CANDIDATE_HIDDEN_SIZE, 0)
+        for(var hiddenIndex = 0; hiddenIndex < deltas.length; hiddenIndex++) {
+            var downstream = 0
+            for(var candidateEmbeddingIndex = 0; candidateEmbeddingIndex < AI_DECISION_EMBEDDING_SIZE; candidateEmbeddingIndex++) downstream += originalCandidateWeights[candidateEmbeddingIndex][hiddenIndex] * embeddingDeltas[candidateEmbeddingIndex]
+            deltas[hiddenIndex] = clamp(downstream * (1 - forward.candidateHidden[hiddenIndex] * forward.candidateHidden[hiddenIndex]), -1, 1)
         }
-        candidateHiddenDelta[candidateHiddenIndex] = clamp(candidateDownstream * (1 - forward.candidateHidden[candidateHiddenIndex] * forward.candidateHidden[candidateHiddenIndex]), -1, 1)
+        return deltas
     }
+    var chosenCandidateHiddenDelta = candidateHiddenDeltas(chosen, chosenActorDeltas.candidate)
+    var rejectedCandidateHiddenDelta = candidateHiddenDeltas(rejected, rejectedActorDeltas.candidate)
     var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500)
+    for(var valueWeightIndex = 0; valueWeightIndex < AI_DECISION_EMBEDDING_SIZE; valueWeightIndex++) decision.WValue[valueWeightIndex] = clampAIPolicyParameter(decision.WValue[valueWeightIndex] + learningRate * valueDelta * chosen.stateEmbedding[valueWeightIndex])
+    decision.bValue = clampAIPolicyParameter(decision.bValue + learningRate * valueDelta)
+    if(hasSurvivalTarget) {
+        for(var survivalRow = 0; survivalRow < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalRow++) {
+            for(var survivalColumn = 0; survivalColumn < AI_DECISION_EMBEDDING_SIZE; survivalColumn++) decision.WSurvival[survivalRow][survivalColumn] = clampAIPolicyParameter(decision.WSurvival[survivalRow][survivalColumn] + learningRate * survivalDeltas[survivalRow] * chosen.stateEmbedding[survivalColumn])
+            decision.bSurvival[survivalRow] = clampAIPolicyParameter(decision.bSurvival[survivalRow] + learningRate * survivalDeltas[survivalRow])
+        }
+    }
     for(var outputIndex = 0; outputIndex < AI_DECISION_EMBEDDING_SIZE; outputIndex++) {
+        for(var memoryWeightIndex = 0; memoryWeightIndex < AI_DECISION_MEMORY_SIZE; memoryWeightIndex++) decision.WMemoryToState[outputIndex][memoryWeightIndex] = clampAIPolicyParameter(decision.WMemoryToState[outputIndex][memoryWeightIndex] + learningRate * stateEmbeddingDelta[outputIndex] * chosen.memoryOut[memoryWeightIndex])
         for(var stateHiddenWeightIndex = 0; stateHiddenWeightIndex < AI_DECISION_STATE_HIDDEN_SIZE; stateHiddenWeightIndex++) {
-            decision.WState2[outputIndex][stateHiddenWeightIndex] = clampAIPolicyParameter(decision.WState2[outputIndex][stateHiddenWeightIndex] + learningRate * stateEmbeddingDelta[outputIndex] * forward.stateHidden[stateHiddenWeightIndex])
+            decision.WState2[outputIndex][stateHiddenWeightIndex] = clampAIPolicyParameter(decision.WState2[outputIndex][stateHiddenWeightIndex] + learningRate * baseEmbeddingDelta[outputIndex] * chosen.stateHidden[stateHiddenWeightIndex])
         }
-        decision.bState2[outputIndex] = clampAIPolicyParameter(decision.bState2[outputIndex] + learningRate * stateEmbeddingDelta[outputIndex])
+        decision.bState2[outputIndex] = clampAIPolicyParameter(decision.bState2[outputIndex] + learningRate * baseEmbeddingDelta[outputIndex])
         for(var candidateHiddenWeightIndex = 0; candidateHiddenWeightIndex < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateHiddenWeightIndex++) {
-            decision.WCandidate2[outputIndex][candidateHiddenWeightIndex] = clampAIPolicyParameter(decision.WCandidate2[outputIndex][candidateHiddenWeightIndex] + learningRate * candidateEmbeddingDelta[outputIndex] * forward.candidateHidden[candidateHiddenWeightIndex])
+            var candidateSecondGradient = chosenActorDeltas.candidate[outputIndex] * chosen.candidateHidden[candidateHiddenWeightIndex] + rejectedActorDeltas.candidate[outputIndex] * rejected.candidateHidden[candidateHiddenWeightIndex]
+            decision.WCandidate2[outputIndex][candidateHiddenWeightIndex] = clampAIPolicyParameter(decision.WCandidate2[outputIndex][candidateHiddenWeightIndex] + learningRate * candidateSecondGradient)
         }
-        decision.bCandidate2[outputIndex] = clampAIPolicyParameter(decision.bCandidate2[outputIndex] + learningRate * candidateEmbeddingDelta[outputIndex])
+        decision.bCandidate2[outputIndex] = clampAIPolicyParameter(decision.bCandidate2[outputIndex] + learningRate * (chosenActorDeltas.candidate[outputIndex] + rejectedActorDeltas.candidate[outputIndex]))
+    }
+    for(var memoryRow = 0; memoryRow < AI_DECISION_MEMORY_SIZE; memoryRow++) {
+        for(var memoryStateColumn = 0; memoryStateColumn < AI_DECISION_EMBEDDING_SIZE; memoryStateColumn++) decision.WStateToMemory[memoryRow][memoryStateColumn] = clampAIPolicyParameter(decision.WStateToMemory[memoryRow][memoryStateColumn] + learningRate * memoryDelta[memoryRow] * chosen.baseStateEmbedding[memoryStateColumn])
+        for(var recurrentColumn = 0; recurrentColumn < AI_DECISION_MEMORY_SIZE; recurrentColumn++) decision.WMemoryToMemory[memoryRow][recurrentColumn] = clampAIPolicyParameter(decision.WMemoryToMemory[memoryRow][recurrentColumn] + learningRate * memoryDelta[memoryRow] * chosen.memoryIn[recurrentColumn])
+        decision.bMemory[memoryRow] = clampAIPolicyParameter(decision.bMemory[memoryRow] + learningRate * memoryDelta[memoryRow])
     }
     for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) {
         for(var stateCol = 0; stateCol < AI_DECISION_STATE_INPUT_SIZE; stateCol++) {
-            decision.WState1[stateRow][stateCol] = clampAIPolicyParameter(decision.WState1[stateRow][stateCol] + learningRate * stateHiddenDelta[stateRow] * forward.stateFeatures[stateCol])
+            decision.WState1[stateRow][stateCol] = clampAIPolicyParameter(decision.WState1[stateRow][stateCol] + learningRate * stateHiddenDelta[stateRow] * chosen.stateFeatures[stateCol])
         }
         decision.bState1[stateRow] = clampAIPolicyParameter(decision.bState1[stateRow] + learningRate * stateHiddenDelta[stateRow])
     }
     for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
         for(var candidateCol = 0; candidateCol < AI_DECISION_CANDIDATE_INPUT_SIZE; candidateCol++) {
-            decision.WCandidate1[candidateRow][candidateCol] = clampAIPolicyParameter(decision.WCandidate1[candidateRow][candidateCol] + learningRate * candidateHiddenDelta[candidateRow] * forward.candidateFeatures[candidateCol])
+            var candidateFirstGradient = chosenCandidateHiddenDelta[candidateRow] * chosen.candidateFeatures[candidateCol] + rejectedCandidateHiddenDelta[candidateRow] * rejected.candidateFeatures[candidateCol]
+            decision.WCandidate1[candidateRow][candidateCol] = clampAIPolicyParameter(decision.WCandidate1[candidateRow][candidateCol] + learningRate * candidateFirstGradient)
         }
-        decision.bCandidate1[candidateRow] = clampAIPolicyParameter(decision.bCandidate1[candidateRow] + learningRate * candidateHiddenDelta[candidateRow])
+        decision.bCandidate1[candidateRow] = clampAIPolicyParameter(decision.bCandidate1[candidateRow] + learningRate * (chosenCandidateHiddenDelta[candidateRow] + rejectedCandidateHiddenDelta[candidateRow]))
     }
-    decision.familyBias[familyIndex] = clampAIPolicyParameter(decision.familyBias[familyIndex] + learningRate * outputDelta)
     decision.trainingSamples[familyIndex]++
     aiDecisionStateCache = null
     if(!policyOverride || policyOverride == aiLearning.policy) {
@@ -2702,17 +2987,11 @@ function chooseAIStrategyFromFeaturesWithObservation(features, observedLoadoutSu
     var decisionState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.strategy, null, features)
     for(var scoreIndex = 0; scoreIndex < pass.outputs.length; scoreIndex++) {
         var strategy = AI_STRATEGY_LIBRARY[scoreIndex]
-        var heuristicScore = getStrategyLoadoutCounterHeuristicBonus(strategy, observedLoadoutSummary) + getLoadoutCounterLearningBonus(scoreIndex, observedLoadoutSummary)
-        var summary = summarizeLoadoutSelection(strategy.towers, strategy.boosts)
         var decision = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.strategy, {
             id: strategy.id,
             type: strategy.id,
             role: strategy.placementProfile,
             actionKey: "strategy|" + strategy.id,
-            heuristic: heuristicScore,
-            heuristicScale: 0.8,
-            effect: strategy.rushBias + summary.eco + summary.pressure,
-            effectScale: 3,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
         }, null, decisionState)
@@ -2768,20 +3047,12 @@ function chooseAIArchetypeFromFeatures(features, excludedStrategyIndex, loadoutK
             decisionScores.push(null)
             continue
         }
-        var heuristicScore = 0
-        if(loadoutKey && (!aiProfile || !aiProfile.policySnapshot)) {
-            heuristicScore += getAILearningScore(aiLearning.loadoutStrategyStats, getAILoadoutStrategyStatKey(loadoutKey, scoreIndex)) * 0.42
-        }
         var strategy = AI_STRATEGY_LIBRARY[scoreIndex]
         var decision = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.strategy, {
             id: strategy.id,
             type: strategy.id,
             role: strategy.placementProfile,
             actionKey: "strategy|" + strategy.id,
-            heuristic: heuristicScore,
-            heuristicScale: 0.5,
-            effect: strategy.rushBias,
-            effectScale: 1,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
         }, null, decisionState)
@@ -2890,6 +3161,7 @@ function prepareAIStrategyForMatch(observedLoadoutSummary) {
     ensureAILearningLoaded()
     ensureAILoadoutLibraryInitialized()
     var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, null)
+    recordAIDecisionTraceSample(chosenLoadout.decisionSample, 0)
     var selectionFeatures = buildAIStrategySelectionFeatures(observedLoadoutSummary)
     aiStrategySelection = chooseAIArchetypeFromFeatures(selectionFeatures, null, chosenLoadout.key)
     aiStrategySelection.loadoutKey = chosenLoadout.key
@@ -2900,7 +3172,6 @@ function prepareAIStrategyForMatch(observedLoadoutSummary) {
     aiMatchTelemetry = createAIMatchTelemetry(aiStrategySelection.index, aiStrategySelection.features, observedLoadoutSummary)
     aiMatchTelemetry.aiLoadoutKey = chosenLoadout.key
     aiMatchTelemetry.aiLoadoutSummary = chosenLoadout.summary
-    recordAIDecisionTraceSample(chosenLoadout.decisionSample, 0)
     recordAIDecisionTraceSample(aiStrategySelection.decisionSample, 0)
     aiProfile.loadoutPlanReady = true
 }
@@ -3102,15 +3373,49 @@ function appendAIDecisionTraceEntry(entry) {
     }
 }
 
+function getAIRejectedDecisionCandidate(decisionSample) {
+    var batch = decisionSample && decisionSample.stateFeatures && decisionSample.stateFeatures.aiCandidateBatch
+    var rejected = null
+    if(Array.isArray(batch)) {
+        for(var i = 0; i < batch.length; i++) {
+            if(batch[i] && batch[i] !== decisionSample && batch[i].id != decisionSample.id && isAIDecisionScoreBetter(batch[i], rejected)) rejected = batch[i]
+        }
+    }
+    if(rejected) return rejected
+    var shadowFeatures = buildAIDecisionCandidateFeatures(decisionSample.side, decisionSample.familyIndex, {
+        id: "shadow-continue",
+        type: "continue",
+        actionKey: "continue",
+        affordable: true,
+        legal: true,
+    })
+    if(JSON.stringify(shadowFeatures) == JSON.stringify(decisionSample.candidateFeatures)) return null
+    return { candidateFeatures: shadowFeatures }
+}
+
+function commitAIDecisionMemory(decisionSample) {
+    if(!aiProfile || !decisionSample || decisionSample.memoryCommitted) return false
+    decisionSample.memoryCommitted = true
+    if(!isFiniteAIVector(decisionSample.memoryOut, AI_DECISION_MEMORY_SIZE)) return false
+    aiProfile.decisionMemory = decisionSample.memoryOut.slice(0)
+    aiDecisionStateCache = null
+    return true
+}
+
 function recordAIDecisionTraceSample(decisionSample, localReward) {
     if(!aiProfile || !decisionSample || !Array.isArray(decisionSample.stateFeatures) || !Array.isArray(decisionSample.candidateFeatures)) {
         return false
     }
+    commitAIDecisionMemory(decisionSample)
+    var rejected = getAIRejectedDecisionCandidate(decisionSample)
+    if(!rejected || !Array.isArray(rejected.candidateFeatures) || !Array.isArray(decisionSample.memoryIn)) return false
     appendAIDecisionTraceEntry({
         decisionId: decisionSample.id || "",
         familyIndex: decisionSample.familyIndex,
         stateFeatures: decisionSample.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
-        candidateFeatures: decisionSample.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
+        chosenCandidateFeatures: decisionSample.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
+        rejectedCandidateFeatures: rejected.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
+        memoryIn: decisionSample.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE),
         localReward: clamp(Number(localReward) || 0, -1, 1),
         recordedAt: gameNow(),
     })
@@ -3132,13 +3437,31 @@ function recordAINoOpDecision(decisionSample) {
     return recordAIDecisionTraceSample(decisionSample, 0)
 }
 
+function getAIFactualDecisionOutcomeSnapshot(side) {
+    var enemySide = side == PLAYER_SIDE.left ? PLAYER_SIDE.right : PLAYER_SIDE.left
+    var ownPops = side == PLAYER_SIDE.left ? typeof p1TotalPopCount == "undefined" ? 0 : p1TotalPopCount : typeof p2TotalPopCount == "undefined" ? 0 : p2TotalPopCount
+    var enemyPops = enemySide == PLAYER_SIDE.left ? typeof p1TotalPopCount == "undefined" ? 0 : p1TotalPopCount : typeof p2TotalPopCount == "undefined" ? 0 : p2TotalPopCount
+    return {
+        ownLives: players[side].lives == Infinity ? 150 : Math.max(0, Number(players[side].lives) || 0),
+        enemyLives: players[enemySide].lives == Infinity ? 150 : Math.max(0, Number(players[enemySide].lives) || 0),
+        ownPops: Math.max(0, Number(ownPops) || 0),
+        enemyPops: Math.max(0, Number(enemyPops) || 0),
+    }
+}
+
+function getAIFactualDecisionLocalReward(before, after) {
+    if(!before || !after) return 0
+    var lifeOutcome = after.ownLives - before.ownLives + before.enemyLives - after.enemyLives
+    var popOutcome = after.ownPops - before.ownPops - (after.enemyPops - before.enemyPops)
+    return clamp(lifeOutcome / 30 + popOutcome / 5000, -1, 1)
+}
+
 function settleAITacticalDecision(side, matchup) {
     if(!aiProfile || !aiProfile.pendingTacticalDecision) {
         return
     }
     var decision = aiProfile.pendingTacticalDecision
-    var potentialAfter = getAITacticalPotential(side, decision.family, matchup)
-    decision.localReward = clamp((potentialAfter - decision.potentialBefore) / 0.2, -1, 1)
+    decision.localReward = getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, getAIFactualDecisionOutcomeSnapshot(side))
     decision.settledAt = gameNow()
     appendAIDecisionTraceEntry(decision)
     aiProfile.pendingTacticalDecision = null
@@ -3160,16 +3483,20 @@ function recordAITacticalDecision(side, family, actionKey, matchup, decisionSamp
     }
     settleAITacticalDecision(side, matchup)
     var familyIndex = decisionSample ? decisionSample.familyIndex : getAIDecisionFamilyForLegacyAction(family, actionKey)
-    var stateFeatures = decisionSample ? decisionSample.stateFeatures : buildAIDecisionStateFeatures(side, familyIndex, matchup)
-    var candidateFeatures = decisionSample ? decisionSample.candidateFeatures : buildAIDecisionCandidateFeatures(familyIndex, { id: actionKey, type: family, actionKey: actionKey })
+    var resolvedDecisionSample = decisionSample || scoreAIDecisionCandidate(side, familyIndex, { id: actionKey, type: family, actionKey: actionKey }, matchup)
+    commitAIDecisionMemory(resolvedDecisionSample)
+    var rejected = getAIRejectedDecisionCandidate(resolvedDecisionSample)
+    if(!rejected) return
     aiProfile.pendingTacticalDecision = {
         family: family,
         familyIndex: familyIndex,
         actionKey: actionKey,
         stateKey: getAITacticalStateKey(side, matchup),
-        stateFeatures: stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
-        candidateFeatures: candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
-        potentialBefore: getAITacticalPotential(side, family, matchup),
+        stateFeatures: resolvedDecisionSample.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
+        chosenCandidateFeatures: resolvedDecisionSample.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
+        rejectedCandidateFeatures: rejected.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
+        memoryIn: resolvedDecisionSample.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE),
+        factualOutcomeBefore: getAIFactualDecisionOutcomeSnapshot(side),
         localReward: 0,
         recordedAt: gameNow(),
     }
@@ -3184,7 +3511,7 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
     var traceLength = aiProfile.tacticalTrace.length
     for(var i = 0; i < traceLength; i++) {
         var decision = aiProfile.tacticalTrace[i]
-        if(!Number.isInteger(decision.familyIndex) || decision.familyIndex < 0 || decision.familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(decision.stateFeatures) || decision.stateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.candidateFeatures) || decision.candidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE) {
+        if(!Number.isInteger(decision.familyIndex) || decision.familyIndex < 0 || decision.familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(decision.stateFeatures) || decision.stateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.chosenCandidateFeatures) || decision.chosenCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.rejectedCandidateFeatures) || decision.rejectedCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.memoryIn) || decision.memoryIn.length != AI_DECISION_MEMORY_SIZE) {
             continue
         }
         var storedAge = Number(decision.age)
@@ -3195,10 +3522,11 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
             traceIndex: i,
             familyIndex: decision.familyIndex,
             stateFeatures: decision.stateFeatures.slice(0),
-            candidateFeatures: decision.candidateFeatures.slice(0),
+            chosenCandidateFeatures: decision.chosenCandidateFeatures.slice(0),
+            rejectedCandidateFeatures: decision.rejectedCandidateFeatures.slice(0),
+            memoryIn: decision.memoryIn.slice(0),
             localReward: localReward,
             age: age,
-            target: clamp(0.7 * localReward + terminalReward * (0.3 * Math.pow(0.985, age)), -1, 1),
         })
     }
     var maximum = maximumDecisions == null ? available.length : Math.max(0, Math.floor(maximumDecisions))
@@ -3243,8 +3571,10 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
 
 function trainAIDecisionsFromMatch(side, terminalReward) {
     var samples = collectAIDecisionSamples(side, terminalReward, AI_MAX_PUBLIC_DECISION_SAMPLES)
+    var ownLives = players[side].lives == Infinity ? 150 : Math.max(0, Number(players[side].lives) || 0)
+    var survivalClass = ownLives <= 0 ? 0 : ownLives <= 50 ? 1 : ownLives < 150 ? 2 : 3
     for(var i = 0; i < samples.length; i++) {
-        trainAIDecision(samples[i].stateFeatures, samples[i].candidateFeatures, samples[i].familyIndex, samples[i].target, aiLearning.policy)
+        trainAIDecision(samples[i], terminalReward, survivalClass, aiLearning.policy)
     }
     return samples.length
 }
@@ -3679,12 +4009,14 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
         return {
             familyIndex: sample.familyIndex,
             stateFeatures: sample.stateFeatures,
-            candidateFeatures: sample.candidateFeatures,
+            chosenCandidateFeatures: sample.chosenCandidateFeatures,
+            rejectedCandidateFeatures: sample.rejectedCandidateFeatures,
+            memoryIn: sample.memoryIn,
             localReward: sample.localReward,
             age: sample.age,
         }
     })
-    return {
+    var contribution = {
         protocolVersion: 1,
         contributionId: createAIContributionId(),
         baseRevision: Math.max(0, Math.floor(aiPersistenceState.revision)),
@@ -3699,6 +4031,9 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
         decisionSamples: decisionSamples,
         selfPlay: selfPlayActive,
     }
+    while(getAIUTF8ByteLength(JSON.stringify(contribution)) > AI_MAX_PUBLIC_CONTRIBUTION_BYTES && contribution.observations.length > 0) contribution.observations.pop()
+    while(getAIUTF8ByteLength(JSON.stringify(contribution)) > AI_MAX_PUBLIC_CONTRIBUTION_BYTES && contribution.decisionSamples.length > 0) contribution.decisionSamples.pop()
+    return getAIUTF8ByteLength(JSON.stringify(contribution)) <= AI_MAX_PUBLIC_CONTRIBUTION_BYTES ? contribution : null
 }
 
 function finalizeAIMatchLearning() {
@@ -3876,9 +4211,11 @@ function handleFrontMenuClick(x, y) {
     } else if(button.id == "ai-stats") {
         ensureAILearningLoaded()
         refreshAILearningFromBackend(true)
+        refreshAITrainerStatus(true)
         frontMenuState = "stats"
     } else if(button.id == "ai-refresh") {
         refreshAILearningFromBackend(true)
+        refreshAITrainerStatus(true)
     } else if(button.id == "ai-lab" && typeof openAITrainingDashboard == "function") {
         openAITrainingDashboard()
     } else if(button.id == "side-left") {
@@ -3916,9 +4253,262 @@ function getAIRuntimeModeLabel() {
     return AI_IS_LOCAL_RUNTIME ? "Local runtime" : "Hosted runtime"
 }
 
+function aiTrainerStatusHasExactKeys(value, keys) {
+    if(!value || typeof value != "object" || Array.isArray(value)) {
+        return false
+    }
+    var actual = Object.keys(value).sort()
+    var expected = keys.slice().sort()
+    return actual.length == expected.length && actual.every(function(key, index) { return key == expected[index] })
+}
+
+function isAITrainerStatusInteger(value, minimum) {
+    return Number.isSafeInteger(value) && value >= minimum
+}
+
+function isAITrainerStatusDigest(value) {
+    return typeof value == "string" && /^sha256:[0-9a-f]{64}$/.test(value)
+}
+
+function isAITrainerStatusTimestamp(value) {
+    return typeof value == "string" && value.length <= 32 && Number.isFinite(Date.parse(value))
+}
+
+function normalizeAITrainerStatusCounts(value, keys) {
+    if(aiTrainerStatusHasExactKeys(value, keys) == false) {
+        return null
+    }
+    var normalized = {}
+    for(var i = 0; i < keys.length; i++) {
+        if(isAITrainerStatusInteger(value[keys[i]], 0) == false || keys[i] != "total" && value[keys[i]] > value.total) {
+            return null
+        }
+        normalized[keys[i]] = value[keys[i]]
+    }
+    return normalized
+}
+
+function normalizeAITrainerStatusProjection(value) {
+    if(value === null) {
+        return null
+    }
+    if(aiTrainerStatusHasExactKeys(value, ["jobs", "workers"]) == false || aiTrainerStatusHasExactKeys(value.workers, ["training", "evaluation"]) == false) {
+        return null
+    }
+    var jobKeys = ["total", "queued", "inProgress", "completed", "succeeded", "failed", "cancelled", "skipped"]
+    var workerKeys = ["total", "queued", "inProgress", "succeeded", "failed", "cancelled", "skipped"]
+    var jobs = normalizeAITrainerStatusCounts(value.jobs, jobKeys)
+    var training = normalizeAITrainerStatusCounts(value.workers.training, workerKeys)
+    var evaluation = normalizeAITrainerStatusCounts(value.workers.evaluation, workerKeys)
+    return jobs && training && evaluation ? { jobs: jobs, workers: { training: training, evaluation: evaluation } } : null
+}
+
+function normalizeAITrainerStatusCurrent(value) {
+    var keys = ["runId", "runNumber", "runAttempt", "state", "conclusion", "headSha", "url", "createdAt", "startedAt", "updatedAt", "phase", "projection"]
+    if(aiTrainerStatusHasExactKeys(value, keys) == false
+        || isAITrainerStatusInteger(value.runId, 1) == false
+        || isAITrainerStatusInteger(value.runNumber, 1) == false
+        || isAITrainerStatusInteger(value.runAttempt, 1) == false
+        || ["requested", "in_progress", "completed"].includes(value.state) == false
+        || typeof value.headSha != "string" || /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value.headSha) == false
+        || value.url != "https://github.com/The-Double-G/btdb-js/actions/runs/" + value.runId
+        || isAITrainerStatusTimestamp(value.createdAt) == false
+        || value.startedAt !== null && isAITrainerStatusTimestamp(value.startedAt) == false
+        || isAITrainerStatusTimestamp(value.updatedAt) == false
+        || ["queued", "running", "preparing", "training", "selecting", "evaluating", "reporting", "promoting", "finalizing", "continuing", "completed"].includes(value.phase) == false) {
+        return null
+    }
+    if(value.state == "completed") {
+        if(["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure"].includes(value.conclusion) == false || value.phase != "completed") {
+            return null
+        }
+    } else if(value.conclusion !== null) {
+        return null
+    }
+    var projection = normalizeAITrainerStatusProjection(value.projection)
+    if(value.projection !== null && projection === null) {
+        return null
+    }
+    return Object.assign({}, value, { projection: projection })
+}
+
+function normalizeAITrainerStatusEvaluation(value) {
+    var keys = ["runId", "runNumber", "runAttempt", "aggregateId", "candidateCheckpointId", "baselineCheckpointId", "passed", "games", "wins", "losses", "ties", "score", "minimumScore", "minimumGames", "minimumBucketScore", "worstBucketScore", "survivalRate", "minimumSurvivalRate", "severeCollapseRate", "maximumSevereCollapseRate"]
+    if(value === null) {
+        return null
+    }
+    if(aiTrainerStatusHasExactKeys(value, keys) == false
+        || isAITrainerStatusInteger(value.runId, 1) == false
+        || isAITrainerStatusInteger(value.runNumber, 1) == false
+        || isAITrainerStatusInteger(value.runAttempt, 1) == false
+        || isAITrainerStatusDigest(value.aggregateId) == false
+        || isAITrainerStatusDigest(value.candidateCheckpointId) == false
+        || isAITrainerStatusDigest(value.baselineCheckpointId) == false
+        || typeof value.passed != "boolean"
+        || [value.games, value.wins, value.losses, value.ties].some(function(number) { return isAITrainerStatusInteger(number, 0) == false })
+        || value.games != value.wins + value.losses + value.ties
+        || Number.isFinite(value.score) == false || value.score < 0 || value.score > 1
+        || Number.isFinite(value.minimumScore) == false || value.minimumScore < 0 || value.minimumScore > 1
+        || [value.minimumBucketScore, value.worstBucketScore, value.survivalRate, value.minimumSurvivalRate, value.severeCollapseRate, value.maximumSevereCollapseRate].some(function(number) { return Number.isFinite(number) == false || number < 0 || number > 1 })
+        || isAITrainerStatusInteger(value.minimumGames, 1) == false) {
+        return null
+    }
+    return Object.assign({}, value)
+}
+
+function normalizeAITrainerStatusPromotion(value) {
+    var keys = ["runId", "runNumber", "runAttempt", "snapshotId", "promotionId", "duplicate", "revision", "modelDigest", "contributionEpoch", "championGeneration", "promotedPolicyDigest", "candidatePolicyPreserved"]
+    if(value === null) {
+        return null
+    }
+    if(aiTrainerStatusHasExactKeys(value, keys) == false
+        || isAITrainerStatusInteger(value.runId, 1) == false
+        || isAITrainerStatusInteger(value.runNumber, 1) == false
+        || isAITrainerStatusInteger(value.runAttempt, 1) == false
+        || [value.snapshotId, value.promotionId, value.modelDigest, value.promotedPolicyDigest].some(function(digestValue) { return isAITrainerStatusDigest(digestValue) == false })
+        || typeof value.duplicate != "boolean"
+        || isAITrainerStatusInteger(value.revision, 0) == false
+        || isAITrainerStatusInteger(value.contributionEpoch, 1) == false
+        || isAITrainerStatusInteger(value.championGeneration, 0) == false
+        || typeof value.candidatePolicyPreserved != "boolean") {
+        return null
+    }
+    return Object.assign({}, value)
+}
+
+function compareAITrainerStatusRuns(left, right) {
+    return left.runNumber != right.runNumber ? left.runNumber - right.runNumber : left.runAttempt - right.runAttempt
+}
+
+function normalizeAITrainerStatus(value) {
+    var keys = ["kind", "formatVersion", "repository", "branch", "publishedAt", "current", "latestEvaluation", "latestPromotion"]
+    if(aiTrainerStatusHasExactKeys(value, keys) == false
+        || value.kind != "btdb-ai-training-status"
+        || value.formatVersion != 1
+        || value.repository != "The-Double-G/btdb-js"
+        || value.branch != "main"
+        || isAITrainerStatusTimestamp(value.publishedAt) == false) {
+        return null
+    }
+    var current = normalizeAITrainerStatusCurrent(value.current)
+    var latestEvaluation = normalizeAITrainerStatusEvaluation(value.latestEvaluation)
+    var latestPromotion = normalizeAITrainerStatusPromotion(value.latestPromotion)
+    if(!current || value.latestEvaluation !== null && !latestEvaluation || value.latestPromotion !== null && !latestPromotion) {
+        return null
+    }
+    if(latestEvaluation && compareAITrainerStatusRuns(latestEvaluation, current) > 0) {
+        return null
+    }
+    if(latestPromotion && (!latestEvaluation || compareAITrainerStatusRuns(latestPromotion, latestEvaluation) > 0 || compareAITrainerStatusRuns(latestPromotion, latestEvaluation) == 0 && latestPromotion.promotionId != latestEvaluation.candidateCheckpointId)) {
+        return null
+    }
+    return {
+        kind: value.kind,
+        formatVersion: value.formatVersion,
+        repository: value.repository,
+        branch: value.branch,
+        publishedAt: value.publishedAt,
+        current: current,
+        latestEvaluation: latestEvaluation,
+        latestPromotion: latestPromotion,
+    }
+}
+
+async function refreshAITrainerStatus(force) {
+    if(AI_IS_LOCAL_RUNTIME) {
+        return false
+    }
+    if(aiTrainerStatusRefreshPromise) {
+        return aiTrainerStatusRefreshPromise
+    }
+    if(force != true && aiTrainerStatusState.lastLoadedAt > 0 && realNow() - aiTrainerStatusState.lastLoadedAt < AI_TRAINING_STATUS_REFRESH_INTERVAL) {
+        return true
+    }
+    aiTrainerStatusState.loadInFlight = true
+    var controller = typeof AbortController == "function" ? new AbortController() : null
+    var timeout = controller ? setTimeout(function() { controller.abort() }, 8000) : null
+    aiTrainerStatusRefreshPromise = (async function() {
+        try {
+            var response = await fetch(AI_TRAINING_STATUS_ENDPOINT + "?t=" + Date.now(), {
+                cache: "no-store",
+                credentials: "omit",
+                mode: "cors",
+                referrerPolicy: "no-referrer",
+                signal: controller ? controller.signal : undefined,
+            })
+            if(!response.ok) {
+                throw new Error("Trainer status returned HTTP " + response.status)
+            }
+            var body = await response.text()
+            var size = typeof TextEncoder == "function" ? new TextEncoder().encode(body).byteLength : body.length
+            if(size > AI_TRAINING_STATUS_MAX_BYTES) {
+                throw new Error("Trainer status response is too large")
+            }
+            var normalized = normalizeAITrainerStatus(JSON.parse(body))
+            if(!normalized) {
+                throw new Error("Trainer status response is invalid")
+            }
+            if(aiTrainerStatusState.status && compareAITrainerStatusRuns(normalized.current, aiTrainerStatusState.status.current) < 0) {
+                throw new Error("Trainer status response is stale")
+            }
+            aiTrainerStatusState.status = normalized
+            aiTrainerStatusState.lastLoadedAt = realNow()
+            aiTrainerStatusState.lastError = ""
+            return true
+        } catch(error) {
+            aiTrainerStatusState.lastError = error && error.message ? error.message : "Trainer status unavailable"
+            return false
+        } finally {
+            if(timeout) {
+                clearTimeout(timeout)
+            }
+            aiTrainerStatusState.loadInFlight = false
+            aiTrainerStatusRefreshPromise = null
+        }
+    })()
+    return aiTrainerStatusRefreshPromise
+}
+
+function getAITrainerStatusMetrics() {
+    var status = aiTrainerStatusState.status
+    if(!status) {
+        var unavailableLabel = AI_IS_LOCAL_RUNTIME ? "Offline" : aiTrainerStatusState.loadInFlight ? "Loading" : "Unavailable"
+        return [
+            { label: "GitHub Trainer", value: unavailableLabel, color: "#8f9bb5" },
+            { label: "Run", value: "--", color: "#8f9bb5" },
+            { label: "Workers", value: "--", color: "#8f9bb5" },
+            { label: "Frozen Eval", value: "Pending", color: "#8f9bb5" },
+            { label: "Promotion", value: "None", color: "#8f9bb5" },
+        ]
+    }
+    var current = status.current
+    var stateLabel = (current.state == "completed" ? current.conclusion : current.phase).replace(/_/g, " ").replace(/\b\w/g, function(letter) { return letter.toUpperCase() })
+    var stateColor = current.state != "completed" ? "#62c5ff" : current.conclusion == "success" ? "#7fe0a2" : current.conclusion == "cancelled" || current.conclusion == "skipped" ? "#f7c76d" : "#ff9f8f"
+    var workerValue = "Pending"
+    if(current.projection) {
+        var useEvaluation = ["evaluating", "reporting", "promoting", "finalizing"].includes(current.phase)
+        var workers = useEvaluation ? current.projection.workers.evaluation : current.projection.workers.training
+        workerValue = (workers.succeeded + workers.failed + workers.cancelled + workers.skipped) + "/" + workers.total
+        if(workers.inProgress > 0) {
+            workerValue += " (" + workers.inProgress + " live)"
+        }
+    }
+    var evaluationValue = status.latestEvaluation ? Math.round(status.latestEvaluation.score * 1000) / 10 + "% / S" + Math.round(status.latestEvaluation.survivalRate * 1000) / 10 + "% / " + status.latestEvaluation.games : "Pending"
+    var evaluationColor = !status.latestEvaluation ? "#8f9bb5" : status.latestEvaluation.passed ? "#7fe0a2" : "#ff9f8f"
+    var promotionValue = status.latestPromotion ? "Champion v" + status.latestPromotion.championGeneration : status.latestEvaluation && status.latestEvaluation.passed ? "Pending" : "None"
+    var promotionColor = status.latestPromotion ? "#7fe0a2" : status.latestEvaluation && status.latestEvaluation.passed ? "#f7c76d" : "#8f9bb5"
+    return [
+        { label: "GitHub Trainer", value: stateLabel, color: stateColor },
+        { label: "Run", value: "#" + current.runNumber + " · " + current.phase, color: "#b698ff" },
+        { label: "Workers", value: workerValue, color: "#7bd8d4" },
+        { label: "Frozen Eval", value: evaluationValue, color: evaluationColor },
+        { label: "Promotion", value: promotionValue, color: promotionColor },
+    ]
+}
+
 function getAIStatsSourceDescription() {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false) {
-        return "Session ~19k-parameter shared neural controller: local learning is discarded when this browser session closes."
+        return "Session ~24k-parameter recurrent actor-critic: local learning is discarded when this browser session closes."
     }
     if(aiPersistenceState.loadInFlight) {
         return "Hosted Model: refreshing authoritative statistics from the backend."
@@ -3927,7 +4517,7 @@ function getAIStatsSourceDescription() {
         return "Hosted Model unavailable: showing the latest valid model loaded in this tab."
     }
     if(aiPersistenceState.contributionEnabled) {
-        return "Hosted ~19k-parameter shared neural controller: match perspectives, demonstrations, and verified self-play."
+        return "Hosted ~24k-parameter recurrent actor-critic: match perspectives, demonstrations, and verified self-play."
     }
     return "Hosted Model: read-only statistics from the authoritative backend."
 }
@@ -4211,13 +4801,13 @@ function drawAIStatsScreen() {
         ctx.fillText((stats.lastReward >= 0 ? "+" : "") + stats.lastReward.toFixed(2), badgeX + badgeWidth / 2, rowY + 20, badgeWidth * 0.9)
     }
 
-    ctx.textAlign = "left"
-    ctx.font = "15px Arial"
-    ctx.fillStyle = "rgba(214, 226, 255, 0.9)"
-    ctx.fillText(getAIStatsSourceDescription(), panelX + innerPadding, panelY + panelHeight - 38, panelWidth - innerPadding * 2)
-    ctx.font = "13px Arial"
-    ctx.fillStyle = "rgba(190, 204, 236, 0.78)"
-    ctx.fillText("The Hosted Model is authoritative for browser play and distributed training; the repository checkpoint is its promotion audit mirror.", panelX + innerPadding, panelY + panelHeight - 16, panelWidth - innerPadding * 2)
+    var trainerMetrics = getAITrainerStatusMetrics()
+    var trainerGap = panelWidth * 0.012
+    var trainerWidth = (panelWidth - innerPadding * 2 - trainerGap * (trainerMetrics.length - 1)) / trainerMetrics.length
+    var trainerY = panelY + panelHeight - 52
+    for(var trainerIndex = 0; trainerIndex < trainerMetrics.length; trainerIndex++) {
+        drawAIStatsMetricCell(panelX + innerPadding + trainerIndex * (trainerWidth + trainerGap), trainerY, trainerWidth, 40, trainerMetrics[trainerIndex].label, trainerMetrics[trainerIndex].value, trainerMetrics[trainerIndex].color)
+    }
 }
 
 function drawFrontMenu() {
@@ -5086,7 +5676,6 @@ function findAISpot(side, radius, range, role, offsetIndex, towerType) {
             candidates.push({
                 x: x,
                 y: y,
-                score: getAISpotScore(side, x, y, radius, range, role, offsetIndex || 0, towerType, matchup),
             })
         }
     }
@@ -5095,42 +5684,25 @@ function findAISpot(side, radius, range, role, offsetIndex, towerType) {
         return null
     }
 
-    var placementPolicy = getAIPolicyForDecision()
-    var placementBootstrap = getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.placement, placementPolicy)
-    var placementSeed = [mapNumber, towerType, role, offsetIndex || 0, placementPolicy.decision.trainingSamples[AI_DECISION_FAMILY.placement]].join("|")
-    for(var shortlistIndex = 0; shortlistIndex < candidates.length; shortlistIndex++) {
-        var shortlistCandidate = candidates[shortlistIndex]
-        var stablePriority = getAIStableStringHash(placementSeed + "|" + Math.round(shortlistCandidate.x) + "|" + Math.round(shortlistCandidate.y)) / 4294967295 * 2 - 1
-        shortlistCandidate.shortlistPriority = Math.tanh(shortlistCandidate.score / 140) * placementBootstrap + stablePriority * (1 - placementBootstrap)
-    }
-    candidates.sort(function(a, b) {
-        return b.shortlistPriority - a.shortlistPriority
-    })
-    var finalCandidates = candidates.slice(0, Math.min(candidates.length, 48))
     var stateFeatures = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.placement, matchup)
-    for(var candidateIndex = 0; candidateIndex < finalCandidates.length; candidateIndex++) {
-        var candidate = finalCandidates[candidateIndex]
+    var bestCandidate = null
+    for(var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+        var candidate = candidates[candidateIndex]
         candidate.decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
             id: [mapNumber, towerType, role, Math.round(candidate.x), Math.round(candidate.y)].join("|"),
             type: towerType,
             role: role,
             actionKey: "place|" + towerType + "|" + role,
-            heuristic: candidate.score,
-            heuristicScale: 140,
+            cost: towerType == "farmer" ? baseFarmerPrice : getBaseTowerPriceByType(towerType),
             money: Math.max(1, players[side].money),
-            effect: range == Infinity ? 300 : range,
-            effectScale: 300,
             x: candidate.x,
             y: candidate.y,
             index: candidateIndex,
-            maxIndex: Math.max(1, finalCandidates.length - 1),
+            maxIndex: Math.max(1, candidates.length - 1),
         }, matchup, stateFeatures)
+        if(!bestCandidate || isAIDecisionScoreBetter(candidate.decision, bestCandidate.decision)) bestCandidate = candidate
     }
-    finalCandidates.sort(function(a, b) {
-        if(a.decision.score != b.decision.score) return b.decision.score - a.decision.score
-        return a.decision.id < b.decision.id ? -1 : 1
-    })
-    return { x: finalCandidates[0].x, y: finalCandidates[0].y, decisionSample: finalCandidates[0].decision }
+    return { x: bestCandidate.x, y: bestCandidate.y, decisionSample: bestCandidate.decision }
 }
 
 function tagAITowerPlacement(tower, role) {
@@ -5861,7 +6433,7 @@ function getManualAimFollowDirection(tower) {
     return 1
 }
 
-function startAIManualAimAction(side, type, aimTowers, targetX, targetY) {
+function startAIManualAimAction(side, type, aimTowers, targetX, targetY, decisionSample) {
     if(type != "follow" && type != "lock" || !aimTowers || aimTowers.length == 0) {
         return false
     }
@@ -5875,6 +6447,7 @@ function startAIManualAimAction(side, type, aimTowers, targetX, targetY) {
         targetX: targetX,
         targetY: targetY,
         readyAt: 0,
+        decisionSample: decisionSample || null,
     }
     aiProfile.aimLocked = false
     return true
@@ -5988,54 +6561,11 @@ function advanceAIManualAimAction(side) {
         return true
     }
 
+    if(action.decisionSample) recordAITacticalDecision(side, "aim", "aim|" + action.type, getCurrentPlayerMatchupStyle(side), action.decisionSample)
     aiProfile.manualAimAction = null
     var aimTowers = getManualAimTowers(side)
     aiProfile.aimLocked = aimTowers.length > 0 && aimTowers.every(isManualAimTowerLocked)
     return true
-}
-
-function getAIAimSnapshot(side) {
-    var weightedX = 0
-    var weightedY = 0
-    var totalWeight = 0
-    var count = 0
-    var heavyCount = 0
-    var maxPathPos = 0
-
-    for(var i = 0; i < bloons.length; i++) {
-        var bloon = bloons[i]
-        if(bloon.playerSide != side || bloon.isBoss) {
-            continue
-        }
-
-        var progress = clamp(bloon.pathPos / 100, 0, 1)
-        var weight = Math.sqrt(Math.max(1, estimateBloonLeakDamage(bloon.health))) * getBloonUrgencyWeight(bloon) * (0.45 + progress)
-        weightedX += bloon.x * weight
-        weightedY += bloon.y * weight
-        totalWeight += weight
-        count++
-        maxPathPos = Math.max(maxPathPos, bloon.pathPos)
-        if(isHeavyBloonHealth(bloon.health)) {
-            heavyCount++
-        }
-    }
-
-    if(totalWeight <= 0 || count == 0) {
-        return null
-    }
-
-    return {
-        x: weightedX / totalWeight,
-        y: weightedY / totalWeight,
-        count: count,
-        heavyCount: heavyCount,
-        maxPathPos: maxPathPos,
-        score: totalWeight,
-    }
-}
-
-function shouldAILockAim(aimSnapshot) {
-    return aimSnapshot.heavyCount >= 1 || aimSnapshot.maxPathPos >= 48 || aimSnapshot.count <= 4
 }
 
 function deselectAITowers(side) {
@@ -6138,7 +6668,7 @@ function aiRequestPlaceTowerInRole(side, slotIndex, role, spotIndex, priority, d
     })
 }
 
-function aiRequestPlaceFarmer(side, priority) {
+function aiRequestPlaceFarmer(side, priority, decisionSample) {
     var spot = findAIFarmerSpot(side)
     if(!spot) {
         return false
@@ -6150,10 +6680,11 @@ function aiRequestPlaceFarmer(side, priority) {
         targetX: spot.x,
         targetY: spot.y,
         priority: priority,
+        decisionSample: decisionSample || spot.decisionSample,
     })
 }
 
-function aiRequestPlaceFarmerForFarm(farm, priority) {
+function aiRequestPlaceFarmerForFarm(farm, priority, decisionSample) {
     var spot = findAIFarmerSpotForFarm(farm)
     if(!spot) {
         return false
@@ -6165,6 +6696,7 @@ function aiRequestPlaceFarmerForFarm(farm, priority) {
         targetX: spot.x,
         targetY: spot.y,
         priority: priority,
+        decisionSample: decisionSample || null,
     })
 }
 
@@ -6203,7 +6735,7 @@ function aiRequestSellTower(side, tower, priority, decisionSample) {
     })
 }
 
-function aiRequestCollectFarm(side, tower, priority) {
+function aiRequestCollectFarm(side, tower, priority, decisionSample) {
     if(!tower) {
         return false
     }
@@ -6216,10 +6748,11 @@ function aiRequestCollectFarm(side, tower, priority) {
         targetX: tower.x,
         targetY: tower.y,
         priority: priority,
+        decisionSample: decisionSample || null,
     })
 }
 
-function aiRequestCollectBanana(side, banana, priority) {
+function aiRequestCollectBanana(side, banana, priority, decisionSample) {
     if(!banana) {
         return false
     }
@@ -6231,6 +6764,7 @@ function aiRequestCollectBanana(side, banana, priority) {
         targetX: banana.x,
         targetY: banana.y,
         priority: priority,
+        decisionSample: decisionSample || null,
     })
 }
 
@@ -6259,7 +6793,7 @@ function executeAIAction(action) {
     } else if(action.type == "placeFarmer") {
         var placedFarmer = aiPlaceFarmer(action.side, players[action.side].cursor.x, players[action.side].cursor.y)
         if(placedFarmer) {
-            recordAITacticalDecision(action.side, "farm", "place|farmer", getCurrentPlayerMatchupStyle(action.side))
+            recordAITacticalDecision(action.side, "farm", "place|farmer", getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
         }
         return placedFarmer != null
     } else if(action.type == "upgradeTower") {
@@ -6291,7 +6825,9 @@ function executeAIAction(action) {
         return upgradeSucceeded
     } else if(action.type == "collectFarm") {
         action.tower = getAITowerByID(action.towerID)
-        return aiTryCollectFarm(action.side, action.tower)
+        var collectedFarm = aiTryCollectFarm(action.side, action.tower)
+        if(collectedFarm) recordAITacticalDecision(action.side, "farm", "collect|farm", getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+        return collectedFarm
     } else if(action.type == "sellTower") {
         action.tower = getAITowerByID(action.towerID)
         var soldTowerType = action.tower ? action.tower.towerType : "missing"
@@ -6301,6 +6837,7 @@ function executeAIAction(action) {
         }
         return sellSucceeded
     } else if(action.type == "collectBanana") {
+        recordAITacticalDecision(action.side, "farm", "collect|banana", getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
         return true
     } else if(action.type == "deselectTower") {
         selectTowerAt(action.side, players[action.side].cursor.x, players[action.side].cursor.y)
@@ -6423,110 +6960,54 @@ function runAIAiming(side) {
         return advanceAIManualAimAction(side)
     }
 
-    var aimSnapshot = getAIAimSnapshot(side)
-    if(!aimSnapshot) {
-        var unlockedTowers = aimTowers.filter(function(tower) { return !isManualAimTowerLocked(tower) })
-        if(unlockedTowers.length > 0) {
-            startAIManualAimAction(side, "lock", unlockedTowers, players[side].cursor.x, players[side].cursor.y)
-            return advanceAIManualAimAction(side)
-        }
-        aiProfile.aimLocked = true
+    var matchup = getCurrentPlayerMatchupStyle(side)
+    var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.placement, matchup)
+    var bestAim = {
+        type: "noop",
+        decisionSample: scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
+            id: "aim|noop",
+            type: "aim|noop",
+            actionKey: "aim|noop",
+            noop: true,
+        }, matchup, decisionState),
+    }
+    var followDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
+        id: "aim|follow",
+        type: "aim|follow",
+        actionKey: "aim|follow",
+        count: aimTowers.length,
+        countScale: 8,
+    }, matchup, decisionState)
+    if(isAIDecisionScoreBetter(followDecision, bestAim.decisionSample)) bestAim = { type: "follow", x: players[side].cursor.x, y: players[side].cursor.y, decisionSample: followDecision }
+    for(var bloonIndex = 0; bloonIndex < bloons.length; bloonIndex++) {
+        var bloon = bloons[bloonIndex]
+        if(!bloon || bloon.playerSide != side || bloon.isBoss) continue
+        var lockDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
+            id: "aim|lock|" + bloonIndex,
+            type: "aim|lock|" + bloon.health,
+            actionKey: "aim|lock",
+            x: bloon.x,
+            y: bloon.y,
+            position: clamp((Number(bloon.pathPos) || 0) / 100, 0, 1),
+            count: Math.max(0, Number(bloon.health) || 0),
+            countScale: 1000,
+        }, matchup, decisionState)
+        if(isAIDecisionScoreBetter(lockDecision, bestAim.decisionSample)) bestAim = { type: "lock", x: bloon.x, y: bloon.y, decisionSample: lockDecision }
+    }
+    if(bestAim.type == "noop") {
+        recordAINoOpDecision(bestAim.decisionSample)
         return false
     }
-
-    aiProfile.lastAimX = aimSnapshot.x
-    aiProfile.lastAimY = aimSnapshot.y
-    var lockedTowers = aimTowers.filter(isManualAimTowerLocked)
-    aiProfile.aimLocked = lockedTowers.length == aimTowers.length
-    var desiredShift = 0
-    for(var i = 0; i < lockedTowers.length; i++) {
-        desiredShift = Math.max(desiredShift, Math.sqrt((aimSnapshot.x - lockedTowers[i].targetX) ** 2 + (aimSnapshot.y - lockedTowers[i].targetY) ** 2))
-    }
-
-    if(desiredShift >= 42 && lockedTowers.length > 0) {
-        startAIManualAimAction(side, "follow", lockedTowers, aimSnapshot.x, aimSnapshot.y)
-        return advanceAIManualAimAction(side)
-    }
-    if(aiProfile.aimLocked) {
-        return false
-    }
-
-    var reachedTarget = moveAICursorToward(side, aimSnapshot.x, aimSnapshot.y)
-
-    if(reachedTarget && shouldAILockAim(aimSnapshot)) {
-        var towersToLock = aimTowers.filter(function(tower) { return !isManualAimTowerLockedAt(tower, aimSnapshot.x, aimSnapshot.y) })
-        if(towersToLock.length > 0) {
-            startAIManualAimAction(side, "lock", towersToLock, aimSnapshot.x, aimSnapshot.y)
-            return advanceAIManualAimAction(side)
-        }
-    }
-    return !reachedTarget
+    aiProfile.lastAimX = bestAim.x
+    aiProfile.lastAimY = bestAim.y
+    startAIManualAimAction(side, bestAim.type, aimTowers, bestAim.x, bestAim.y, bestAim.decisionSample)
+    return advanceAIManualAimAction(side)
 }
 
 function aiSelectEcoSend(side, matchup) {
-    if(shouldAIPauseEcoForPendingPurchase(side, matchup)) {
-        players[side].autoEco = false
-        return
-    }
-
     var startIndex = side == PLAYER_SIDE.left ? 0 : 10
-    var strategy = getCurrentAIStrategy()
     var endIndex = side == PLAYER_SIDE.left ? 9 : 19
-    var gameRound = Math.max(1, Math.trunc(round / 2))
     var currentLocalIndex = clamp(players[side].selectedBloon - startIndex, 0, endIndex - startIndex)
-    var reserveMoney = strategy.ecoFloor
-    if(matchup) {
-        reserveMoney += matchup.dangerHigh ? 900 : 0
-        reserveMoney += matchup.playerThreat.heavyCount > 0 ? 700 : 0
-        if(matchup.defenseMath.requiredDps > matchup.defenseMath.currentDps * 0.95) {
-            reserveMoney += 1000
-        }
-    }
-    if(gameRound >= 28) {
-        reserveMoney += 1800 + (gameRound - 28) * 320
-        if(players[side].eco >= 1600) {
-            reserveMoney += Math.round((players[side].eco - 1600) * 1.5)
-        }
-        if(matchup && matchup.safeToGreed == false) {
-            reserveMoney += 1400
-        }
-    }
-
-    var reserveConstrained = players[side].money < reserveMoney && (gameRound >= 28 || matchup && matchup.dangerHigh)
-
-    var sustainableSpendRate = players[side].eco / 6 + Math.max(0, players[side].money - reserveMoney) / 8
-    var recommendedStage = 0
-    if(gameRound >= 2) recommendedStage = 1
-    if(gameRound >= 3) recommendedStage = 2
-    if(gameRound >= 4) recommendedStage = 3
-    if(gameRound >= 5) recommendedStage = 4
-    if(gameRound >= 6) recommendedStage = 5
-    if(gameRound >= 9) recommendedStage = 6
-    if(gameRound >= 12) recommendedStage = 7
-    if(gameRound >= 16 && players[side].eco >= 900 && players[side].money >= reserveMoney + 1800) recommendedStage = 8
-    if(matchup) {
-        if(matchup.dangerHigh) {
-            recommendedStage -= 2
-        }
-        if(matchup.playerThreat.heavyCount > 0) {
-            recommendedStage -= 1
-        }
-        if(matchup.safeToGreed && players[side].eco >= 700) {
-            recommendedStage += 1
-        }
-        if(matchup.enemyVulnerable && strategy.rushBias >= 0.6) {
-            recommendedStage += 1
-        }
-    }
-    if(gameRound >= 28) {
-        if(players[side].eco >= 2200) {
-            recommendedStage = Math.min(recommendedStage, 4)
-        } else {
-            recommendedStage = Math.min(recommendedStage, 5)
-        }
-    }
-    recommendedStage = clamp(recommendedStage, 0, 8)
-
     var bestIndex = -1
     var bestDecision = null
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.eco, matchup)
@@ -6538,44 +7019,14 @@ function aiSelectEcoSend(side, matchup) {
 
         var localIndex = i - startIndex
         var groupDurationSec = Math.max(0.25, (bloon.spacing * Math.max(1, bloon.count)) / 1000)
-        var ecoPerCost = bloon.eco / Math.max(1, bloon.cost)
         var ecoPerSecond = bloon.eco / groupDurationSec
-        var costPerSecond = bloon.cost / groupDurationSec
-        var score = ecoPerSecond * 1.9 + ecoPerCost * 65
-
-        score -= Math.abs(localIndex - recommendedStage) * 1.8
-        score -= Math.max(0, localIndex - recommendedStage - 1) * 4.5
-        score -= Math.max(0, Math.abs(localIndex - currentLocalIndex) - 2) * 1.2
-
-        if(localIndex == currentLocalIndex) {
-            score += 2.5
-        } else if(localIndex == currentLocalIndex + 1) {
-            score += 1.25
-        }
-
-        if(costPerSecond > sustainableSpendRate * 1.08) {
-            score -= (costPerSecond - sustainableSpendRate * 1.08) * 0.18
-        }
-        if(players[side].money < bloon.cost * 2 && localIndex > currentLocalIndex + 1) {
-            score -= 8
-        }
-        if(matchup && matchup.dangerHigh && localIndex >= 7) {
-            score -= 6
-        }
-        if(matchup && matchup.safeToGreed && localIndex == recommendedStage) {
-            score += 4
-        }
-        score += getAITacticalActionBonus(side, "eco", "send|" + localIndex, matchup) * 18
         var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.eco, {
             id: "eco|" + localIndex,
             type: "bloon|" + bloon.health,
             actionKey: "send|" + localIndex,
-            heuristic: score,
-            heuristicScale: 24,
             cost: bloon.cost,
             money: players[side].money,
-            effect: ecoPerSecond,
-            effectScale: 20,
+            position: clamp(ecoPerSecond / 20, 0, 1),
             index: localIndex,
             maxIndex: endIndex - startIndex,
             count: bloon.count,
@@ -6591,8 +7042,6 @@ function aiSelectEcoSend(side, matchup) {
         id: "eco|noop",
         type: "noop",
         actionKey: "noop",
-        heuristic: reserveConstrained ? 12 : matchup && matchup.dangerHigh ? 5 : -3,
-        heuristicScale: 24,
         noop: true,
     }, matchup, decisionState)
     if(bestDecision && isAIDecisionScoreBetter(noOpDecision, bestDecision)) {
@@ -6613,149 +7062,62 @@ function aiSelectEcoSend(side, matchup) {
     }
 }
 
-function getDefenseTraitsForSide(side) {
-    var traits = {
-        splash: 0,
-        heavy: 0,
-        global: 0,
-        defenseCount: 0,
-    }
-
-    for(var i = 0; i < towers.length; i++) {
-        var tower = towers[i]
-        if(!tower) {
-            continue
-        }
-        if(tower.playerSide != side || isCombatTower(tower) == false) {
-            continue
-        }
-
-        var tier = getTowerTotalTier(tower)
-        traits.defenseCount++
-        if(tower.towerType == "bomb" || tower.towerType == "boomer" || tower.towerType == "tack" || tower.towerType == "ice" || tower.towerType == "wizard" || tower.towerType == "mortar") {
-            traits.splash += 1 + tier * 0.2
-        }
-        if(tower.towerType == "dartling" && tower.path3Upgrades >= 2 || tower.towerType == "engi" && tower.path3Upgrades >= 3) {
-            traits.splash += 1.2 + tier * 0.2
-        }
-        if(tower.towerType == "bomb" || tower.towerType == "sniper" || tower.towerType == "super" || tower.towerType == "mortar" || tower.towerType == "dartling" || tower.towerType == "sword") {
-            traits.heavy += 1 + tier * 0.22
-        }
-        if(tower.towerType == "boomer" && tower.path2Upgrades >= 3 || tower.towerType == "wizard" && tower.path1Upgrades >= 3) {
-            traits.heavy += 0.8 + tier * 0.18
-        }
-        if(tower.range == Infinity || tower.towerType == "sniper" || tower.towerType == "mortar" || tower.towerType == "dartling") {
-            traits.global += 1 + tier * 0.1
-        }
-    }
-
-    return traits
-}
-
-function getRushSendScore(side, bloon, matchup, enemyTraits, aggressiveRush) {
-    var groupDurationSec = Math.max(0.2, (bloon.spacing * Math.max(1, bloon.count)) / 1000)
-    var totalHealth = bloon.health * bloon.count
-    var burstPressure = totalHealth / groupDurationSec
-    var score = burstPressure * 0.06 + Math.sqrt(Math.max(1, totalHealth)) * 0.7 - bloon.cost * 0.0015
-
-    if(bloon.health >= 18) {
-        score += Math.max(0, 9 - enemyTraits.heavy * 1.8)
-    }
-    if(bloon.count >= 4 || bloon.spacing <= 100) {
-        score += Math.max(0, 9 - enemyTraits.splash * 1.7)
-    }
-    if(bloon.eco < 0) {
-        score += 3
-    }
-    if(enemyTraits.defenseCount <= 2) {
-        score += 6
-    }
-    if(matchup.enemyVulnerable) {
-        score += 5.5
-    }
-    if(matchup.playerLives <= 80) {
-        score += 2.5
-    }
-    if(aggressiveRush) {
-        score += 3.5
-    }
-    if(matchup.dangerHigh) {
-        score -= 8
-    }
-    if(players[side].money < bloon.cost * 2 && bloon.eco < 0) {
-        score -= 4
-    }
-
-    var displayIndex = displayBloons.indexOf(bloon)
-    var localIndex = displayIndex >= 10 ? displayIndex - 10 : displayIndex
-    score += getAITacticalActionBonus(side, "rush", "send|" + localIndex, matchup) * 18
-
-    return score
-}
-
-function getBestRushSendIndex(side, matchup) {
+function getBestRushPlan(side, matchup) {
     var startIndex = side == PLAYER_SIDE.left ? 0 : 10
     var endIndex = side == PLAYER_SIDE.left ? 9 : 19
-    var enemySide = side == PLAYER_SIDE.left ? PLAYER_SIDE.right : PLAYER_SIDE.left
-    var enemyTraits = getDefenseTraitsForSide(enemySide)
-    var aggressiveRush = getCurrentAIStrategy().rushBias >= 0.72
-    var bestIndex = -1
-    var bestDecision = null
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.rush, matchup)
+    var bestPlan = {
+        noop: true,
+        decisionSample: scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.rush, {
+            id: "rush|noop",
+            type: "noop",
+            actionKey: "noop",
+            noop: true,
+        }, matchup, decisionState),
+    }
+    var availableQueueSlots = Math.max(0, 6 - players[side].bloonQueue.length)
 
     for(var i = startIndex; i <= endIndex; i++) {
         var candidate = displayBloons[i]
-        if(!candidate || candidate.image == "locked.png" || candidate.cost > players[side].money) {
+        if(!candidate || candidate.image == "locked.png" || candidate.cost <= 0 || candidate.cost > players[side].money) {
             continue
         }
 
         var localIndex = i - startIndex
-        var candidateScore = getRushSendScore(side, candidate, matchup, enemyTraits, aggressiveRush)
-        var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.rush, {
-            id: "rush|" + localIndex,
-            type: "bloon|" + candidate.health,
-            actionKey: "send|" + localIndex,
-            heuristic: candidateScore,
-            heuristicScale: 28,
-            cost: candidate.cost,
-            money: players[side].money,
-            effect: candidate.health * candidate.count,
-            effectScale: 800,
-            index: localIndex,
-            maxIndex: endIndex - startIndex,
-            count: candidate.count,
-            urgency: matchup.enemyVulnerable ? 1 : 0.25,
-        }, matchup, decisionState)
-        if(isAIDecisionScoreBetter(decision, bestDecision)) {
-            bestDecision = decision
-            bestIndex = i
+        var maximumGroups = Math.min(availableQueueSlots, Math.floor(players[side].money / candidate.cost))
+        for(var groups = 1; groups <= maximumGroups; groups++) {
+            var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.rush, {
+                id: "rush|" + localIndex + "|" + groups,
+                type: "bloon|" + candidate.health,
+                actionKey: "send|" + localIndex + "|" + groups,
+                cost: candidate.cost * groups,
+                money: players[side].money,
+                position: clamp(candidate.spacing / 1000, 0, 1),
+                index: localIndex,
+                maxIndex: endIndex - startIndex,
+                count: groups,
+                countScale: 6,
+            }, matchup, decisionState)
+            if(isAIDecisionScoreBetter(decision, bestPlan.decisionSample)) {
+                bestPlan = { index: i, groups: groups, noop: false, decisionSample: decision }
+            }
         }
     }
-    if(bestIndex != -1) displayBloons[bestIndex].aiDecisionSample = bestDecision
-    return bestIndex
+    return bestPlan
 }
 
 function aiQueueRush(side, matchup) {
-    var strategy = getCurrentAIStrategy()
-    var bestIndex = getBestRushSendIndex(side, matchup)
-
-    if(bestIndex == -1) {
+    var plan = getBestRushPlan(side, matchup)
+    if(!plan || plan.noop) {
+        if(plan) recordAINoOpDecision(plan.decisionSample)
         return false
     }
-
-    var reserveMoney = matchup.dangerHigh ? strategy.ecoFloor * 0.75 : strategy.ecoFloor * 0.4
-    if(strategy.rushBias >= 0.72 && matchup.enemyVulnerable) {
-        reserveMoney *= 0.7
-    }
-
     players[side].autoEco = false
-    players[side].selectedBloon = bestIndex
+    players[side].selectedBloon = plan.index
     var queuedAny = false
-    while(players[side].bloonQueue.length < 6) {
-        var selectedBloon = displayBloons[bestIndex]
-        if(players[side].money < selectedBloon.cost || players[side].money - selectedBloon.cost < reserveMoney) {
-            break
-        }
+    for(var groupIndex = 0; groupIndex < plan.groups && players[side].bloonQueue.length < 6; groupIndex++) {
+        var selectedBloon = displayBloons[plan.index]
+        if(players[side].money < selectedBloon.cost) break
         players[side].bloonQueue.push(new SentBloonQueue(selectedBloon.health, selectedBloon.cost, selectedBloon.eco, selectedBloon.spacing, selectedBloon.count))
         players[side].money -= selectedBloon.cost
         players[side].eco += selectedBloon.eco
@@ -6767,8 +7129,7 @@ function aiQueueRush(side, matchup) {
     if(queuedAny == false) {
         return false
     }
-    aiProfile.lastRushAt = gameNow()
-    recordAITacticalDecision(side, "rush", "send|" + (bestIndex - (side == PLAYER_SIDE.left ? 0 : 10)), matchup, displayBloons[bestIndex].aiDecisionSample)
+    recordAITacticalDecision(side, "rush", plan.decisionSample.id, matchup, plan.decisionSample)
     return true
 }
 
@@ -7404,91 +7765,68 @@ function updateAIMatchTelemetry() {
     }
 }
 
-function shouldAICashOutFarm(side, farm, matchup) {
-    if(!farm || farm.towerType != "farm") {
-        return false
-    }
-
+function getBestAIEconomyUtilityOption(side, matchup) {
+    var bestOption = null
     var visibleRound = getCurrentVisibleRound()
-    if(farm.aiPlacedAt > 0 && farm.aiPlacedRound == visibleRound && players[side].lives > 35) {
-        return false
-    }
-    var liquidity = getDefenseLiquidityState(side)
-    var sellValue = getAITowerSellValueEstimate(farm)
-    var needsLiquidity = liquidity.cheapestDefenseCost != Infinity && players[side].money < liquidity.cheapestDefenseCost && players[side].money + sellValue >= liquidity.cheapestDefenseCost
-    if(matchup.dangerHigh && needsLiquidity) {
-        return true
-    }
-    if(visibleRound >= 22) {
-        return true
-    }
-    if(visibleRound >= 16 && (matchup.safeToGreed == false || getTowerTotalTier(farm) <= 6 || needsLiquidity)) {
-        return true
-    }
-    return false
-}
-
-function getBestAIFarmCashoutCandidate(side, matchup) {
-    var farms = getSideTowersByType(side, "farm")
-    var bestFarm = null
-    var bestDecision = null
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.sell, matchup)
-    var visibleRound = getCurrentVisibleRound()
-    for(var i = 0; i < farms.length; i++) {
-        var farm = farms[i]
-        if(farm.aiPlacedAt > 0 && farm.aiPlacedRound == visibleRound && players[side].lives > 35) {
-            continue
-        }
-
-        var cashoutRecommended = shouldAICashOutFarm(side, farm, matchup)
-        var score = getAITowerSellValueEstimate(farm)
-        if(cashoutRecommended == false) score -= 1200
-        score += Math.max(0, 6 - getTowerTotalTier(farm)) * 12
-        if(matchup.dangerHigh) {
-            score += 40
-        }
-        if(farm.path2Upgrades >= 3 && farm.towerVar > 0) {
-            score += farm.towerVar * 0.08
-        }
-        score += Math.max(0, visibleRound - 28) * 4
+    function considerUtilityOption(option) {
+        if(!bestOption || isAIDecisionScoreBetter(option.decisionSample, bestOption.decisionSample)) bestOption = option
+    }
+    for(var i = 0; i < towers.length; i++) {
+        var tower = towers[i]
+        if(!tower || tower.playerSide != side) continue
+        if(tower.towerType == "farm" && tower.aiPlacedAt > 0 && tower.aiPlacedRound == visibleRound) continue
+        var sellValue = getAITowerSellValueEstimate(tower)
         var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
-            id: "sell|farm|" + farm.towerID,
-            type: "farm",
-            actionKey: "sell|farm",
-            heuristic: score,
-            heuristicScale: 1200,
-            cost: 0,
+            id: "sell|" + tower.towerType + "|" + tower.towerID,
+            type: tower.towerType,
+            actionKey: "sell|" + tower.towerType,
             money: players[side].money,
-            effect: getAITowerSellValueEstimate(farm),
-            effectScale: 6000,
-            x: farm.x,
-            y: farm.y,
-            tier1: farm.path1Upgrades,
-            tier2: farm.path2Upgrades,
-            tier3: farm.path3Upgrades,
-            urgency: matchup.dangerHigh ? 1 : 0.35,
+            position: clamp(Math.log1p(sellValue) / Math.log(100001), 0, 1),
+            x: tower.x,
+            y: tower.y,
+            tier1: tower.path1Upgrades,
+            tier2: tower.path2Upgrades,
+            tier3: tower.path3Upgrades,
+            count: Math.max(0, Number(tower.towerVar) || 0),
+            countScale: 6000,
         }, matchup, decisionState)
-        if(isAIDecisionScoreBetter(decision, bestDecision)) {
-            bestDecision = decision
-            bestFarm = farm
+        considerUtilityOption({ type: "sell", tower: tower, score: decision.score, decisionSample: decision })
+        if(tower.towerType == "farm" && tower.path2Upgrades >= 3 && tower.towerVar > 0) {
+            var collectDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
+                id: "collect|farm|" + tower.towerID,
+                type: "collect|farm",
+                actionKey: "collect|farm",
+                money: players[side].money,
+                position: clamp(Math.log1p(tower.towerVar) / Math.log(100001), 0, 1),
+                x: tower.x,
+                y: tower.y,
+                tier1: tower.path1Upgrades,
+                tier2: tower.path2Upgrades,
+                tier3: tower.path3Upgrades,
+                count: tower.towerVar,
+                countScale: 6000,
+            }, matchup, decisionState)
+            considerUtilityOption({ type: "collectFarm", tower: tower, score: collectDecision.score, decisionSample: collectDecision })
         }
     }
-    var noOpDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
-        id: "sell|noop",
-        type: "noop",
-        actionKey: "noop",
-        heuristic: matchup.dangerHigh ? -8 : 8,
-        heuristicScale: 1200,
-        noop: true,
-    }, matchup, decisionState)
-    if(bestDecision && isAIDecisionScoreBetter(noOpDecision, bestDecision)) {
-        recordAINoOpDecision(noOpDecision)
-        return null
+    for(var bananaIndex = 0; bananaIndex < bananas.length; bananaIndex++) {
+        var banana = bananas[bananaIndex]
+        if(!banana || banana.playerSide != side) continue
+        var bananaDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
+            id: "collect|banana|" + banana.parentID + "|" + bananaIndex,
+            type: "collect|banana",
+            actionKey: "collect|banana",
+            money: players[side].money,
+            position: clamp((banana.lifespan - gameNow()) / 10000, 0, 1),
+            x: banana.x,
+            y: banana.y,
+            count: Math.max(0, Number(banana.cashGiven) || 0),
+            countScale: 6000,
+        }, matchup, decisionState)
+        considerUtilityOption({ type: "collectBanana", banana: banana, score: bananaDecision.score, decisionSample: bananaDecision })
     }
-    if(bestFarm) {
-        bestFarm.aiSellDecisionSample = bestDecision
-    }
-    return bestFarm
+    return bestOption
 }
 
 function getEmergencyDefenseImages(strategy) {
@@ -8055,59 +8393,20 @@ function getBestTowerUpgradeOption(side, matchup, defenseMath) {
         if(tower.playerSide != side || tower.towerType == "farmer") {
             continue
         }
-        if(tower.towerType == "farm" && defenseMath && defenseMath.minTimeToExitSec <= 2.2 && defenseMath.requiredDps > defenseMath.currentDps) {
-            continue
-        }
-
         for(var pathNumber = 1; pathNumber <= 3; pathNumber++) {
             if(canTowerUpgradePathNow(side, tower, pathNumber) == false) {
                 continue
             }
 
             var upgradeCost = tower["path" + pathNumber + "Cost"][tower["path" + pathNumber + "Upgrades"]]
-            var dpsGain = estimateTowerUpgradeDpsGain(tower, pathNumber, matchup)
-            var score = dpsGain / Math.max(1, upgradeCost) * 1000
             var hypotheticalTower = getHypotheticalTowerAfterUpgrade(tower, pathNumber)
-            var hypotheticalSignature = getTowerCurrentSignature(hypotheticalTower)
-            var contextKey = getCrosspathContextKeyForMatchup(tower.towerType, matchup)
-            var learnedCrosspathScore = getAILearningScore(aiLearning.crosspathStats, getAICrosspathStatKey(tower.towerType, contextKey, hypotheticalSignature))
-            score += learnedCrosspathScore * (tower.towerType == "farm" ? 180 : 118)
-            score += getAITowerStageUsageScore(tower.towerType, getStrategyPlacementRoleForTowerType(tower.towerType), matchup)
-            if(getDominantTowerPath(tower) == pathNumber) {
-                score += 8
-            }
-            if(tower.towerType == "farm") {
-                score += getAIFarmLifecycleScore(matchup)
-                score += getTowerBuildTargetScore(tower, pathNumber, matchup) * 1.15
-            } else {
-                score += getTowerBuildTargetScore(tower, pathNumber, matchup) * 1.45
-            }
-            if(defenseMath && defenseMath.requiredDps > defenseMath.currentDps) {
-                score += dpsGain * 0.45
-                if(tower.towerType == "farm") {
-                    score -= 20
-                }
-            } else if(matchup.safeToGreed && tower.towerType == "farm") {
-                score += isAIFarmInvestmentWindow(matchup) ? 16 : -12
-            }
-            if(tower.towerType == "sniper" && matchup.safeToGreed && pathNumber == 2) {
-                score += 12
-            }
-            if(tower.towerType == "cobra" && matchup.enemyVulnerable && pathNumber == 3) {
-                score += 10
-            }
-            score += getAITacticalActionBonus(side, tower.towerType == "farm" ? "farm" : "development", "upgrade|" + tower.towerType + "|" + pathNumber, matchup) * 24
             var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.upgrade, {
                 id: "upgrade|" + tower.towerType + "|" + tower.towerID + "|" + pathNumber,
                 type: tower.towerType,
-                role: getStrategyPlacementRoleForTowerType(tower.towerType),
+                role: tower.towerType,
                 actionKey: "upgrade|" + tower.towerType + "|" + pathNumber,
-                heuristic: score,
-                heuristicScale: 90,
                 cost: upgradeCost,
                 money: players[side].money,
-                effect: dpsGain,
-                effectScale: 80,
                 x: tower.x,
                 y: tower.y,
                 index: pathNumber - 1,
@@ -8115,17 +8414,12 @@ function getBestTowerUpgradeOption(side, matchup, defenseMath) {
                 tier1: hypotheticalTower.path1Upgrades,
                 tier2: hypotheticalTower.path2Upgrades,
                 tier3: hypotheticalTower.path3Upgrades,
-                urgency: matchup.dangerHigh ? 1 : 0.3,
             }, matchup, decisionState)
 
-            var projectedDps = defenseMath ? defenseMath.currentDps + dpsGain : dpsGain
             var option = {
                 type: "upgrade",
                 tower: tower,
                 pathNumber: pathNumber,
-                dpsGain: dpsGain,
-                projectedDps: projectedDps,
-                heuristicScore: score,
                 score: decision.score,
                 decisionSample: decision,
             }
@@ -8285,106 +8579,46 @@ function getAILoadoutRoleNeedBonus(side, image, matchup) {
 
 function getLearnedPlacementOption(side, image, matchup, defenseMath) {
     var towerConfig = LOADOUT_TOWER_CONFIG[image]
-    if(!towerConfig) {
-        return null
-    }
-    var role = getStrategyPlacementRoleForImage(image)
-    var spotIndex = getSideTowersByStrategyRole(side, role).length
+    if(!towerConfig) return null
+    var role = towerConfig.towerType
+    var spotIndex = getSideTowersByType(side, towerConfig.towerType).length
     var spot = findAISpot(side, towerConfig.radius, towerConfig.range, role, spotIndex, towerConfig.towerType)
-    if(!spot) {
-        return null
-    }
-    var price = getTowerPriceByImage(image)
-    var dpsGain = estimatePlacementDpsByImage(image, matchup)
-    if(defenseMath && defenseMath.requiredDps > 0 && towerConfig.towerType != "farm") {
-        var hypotheticalTower = {
-            x: spot.x,
-            y: spot.y,
-            range: towerConfig.range,
-            towerType: towerConfig.towerType,
-            playerSide: side,
-            path1Upgrades: 0,
-            path2Upgrades: 0,
-            path3Upgrades: 0,
-        }
-        var threatBloons = getAIThreatBloonsForSide(side)
-        var canEngageThreat = false
-        var closeToFight = false
-        for(var threatIndex = 0; threatIndex < threatBloons.length; threatIndex++) {
-            if(canTowerReachBloonSoon(hypotheticalTower, threatBloons[threatIndex])) {
-                canEngageThreat = true
-                if(isBloonCloseToTowerFight(hypotheticalTower, threatBloons[threatIndex])) {
-                    closeToFight = true
-                    break
-                }
-            }
-        }
-        if(canEngageThreat == false) {
-            dpsGain *= 0.12
-        } else if(defenseMath.minTimeToExitSec <= 2.2 && closeToFight == false) {
-            dpsGain *= 0.45
-        }
-    }
-    var placementLearning = getAISpotScore(side, spot.x, spot.y, towerConfig.radius, towerConfig.range, role, spotIndex, towerConfig.towerType)
-    var loadoutKey = getCurrentAILoadoutKey()
-    var strategyId = getCurrentAIStrategyId()
-    var timingLearning = 0
-    if(loadoutKey && strategyId) {
-        timingLearning = getAILearningScore(aiLearning.timingStats, getAITimingStatKey(loadoutKey, strategyId, towerConfig.towerType, role, getAIRoundTimingBucket()))
-    }
-    var score = dpsGain / Math.max(1, price) * 900
-    score += getAILoadoutRoleNeedBonus(side, image, matchup)
-    score += placementLearning * 0.36
-    score += timingLearning * 72
-    score += getAITowerStageUsageScore(towerConfig.towerType, role, matchup)
-    score -= getAIEarlyTowerSpamPenalty(side)
-    score -= getAIStrictPlacementPenalty(side, towerConfig.towerType, matchup)
-    if(role == "antiMoab" && matchup.playerThreat.heavyCount >= 1) {
-        score += 18
-    }
-    if(role == "core" && matchup.dangerHigh) {
-        score += 12
-    }
-    if(image == "000farm.png") {
-        score += getAIFarmLifecycleScore(matchup)
-    }
-    if(image == "000farm.png" && defenseMath && defenseMath.requiredDps > defenseMath.currentDps) {
-        score -= 28
-    }
-    score += getAITacticalActionBonus(side, towerConfig.towerType == "farm" ? "farm" : "development", "place|" + towerConfig.towerType + "|" + role, matchup) * 24
-    score -= getPlacementDuplicationPenalty(side, image, matchup)
-    var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
+    if(!spot) return null
+    var decision = spot.decisionSample || scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
         id: "place|" + towerConfig.towerType + "|" + role + "|" + Math.round(spot.x) + "|" + Math.round(spot.y),
         type: towerConfig.towerType,
         role: role,
         actionKey: "place|" + towerConfig.towerType + "|" + role,
-        heuristic: score,
-        heuristicScale: 110,
-        cost: price,
+        cost: getTowerPriceByImage(image),
         money: players[side].money,
-        effect: dpsGain,
-        effectScale: 80,
         x: spot.x,
         y: spot.y,
         count: getSideTowersByType(side, towerConfig.towerType).length,
-        urgency: matchup.dangerHigh ? 1 : 0.3,
     }, matchup)
     return {
         type: "place",
         image: image,
-        dpsGain: dpsGain,
-        projectedDps: defenseMath ? defenseMath.currentDps + dpsGain : dpsGain,
-        heuristicScore: score,
         score: decision.score,
         decisionSample: decision,
     }
 }
 
+function getLearnedFarmerPlacementOption(side, matchup) {
+    if(players[side].money < baseFarmerPrice) return null
+    var spot = findAISpot(side, 30, 250, "farmer", getSideTowersByType(side, "farmer").length, "farmer")
+    if(!spot) return null
+    return {
+        type: "placeFarmer",
+        targetX: spot.x,
+        targetY: spot.y,
+        score: spot.decisionSample.score,
+        decisionSample: spot.decisionSample,
+    }
+}
+
 function getBestPlacementOption(side, matchup, defenseMath, restrictToEmergency) {
     var strategy = getCurrentAIStrategy()
-    var candidateImages = strategy.towers.filter(function(image) {
-        return restrictToEmergency == false || getTowerTypeFromImage(image) != "farm"
-    })
+    var candidateImages = strategy.towers
     var bestOption = null
     for(var i = 0; i < candidateImages.length; i++) {
         var image = candidateImages[i]
@@ -8399,6 +8633,8 @@ function getBestPlacementOption(side, matchup, defenseMath, restrictToEmergency)
             bestOption = option
         }
     }
+    var farmerOption = getLearnedFarmerPlacementOption(side, matchup)
+    if(farmerOption && (!bestOption || farmerOption.score > bestOption.score)) bestOption = farmerOption
 
     return bestOption
 }
@@ -8411,6 +8647,19 @@ function requestAIDefenseOption(side, option, priority) {
     if(option.type == "upgrade") {
         return aiRequestUpgradeTower(side, option.tower, option.pathNumber, priority, option.decisionSample)
     }
+    if(option.type == "placeFarmer") {
+        return setAIAction({
+            type: "placeFarmer",
+            side: side,
+            targetX: option.targetX,
+            targetY: option.targetY,
+            priority: priority,
+            decisionSample: option.decisionSample,
+        })
+    }
+    if(option.type == "sell") return aiRequestSellTower(side, option.tower, priority, option.decisionSample)
+    if(option.type == "collectFarm") return aiRequestCollectFarm(side, option.tower, priority, option.decisionSample)
+    if(option.type == "collectBanana") return aiRequestCollectBanana(side, option.banana, priority, option.decisionSample)
 
     return aiRequestPlaceTowerImage(side, option.image, priority, option.decisionSample)
 }
@@ -8431,22 +8680,16 @@ function tryPlaceEmergencyDefense(side, matchup) {
     }
 
     if(chosenOption) {
-        var immediateLethal = defenseMath.minTimeToExitSec <= 2.2 && defenseMath.requiredDps > defenseMath.currentDps
-        if(immediateLethal == false) {
-            var noOpFamily = chosenOption.decisionSample.familyIndex
-            var noOpDecision = scoreAIDecisionCandidate(side, noOpFamily, {
-                id: (noOpFamily == AI_DECISION_FAMILY.placement ? "placement" : "upgrade") + "|emergency-noop",
-                type: "noop",
-                actionKey: "noop",
-                heuristic: -12,
-                heuristicScale: noOpFamily == AI_DECISION_FAMILY.placement ? 110 : 90,
-                noop: true,
-                safety: matchup.dangerHigh ? 1 : 0,
-            }, matchup)
-            if(isAIDecisionScoreBetter(noOpDecision, chosenOption.decisionSample)) {
-                recordAINoOpDecision(noOpDecision)
-                return false
-            }
+        var noOpFamily = chosenOption.decisionSample.familyIndex
+        var noOpDecision = scoreAIDecisionCandidate(side, noOpFamily, {
+            id: (noOpFamily == AI_DECISION_FAMILY.placement ? "placement" : "upgrade") + "|emergency-noop",
+            type: "noop",
+            actionKey: "noop",
+            noop: true,
+        }, matchup)
+        if(isAIDecisionScoreBetter(noOpDecision, chosenOption.decisionSample)) {
+            recordAINoOpDecision(noOpDecision)
+            return false
         }
         return requestAIDefenseOption(side, chosenOption, AI_ACTION_PRIORITY.emergency)
     }
@@ -8542,7 +8785,7 @@ function getBestNonEmergencyDefenseOption(side, matchup) {
     var defenseMath = matchup.defenseMath
     var bestUpgrade = getBestTowerUpgradeOption(side, matchup, defenseMath)
     var bestPlacement = getBestPlacementOption(side, matchup, defenseMath, false)
-    var buildPlanOption = getLoadoutDiscoveryPlacementOption(side, matchup)
+    var economyUtility = getBestAIEconomyUtilityOption(side, matchup)
     var candidates = []
     if(bestUpgrade) {
         candidates.push(bestUpgrade)
@@ -8550,31 +8793,37 @@ function getBestNonEmergencyDefenseOption(side, matchup) {
     if(bestPlacement) {
         candidates.push(bestPlacement)
     }
-    if(buildPlanOption) {
-        candidates.push(buildPlanOption)
+    if(economyUtility) {
+        candidates.push(economyUtility)
     }
     if(candidates.length == 0) {
         return null
     }
 
-    candidates.sort(function(a, b) {
+    var actionableCandidates = []
+    var bestNoOp = null
+    for(var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+        var candidate = candidates[candidateIndex]
+        var familyIndex = candidate.decisionSample.familyIndex
+        var noOp = scoreAIDecisionCandidate(side, familyIndex, {
+            id: "noop|" + familyIndex,
+            type: "noop",
+            actionKey: "noop",
+            noop: true,
+        }, matchup, candidate.decisionSample.stateFeatures)
+        if(isAIDecisionScoreBetter(noOp, bestNoOp)) bestNoOp = noOp
+        if(isAIDecisionScoreBetter(noOp, candidate.decisionSample) == false) actionableCandidates.push(candidate)
+    }
+    if(actionableCandidates.length == 0) {
+        recordAINoOpDecision(bestNoOp)
+        return null
+    }
+
+    actionableCandidates.sort(function(a, b) {
         if(a.score != b.score) return b.score - a.score
         return a.decisionSample.id < b.decisionSample.id ? -1 : 1
     })
-    var noOpFamily = candidates[0].decisionSample.familyIndex
-    var noOp = scoreAIDecisionCandidate(side, noOpFamily, {
-        id: (noOpFamily == AI_DECISION_FAMILY.placement ? "placement" : "upgrade") + "|noop",
-        type: "noop",
-        actionKey: "noop",
-        heuristic: matchup.safeToGreed ? 8 : -12,
-        heuristicScale: noOpFamily == AI_DECISION_FAMILY.placement ? 110 : 90,
-        noop: true,
-    }, matchup)
-    if(isAIDecisionScoreBetter(noOp, candidates[0].decisionSample)) {
-        recordAINoOpDecision(noOp)
-        return null
-    }
-    return candidates[0]
+    return actionableCandidates[0]
 }
 
 function getAdaptiveUpgradePriority(tower, matchup) {
@@ -8638,50 +8887,8 @@ function runAIUpgrades(side, matchup) {
 }
 
 function runAIDefense(side) {
-    var farms = getSideTowersByType(side, "farm")
-    var farmers = getSideTowersByType(side, "farmer")
     var matchup = getCurrentPlayerMatchupStyle(side)
-    var bananaCoverageIssue = getBananaCoverageIssue(side)
-    var farmCashout = getBestAIFarmCashoutCandidate(side, matchup)
-
-    for(var i = 0; i < farms.length; i++) {
-        if(farms[i].path2Upgrades >= 3 && farms[i].towerVar >= 1200) {
-            if(aiRequestCollectFarm(side, farms[i], AI_ACTION_PRIORITY.support)) {
-                return
-            }
-        }
-    }
-
-    if(farmCashout && aiRequestSellTower(side, farmCashout, matchup.dangerHigh ? AI_ACTION_PRIORITY.high : AI_ACTION_PRIORITY.support, farmCashout.aiSellDecisionSample)) {
-        return
-    }
-
-    if(tryPlaceEmergencyDefense(side, matchup)) {
-        return
-    }
-
-    if(aiProfile.currentAction && aiProfile.currentAction.priority >= AI_ACTION_PRIORITY.normal) {
-        return
-    }
-
-    if(bananaCoverageIssue && bananaCoverageIssue.needsFarmer && aiRequestPlaceFarmerForFarm(bananaCoverageIssue.farm, AI_ACTION_PRIORITY.high)) {
-        return
-    }
-
-    if(isSafeForAIBananaCollection(matchup)) {
-        var bananaToCollect = chooseBananaForCursorCollection(side)
-        if(bananaToCollect && aiRequestCollectBanana(side, bananaToCollect, AI_ACTION_PRIORITY.low)) {
-            return
-        }
-    }
-
-    if(farms.length > 0 && farmers.length == 0 && aiRequestPlaceFarmer(side, AI_ACTION_PRIORITY.support)) {
-        return
-    }
-
-    if(bananaCoverageIssue && bananaCoverageIssue.needsFarmer && aiRequestPlaceFarmerForFarm(bananaCoverageIssue.farm, AI_ACTION_PRIORITY.support)) {
-        return
-    }
+    if(aiProfile.currentAction) return
 
     var bestOption = getBestNonEmergencyDefenseOption(side, matchup)
     if(bestOption && requestAIDefenseOption(side, bestOption, AI_ACTION_PRIORITY.normal)) {
@@ -8689,83 +8896,21 @@ function runAIDefense(side) {
     }
 }
 
-function shouldAIRush(side, matchup) {
-    var strategy = getCurrentAIStrategy()
-    var enemyTraits = getDefenseTraitsForSide(matchup.enemySide)
-    var aggressiveRush = strategy.rushBias >= 0.72
-    var weaknessScore = Math.max(0, 8 - enemyTraits.heavy * 1.25, 8 - enemyTraits.splash * 1.2)
-    var adjustedRound = Math.max(10, strategy.rushRound - Math.round(matchup.playerGreedScore * 2))
-    var adjustedMoney = Math.max(1800, strategy.rushMoney - matchup.playerGreedScore * 700 - (matchup.playerLives <= 80 ? 350 : 0) + (matchup.playerThreat.score >= 16 ? 900 : 0))
-
-    if(aggressiveRush && matchup.enemyVulnerable) {
-        adjustedRound = Math.max(8, adjustedRound - 3)
-        adjustedMoney = Math.max(1400, adjustedMoney - 900)
-    }
-    if(weaknessScore >= 4.5) {
-        adjustedRound = Math.max(8, adjustedRound - 1)
-        adjustedMoney = Math.max(1400, adjustedMoney - 400)
-    }
-
-    if(gameNow() - aiProfile.lastRushAt < 9000) {
-        return false
-    }
-    if(matchup.playerThreat.score >= 20 || players[side].lives <= 35) {
-        return false
-    }
-
-    var heuristicEligible = getCurrentVisibleRound() >= adjustedRound && players[side].money >= adjustedMoney && (matchup.enemyVulnerable || matchup.aiPressure.maxPathPos >= 24 || aggressiveRush && weaknessScore >= 4.5)
-    var stateFeatures = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.rush, matchup)
-    var rushDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.rush, {
-        id: "rush|gate",
-        type: "rush",
-        actionKey: "rush|gate",
-        heuristic: heuristicEligible ? 12 : -12,
-        heuristicScale: 12,
-        cost: adjustedMoney,
-        money: players[side].money,
-        effect: weaknessScore,
-        effectScale: 8,
-        urgency: matchup.enemyVulnerable ? 1 : 0.25,
-    }, matchup, stateFeatures)
-    var noOpDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.rush, {
-        id: "rush|noop",
-        type: "noop",
-        actionKey: "noop",
-        heuristic: heuristicEligible ? -6 : 8,
-        heuristicScale: 12,
-        noop: true,
-        safety: matchup.dangerHigh ? 1 : 0,
-    }, matchup, stateFeatures)
-    if(isAIDecisionScoreBetter(rushDecision, noOpDecision)) return true
-    recordAINoOpDecision(noOpDecision)
-    return false
-}
-
 function runAIOffense(side) {
     var matchup = getCurrentPlayerMatchupStyle(side)
-    var strategy = getCurrentAIStrategy()
-
-    if(shouldAIPauseEcoForPendingPurchase(side, matchup)) {
-        players[side].autoEco = false
-        return
-    }
 
     aiSelectEcoSend(side, matchup)
-
-    if(shouldAIRush(side, matchup)) {
-        aiQueueRush(side, matchup)
-    }
-
+    aiQueueRush(side, matchup)
 }
 
 function runAIBoosts(side) {
     var matchup = getCurrentPlayerMatchupStyle(side)
     var boostChecks = [
-        { type: "towerboost.png", family: "defenseBoost", useful: shouldAITowerBoost(side), effect: matchup.defenseMath.requiredDps - matchup.defenseMath.currentDps },
-        { type: "lightningboost.png", family: "defenseBoost", useful: shouldAILightningBoost(side), effect: matchup.defenseMath.requiredDps - matchup.defenseMath.currentDps },
-        { type: "slowboost.png", family: "offenseBoost", useful: shouldAISlowBoost(side), effect: matchup.offenseMath.requiredDps - matchup.offenseMath.currentDps },
-        { type: "bloonboost.png", family: "offenseBoost", useful: shouldAIBloonBoost(side), effect: matchup.offenseMath.requiredDps - matchup.offenseMath.currentDps },
-        { type: "ecoboost.png", family: "eco", useful: shouldAIEcoBoost(side), effect: players[side].eco },
+        { type: "towerboost.png", family: "defenseBoost" },
+        { type: "lightningboost.png", family: "defenseBoost" },
+        { type: "slowboost.png", family: "offenseBoost" },
+        { type: "bloonboost.png", family: "offenseBoost" },
+        { type: "ecoboost.png", family: "eco" },
     ]
     var stateFeatures = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.boost, matchup)
     var bestBoost = null
@@ -8775,22 +8920,16 @@ function runAIBoosts(side) {
         if(slot == -1 || getBoostCount(side, slot) <= 0 || getBoostExpires(side, slot) + BOOST_SETTINGS.cooldownMs > gameNow()) {
             continue
         }
-        var legacyBonus = getAITacticalActionBonus(side, candidate.family, "boost|" + candidate.type.replace(".png", ""), matchup)
         candidate.decisionSample = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.boost, {
             id: "boost|" + candidate.type,
             type: candidate.type,
             role: candidate.family,
             actionKey: "boost|" + candidate.type.replace(".png", ""),
-            heuristic: (candidate.useful ? 16 : -12) + legacyBonus * 8,
-            heuristicScale: 20,
-            effect: candidate.effect,
-            effectScale: 100,
             index: i,
             maxIndex: boostChecks.length - 1,
             count: getBoostCount(side, slot),
             countScale: BOOST_SETTINGS.charges,
             cooldownReady: true,
-            urgency: matchup.dangerHigh && candidate.family == "defenseBoost" ? 1 : 0.3,
         }, matchup, stateFeatures)
         if(!bestBoost || isAIDecisionScoreBetter(candidate.decisionSample, bestBoost.decisionSample)) {
             bestBoost = candidate
@@ -8799,17 +8938,13 @@ function runAIBoosts(side) {
     if(!bestBoost) {
         return
     }
-    var immediateLethal = matchup.defenseMath.minTimeToExitSec <= 2.2 && matchup.defenseMath.requiredDps > matchup.defenseMath.currentDps
     var noOpDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.boost, {
         id: "boost|noop",
         type: "noop",
         actionKey: "noop",
-        heuristic: 2,
-        heuristicScale: 20,
         noop: true,
-        safety: immediateLethal ? -1 : 0,
     }, matchup, stateFeatures)
-    if(immediateLethal == false && isAIDecisionScoreBetter(noOpDecision, bestBoost.decisionSample)) {
+    if(isAIDecisionScoreBetter(noOpDecision, bestBoost.decisionSample)) {
         recordAINoOpDecision(noOpDecision)
         return
     }
@@ -8877,6 +9012,9 @@ function handleAIWindowFocus() {
     updateAIPregameObservePauseState()
     if(AI_CROSS_MATCH_LEARNING_ENABLED && (frontMenuState == "stats" || aiPersistenceState.lastLoadedAt <= 0 || realNow() - aiPersistenceState.lastLoadedAt >= 60000)) {
         refreshAILearningFromBackend(false)
+    }
+    if(frontMenuState == "stats" || aiTrainerStatusState.lastLoadedAt <= 0 || realNow() - aiTrainerStatusState.lastLoadedAt >= AI_TRAINING_STATUS_REFRESH_INTERVAL) {
+        refreshAITrainerStatus(false)
     }
 }
 
