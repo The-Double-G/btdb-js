@@ -102,7 +102,7 @@ jobs:
           done
 
           pending="$cancel_ids"
-          for attempt in $(seq 1 120); do
+          for _ in $(seq 1 120); do
             next_pending=""
             for run_id in $pending; do
               status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status')
@@ -163,7 +163,7 @@ jobs:
             -f expected_sha="$current_sha"
 
           dispatched_id=""
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             dispatched_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
               -f per_page=100 --jq ".workflow_runs[] | select(.id > $before_id and .display_title == \"$expected_title\") | .id" | head -n 1)
             if [ -n "$dispatched_id" ]; then break; fi

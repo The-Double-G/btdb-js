@@ -88,7 +88,7 @@ jobs:
       - id: bundle
         name: Validate and stage promotion
         run: |
-          oversized=$(find "$RUNNER_TEMP/bundle" -type f -size +${AI_ARTIFACT_MAX_BYTES}c -print -quit)
+          oversized=$(find "$RUNNER_TEMP/bundle" -type f -size "+${AI_ARTIFACT_MAX_BYTES}c" -print -quit)
           if [ -n "$oversized" ]; then
             echo "Promotion artifact exceeds ${AI_ARTIFACT_MAX_BYTES} bytes: $oversized" >&2
             exit 1
@@ -202,7 +202,7 @@ jobs:
           gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$promotion_branch"
 
           ci_run_id=""
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             ci_run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$promotion_branch" --event workflow_dispatch --limit 100 --json databaseId,headSha --jq ".[] | select(.headSha == \"$promotion_sha\") | .databaseId" | head -n 1)
             if [ -n "$ci_run_id" ]; then break; fi
             sleep 2
