@@ -53,6 +53,8 @@ Required protected environment:
 
 The matching server-side SHA-256 hash must be installed before hosted promotion is enabled.
 
+The hosted client recognizes InfinityFree's fixed AES browser challenge, derives its short-lived `__test` cookie locally, and retries the original same-origin request once. Other HTML responses and malformed challenges remain hard failures.
+
 A healthy continuous run dispatches its successor before finishing. The watchdog checks four times per hour and starts training only when no default-branch generation is active. It refuses to start when an `ai-promotion/*` branch indicates an unresolved hosted/audit transaction. A circuit breaker opens after three consecutive failed training runs instead of retrying forever.
 
 Either enable variable is an immediate kill switch for automatic promotion, successor dispatch, and watchdog restarts. An already-running read-only generation may finish its report.

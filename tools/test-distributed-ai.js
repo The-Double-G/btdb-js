@@ -40,7 +40,9 @@ const {
 const {
     HOSTED_RESPONSE_MAX_BYTES,
     createHostedReconciliation,
+    infinityFreeChallengeCookie,
     readResponseBody,
+    requestJson,
     validateEndpointUrl,
 } = require("./distributed-ai/hosted-model")
 
@@ -241,6 +243,33 @@ async function main() {
     assert.equal(await readResponseBody(fakeResponse([Buffer.from("1234"), Buffer.from("5678")]), 8), "12345678")
     await assert.rejects(readResponseBody(fakeResponse([Buffer.alloc(8), Buffer.alloc(1)]), 8), /exceeds 8 bytes/)
     await assert.rejects(readResponseBody(fakeResponse([], "8388609")), /exceeds 8388608 bytes/)
+    const infinityFreeChallenge = '<html><body><script type="text/javascript" src="/aes.js" ></script><script>var a=toNumbers("f655ba9d09a112d4968c63579db590b4"),b=toNumbers("98344c2eee86c3994890592585b49f80"),c=toNumbers("aca8666ef59ce6922ce5566e59f9515f");document.cookie="__test="+toHex(slowAES.decrypt(c,2,a,b))+"; path=/";</script></body></html>'
+    assert.equal(infinityFreeChallengeCookie(infinityFreeChallenge), "__test=33d42158b7f9a148cc47d4eb4b45a347")
+    assert.equal(infinityFreeChallengeCookie("<html><body>Maintenance</body></html>"), null)
+    assert.throws(() => infinityFreeChallengeCookie(infinityFreeChallenge.replace("aca8666ef59ce6922ce5566e59f9515f", "invalid")), /malformed InfinityFree/)
+    const originalFetch = global.fetch
+    const challengeRequests = []
+    try {
+        global.fetch = async (url, options) => {
+            challengeRequests.push({ url, options })
+            return challengeRequests.length == 1
+                ? new Response(infinityFreeChallenge, { status: 200, headers: { "Content-Type": "text/html" } })
+                : new Response('{"ok":true}', { status: 200, headers: { "Content-Type": "application/json" } })
+        }
+        assert.deepEqual(await requestJson("https://challenge.invalid/ai-learning.php?protocol=1", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Test-Key": "secret" },
+            body: "{}",
+        }), { ok: true })
+    } finally {
+        global.fetch = originalFetch
+    }
+    assert.equal(challengeRequests.length, 2)
+    assert.equal(challengeRequests[0].options.headers.Cookie, undefined)
+    assert.equal(challengeRequests[1].options.headers.Cookie, "__test=33d42158b7f9a148cc47d4eb4b45a347")
+    assert.equal(challengeRequests[1].options.method, "POST")
+    assert.equal(challengeRequests[1].options.body, "{}")
+    assert.equal(challengeRequests[1].options.headers["X-Test-Key"], "secret")
 
     const exactPolicy = policy()
     assert.deepEqual(Object.keys(exactPolicy).sort(), ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"].sort())

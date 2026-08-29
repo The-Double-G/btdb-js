@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict"
 
+const crypto = require("node:crypto")
 const {
     buildPolicyPromotionRequest,
     createHostedPromotionReceipt,
@@ -27,6 +28,7 @@ const usage = [
 ].join("\n")
 
 const HOSTED_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+const infinityFreeCookies = new Map()
 
 function validateEndpointUrl(value) {
     let url
@@ -62,15 +64,46 @@ async function readResponseBody(response, maximumBytes = HOSTED_RESPONSE_MAX_BYT
     return Buffer.concat(chunks, size).toString("utf8")
 }
 
-async function requestJson(url, options = {}) {
-    if(typeof options.body == "string" && Buffer.byteLength(options.body) > MAX_JSON_BYTES) fail(`Hosted endpoint request exceeds ${MAX_JSON_BYTES} bytes`)
+function infinityFreeChallengeCookie(body) {
+    if(typeof body != "string"
+        || !body.includes('src="/aes.js"')
+        || !body.includes('document.cookie="__test="+toHex(slowAES.decrypt(c,2,a,b))')) return null
+    const match = body.match(/var a=toNumbers\("([0-9a-f]{32})"\),b=toNumbers\("([0-9a-f]{32})"\),c=toNumbers\("([0-9a-f]{32})"\)/)
+    if(!match) fail("Hosted endpoint returned a malformed InfinityFree browser challenge")
+    try {
+        const decipher = crypto.createDecipheriv("aes-128-cbc", Buffer.from(match[1], "hex"), Buffer.from(match[2], "hex"))
+        decipher.setAutoPadding(false)
+        const value = Buffer.concat([decipher.update(Buffer.from(match[3], "hex")), decipher.final()]).toString("hex")
+        if(!/^[0-9a-f]{32}$/.test(value)) fail("Hosted endpoint returned a malformed InfinityFree browser challenge")
+        return `__test=${value}`
+    } catch(error) {
+        if(error && error.message == "Hosted endpoint returned a malformed InfinityFree browser challenge") throw error
+        fail("Hosted endpoint returned a malformed InfinityFree browser challenge")
+    }
+}
+
+async function sendHostedRequest(url, options, cookie = "") {
+    const headers = { Accept: "application/json", ...(options.headers || {}) }
+    if(cookie) headers.Cookie = cookie
     const response = await fetch(url, {
         ...options,
         redirect: "error",
         signal: AbortSignal.timeout(20000),
-        headers: { Accept: "application/json", ...(options.headers || {}) },
+        headers,
     })
-    const body = await readResponseBody(response)
+    return { response, body: await readResponseBody(response) }
+}
+
+async function requestJson(url, options = {}) {
+    if(typeof options.body == "string" && Buffer.byteLength(options.body) > MAX_JSON_BYTES) fail(`Hosted endpoint request exceeds ${MAX_JSON_BYTES} bytes`)
+    const origin = new URL(url).origin
+    let { response, body } = await sendHostedRequest(url, options, infinityFreeCookies.get(origin))
+    const challengeCookie = infinityFreeChallengeCookie(body)
+    if(challengeCookie) {
+        infinityFreeCookies.set(origin, challengeCookie)
+        ;({ response, body } = await sendHostedRequest(url, options, challengeCookie))
+        if(infinityFreeChallengeCookie(body)) fail("Hosted endpoint rejected the InfinityFree browser challenge cookie")
+    }
     let parsed
     try {
         parsed = JSON.parse(body)
@@ -193,6 +226,7 @@ module.exports = {
     HOSTED_RESPONSE_MAX_BYTES,
     createHostedReconciliation,
     fetchHostedSnapshot,
+    infinityFreeChallengeCookie,
     publishHostedPromotion,
     readResponseBody,
     reconcileHostedPromotion,
