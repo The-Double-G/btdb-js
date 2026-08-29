@@ -3574,8 +3574,7 @@ function animate() {
         ctx.strokeText("Cash Generated inc. Eco: $" + Math.floor(p1TotalCashGenerated + p1CashGenWithEco).toLocaleString(), canvas.width/4, canvas.height/8 + 7*canvas.height*3/32, canvas.width/2)
         ctx.strokeText("Cash Generated inc. Eco: $" + Math.floor(p2TotalCashGenerated + p2CashGenWithEco).toLocaleString(), 3*canvas.width/4, canvas.height/8 + 7*canvas.height*3/32, canvas.width/2)
         ctx.strokeText("Round " + Math.trunc(round/2), canvas.width/2, canvas.height/8, canvas.width/2)
-        var collectedCommunityMatch = aiEnabled || selectedMenuMode == "local" && practiceMode == false && bossMode == false
-        var aiRematchMessage = collectedCommunityMatch && AI_CROSS_MATCH_LEARNING_ENABLED ? (aiPersistenceState.contributionInFlight || aiPersistenceState.pendingContributions > 0 ? "Refresh after the global AI contribution finishes syncing..." : "Refresh to rematch! This match contributed to the global AI.") : "Refresh to rematch!"
+        var aiRematchMessage = typeof getCompletedMatchAIRematchMessage == "function" ? getCompletedMatchAIRematchMessage() : "Refresh to rematch!"
         ctx.strokeText(aiRematchMessage, canvas.width/2, canvas.height*7/8, canvas.width/2)
         ctx.fillText("Money: $" + Math.floor(p1money).toLocaleString(), canvas.width/4, canvas.height/8 + canvas.height*3/32, canvas.width/2)
         ctx.fillText("Money: $" + Math.floor(p2money).toLocaleString(), 3*canvas.width/4, canvas.height/8 + canvas.height*3/32, canvas.width/2)

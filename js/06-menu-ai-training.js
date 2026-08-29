@@ -115,6 +115,9 @@ var aiContextsBySide = {}
 var aiTrainingFrameSimulationMultiplier = 1
 var aiTrainingLastSimulationFrameAt = 0
 var aiTrainingHeadlessRenderContext = null
+var aiTrainingSessionLearning = null
+var aiTrainingCommunityLearning = null
+var aiTrainingSessionModelActive = false
 
 function createAITrainingState() {
     return {
@@ -167,6 +170,7 @@ function createAITrainingState() {
         promotions: 0,
         rejectedCandidates: 0,
         opponentPolicyKind: "champion",
+        persistenceMode: "",
         trueSelfPlayProgressKey: "",
         trueSelfPlayProgressAt: 0,
         trueSelfPlayRecentRounds: [],
@@ -194,6 +198,56 @@ function createAITrainingState() {
 }
 
 var aiTrainingState = createAITrainingState()
+
+function cloneAITrainingLearning(model) {
+    return normalizeAILearningData(JSON.parse(JSON.stringify(model)))
+}
+
+function installAITrainingHostedLearning(model) {
+    if(aiTrainingSessionModelActive == false) {
+        return false
+    }
+    aiTrainingCommunityLearning = model
+    return true
+}
+
+function activateAITrainingSessionModel() {
+    if(aiTrainingSessionModelActive) {
+        return true
+    }
+    ensureAILearningLoaded()
+    if(!aiLearning) {
+        return false
+    }
+    aiTrainingCommunityLearning = aiLearning
+    if(!aiTrainingSessionLearning) {
+        aiTrainingSessionLearning = cloneAITrainingLearning(aiLearning)
+    }
+    aiLearning = aiTrainingSessionLearning
+    aiTrainingSessionModelActive = true
+    return true
+}
+
+function deactivateAITrainingSessionModel() {
+    if(aiTrainingSessionModelActive == false) {
+        return false
+    }
+    aiTrainingSessionLearning = aiLearning
+    aiLearning = aiTrainingCommunityLearning || aiLearning
+    aiTrainingCommunityLearning = null
+    aiTrainingSessionModelActive = false
+    return true
+}
+
+function syncAITrainingCommittedLearning(model) {
+    var committedLearning = cloneAITrainingLearning(model)
+    if(aiTrainingSessionModelActive) {
+        aiTrainingCommunityLearning = committedLearning
+    } else {
+        aiTrainingCommunityLearning = null
+        aiLearning = committedLearning
+    }
+}
 
 function createAIProfileState() {
     return {
@@ -557,7 +611,7 @@ function clearAITrainingResetConfirmationState() {
 function getAITrainingResetSessionLabel() {
     syncAITrainingResetConfirmationState()
     if(aiTrainingState.resetConfirmStage <= 0) {
-        return "Reset Session"
+        return "Reset Metrics"
     }
     if(aiTrainingState.resetConfirmStage == 1) {
         return "Confirm 2 of 3"
@@ -613,6 +667,7 @@ function resetAITrainingSession() {
     nextState.batchOptionIndex = aiTrainingState.batchOptionIndex
     nextState.goalOptionIndex = aiTrainingState.goalOptionIndex
     nextState.profileIndex = aiTrainingState.profileIndex
+    nextState.persistenceMode = aiTrainingState.persistenceMode
     aiTrainingState = nextState
     setAITrainingNotice("Training session metrics reset.", 1800)
 }
@@ -626,10 +681,10 @@ function markAIHostedSaveFailure(error) {
 }
 
 function saveAITrainingLearningSnapshot() {
-    if(aiPersistenceState.contributionEnabled) {
+    if(shouldAITrainingPublishContributions()) {
         return flushAIPublicContributionQueue()
     }
-    return saveAILearningSnapshot()
+    return shouldAITrainingUseSnapshotPersistence() ? saveAILearningSnapshot() : false
 }
 
 var baseNormalizeAILearningData = normalizeAILearningData
@@ -654,7 +709,19 @@ function requestAITrainingSave(forceSave) {
         }
         return false
     }
-    if(aiPersistenceState.contributionEnabled) {
+    if(getAITrainingPersistenceMode() == "session") {
+        if(forceSave) {
+            setAITrainingNotice("Session-only training progress stays in this browser tab.", 2200)
+        }
+        return false
+    }
+    if(shouldAITrainingPublishContributions()) {
+        if(aiPersistenceState.contributionEnabled == false) {
+            if(forceSave) {
+                setAITrainingNotice("Global contribution sync is unavailable.", 2200)
+            }
+            return false
+        }
         var progressCount = getAITrainingMode().id == "selfplay" ? aiTrainingState.trueSelfPlayMatches : aiTrainingState.sessionEpisodes
         flushAIPublicContributionQueue()
         aiTrainingState.pendingSaveEpisodes = 0
@@ -689,6 +756,74 @@ function requestAITrainingSave(forceSave) {
     }
     setAITrainingNotice(forceSave ? "Saving AI training snapshot..." : "Autosaving AI training snapshot...", 1800)
     return true
+}
+
+function canAITrainingCommitSnapshot() {
+    return shouldAITrainingUseSnapshotPersistence() && aiPersistenceState.writeEnabled && getAITrainerKey() != ""
+}
+
+function getAITrainingPersistenceMode() {
+    if(aiTrainingState.persistenceMode) {
+        return aiTrainingState.persistenceMode
+    }
+    if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.writeEnabled && getAITrainerKey() != "") {
+        return "snapshot"
+    }
+    return AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.contributionEnabled ? "contributions" : "session"
+}
+
+function shouldAITrainingUseSnapshotPersistence() {
+    return getAITrainingPersistenceMode() == "snapshot"
+}
+
+function shouldAITrainingPublishContributions() {
+    return getAITrainingPersistenceMode() == "contributions"
+}
+
+function getAITrainingSaveButtonState() {
+    if(AI_CROSS_MATCH_LEARNING_ENABLED == false) {
+        return { label: "Session Only", disabled: true, action: "none" }
+    }
+    if(aiPersistenceState.loadInFlight) {
+        return { label: "Refreshing...", disabled: true, action: "none" }
+    }
+    if(aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight) {
+        return { label: "Syncing...", disabled: true, action: "none" }
+    }
+    if(aiPersistenceState.pendingContributions > 0) {
+        return aiPersistenceState.contributionEnabled ? { label: "Sync " + aiPersistenceState.pendingContributions + " Queued", disabled: false, action: "contributions" } : { label: "Sync Unavailable", disabled: true, action: "none" }
+    }
+    if(shouldAITrainingUseSnapshotPersistence()) {
+        if(canAITrainingCommitSnapshot()) {
+            return { label: "Save Snapshot", disabled: false, action: "snapshot" }
+        }
+        return { label: "Trainer Key Needed", disabled: true, action: "none" }
+    }
+    if(shouldAITrainingPublishContributions() && aiPersistenceState.contributionEnabled) {
+        return { label: "Global Synced", disabled: true, action: "none" }
+    }
+    if(getAITrainingPersistenceMode() == "session") {
+        return { label: "Session Only", disabled: true, action: "none" }
+    }
+    return { label: "Sync Unavailable", disabled: true, action: "none" }
+}
+
+function requestAITrainingControlSave() {
+    var saveState = getAITrainingSaveButtonState()
+    if(saveState.action == "snapshot") {
+        if(saveAILearning()) {
+            setAITrainingNotice("Saving authenticated AI snapshot...", 1800)
+            return true
+        }
+        setAITrainingNotice("AI snapshot could not be saved.", 2200)
+        return false
+    }
+    if(saveState.action == "contributions") {
+        flushAIPublicContributionQueue()
+        setAITrainingNotice("Queued global contributions are syncing.", 2200)
+        return true
+    }
+    return false
 }
 
 function syncAITrainingSaveState() {
@@ -902,10 +1037,25 @@ function getAITrainingAverageFeatureValue(featureIndex) {
     return aiTrainingState.sessionFeatureSums[featureIndex] / aiTrainingState.sessionEpisodes
 }
 
+function getAITrainingEvaluationDisplay() {
+    if(aiTrainingState.evaluationGames > 0) {
+        return {
+            label: "Live Eval",
+            score: (aiTrainingState.evaluationWins + aiTrainingState.evaluationTies * 0.5) / aiTrainingState.evaluationGames,
+        }
+    }
+    return {
+        label: "Last Eval",
+        score: aiTrainingState.lastEvaluationScore,
+    }
+}
+
 function getAITrainingTopStrategyIndices(limit, counts) {
     var indices = []
     for(var i = 0; i < counts.length; i++) {
-        indices.push(i)
+        if(counts[i] > 0) {
+            indices.push(i)
+        }
     }
     indices.sort(function(a, b) {
         if(counts[b] != counts[a]) {
@@ -1769,8 +1919,23 @@ function stopAITrainingTrueSelfPlay(openDashboardAfterStop) {
 
 function startAITrainingTrueSelfPlay() {
     ensureAILearningLoaded()
-    if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.restoreComplete == false && aiPersistenceState.loadInFlight) {
+    if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.loadInFlight) {
         setAITrainingNotice("Wait for hosted AI data to finish loading.", 1800)
+        return false
+    }
+    var persistenceMode = getAITrainingPersistenceMode()
+    if(persistenceMode == "snapshot" && (aiPersistenceState.contributionInFlight || getAIPublicContributionQueue().length > 0)) {
+        flushAIPublicContributionQueue()
+        setAITrainingNotice("Wait for queued global contributions to finish syncing.", 2000)
+        return false
+    }
+    aiTrainingState.persistenceMode = persistenceMode
+    if(activateAITrainingSessionModel() == false) {
+        setAITrainingNotice("Training model is not ready yet.", 1800)
+        return false
+    }
+    if(aiTrainingState.trueSelfPlayMatches >= getAITrainingGoalEpisodes()) {
+        setAITrainingNotice("Increase the match goal or reset metrics before starting again.", 2200)
         return false
     }
     if(aiTrainingState.startedAt <= 0) {
@@ -1868,6 +2033,15 @@ function openAITrainingDashboard() {
         aiTrainingState.returnState = frontMenuState
     }
     frontMenuState = "training"
+    if(aiTrainingSessionLearning || aiPersistenceState.restoreComplete) {
+        activateAITrainingSessionModel()
+    } else {
+        waitForAILearningRefreshIdle().then(function() {
+            if(frontMenuState == "training") {
+                activateAITrainingSessionModel()
+            }
+        })
+    }
     if(aiTrainingState.startedAt <= 0) {
         aiTrainingState.startedAt = realNow()
     }
@@ -1877,6 +2051,7 @@ function openAITrainingDashboard() {
 function closeAITrainingDashboard() {
     setAITrainingRunning(false)
     requestAITrainingSave(true)
+    deactivateAITrainingSessionModel()
     frontMenuState = aiTrainingState.returnState && aiTrainingState.returnState != "training" ? aiTrainingState.returnState : "mode"
 }
 
@@ -1995,7 +2170,7 @@ function drawAITrainingScreen() {
     ctx.fillText("AI Training Lab", canvas.width / 2, panelY + panelHeight * 0.08, panelWidth * 0.5)
     ctx.font = "15px Arial"
     ctx.fillStyle = "rgba(214, 228, 255, 0.86)"
-    ctx.fillText("Candidate training against frozen champion and historical policy snapshots.", canvas.width / 2, panelY + panelHeight * 0.125, panelWidth * 0.78)
+    ctx.fillText("Browser-session candidates train against a frozen session champion; community sync is reported separately.", canvas.width / 2, panelY + panelHeight * 0.125, panelWidth * 0.82)
     if(aiTrainingState.noticeUntil > realNow()) {
         ctx.font = "14px Arial"
         ctx.fillStyle = "#ffd774"
@@ -2015,6 +2190,7 @@ function drawAITrainingScreen() {
     var coachRate = aiTrainingState.sessionEpisodes > 0 ? aiTrainingState.sessionCoachHits / aiTrainingState.sessionEpisodes : 0
     var averageReward = aiTrainingState.sessionEpisodes > 0 ? aiTrainingState.sessionRewardTotal / aiTrainingState.sessionEpisodes : 0
     var averageSelfPlayRound = aiTrainingState.trueSelfPlayMatches > 0 ? aiTrainingState.trueSelfPlayRoundTotal / aiTrainingState.trueSelfPlayMatches : 0
+    var evaluationDisplay = getAITrainingEvaluationDisplay()
     var runtimeLabel = aiTrainingState.running ? "Running" : "Idle"
     if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.loadInFlight && aiPersistenceState.restoreComplete == false) {
         runtimeLabel = "Loading hosted data"
@@ -2028,8 +2204,8 @@ function drawAITrainingScreen() {
     var summaryMetrics = trainingMode.id == "selfplay" ? [
         { label: "Matches", value: aiTrainingState.trueSelfPlayMatches.toLocaleString(), color: "#62c5ff" },
         { label: "Phase", value: aiTrainingState.evaluationActive ? "Eval " + aiTrainingState.evaluationGames + "/32" : "Train " + aiTrainingState.candidateTrainingMatches + "/64", color: "#7fe0a2" },
-        { label: "Eval Score", value: Math.round(aiTrainingState.lastEvaluationScore * 100) + "%", color: "#f7c76d" },
-        { label: "Promoted", value: aiTrainingState.promotions.toLocaleString(), color: "#87f0ad" },
+        { label: evaluationDisplay.label, value: Math.round(evaluationDisplay.score * 100) + "%", color: "#f7c76d" },
+        { label: "Session Promoted", value: aiTrainingState.promotions.toLocaleString(), color: "#87f0ad" },
         { label: "Rejected", value: aiTrainingState.rejectedCandidates.toLocaleString(), color: "#ff9f8f" },
         { label: "Avg Round", value: averageSelfPlayRound.toFixed(1), color: "#7bd8d4" },
     ] : [
@@ -2058,7 +2234,7 @@ function drawAITrainingScreen() {
     var featureWidth = contentWidth - strategyWidth - sectionGap
     var featureX = contentX + strategyWidth + sectionGap
     drawAIStatsCard(contentX, bottomY, strategyWidth, bottomHeight, "Top Archetypes", "rgba(255, 189, 92, 0.92)")
-    drawAIStatsCard(featureX, bottomY, featureWidth, bottomHeight, "Feature Pulse", "rgba(116, 232, 170, 0.92)")
+    drawAIStatsCard(featureX, bottomY, featureWidth, bottomHeight, trainingMode.id == "selfplay" ? "Session Player Profile" : "Session Feature Pulse", "rgba(116, 232, 170, 0.92)")
 
     ctx.textAlign = "left"
     var statusTextX = contentX + statusWidth * 0.06
@@ -2070,12 +2246,12 @@ function drawAITrainingScreen() {
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
-        (trainingMode.id == "selfplay" ? "Auto rematch" : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
+        (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,
     ]
     if(trainingMode.id == "selfplay") {
         statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
-        statusLines.push("Champion generation: " + aiLearning.championGeneration.toLocaleString())
+        statusLines.push("Session champion generation: " + aiLearning.championGeneration.toLocaleString())
         statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())
     }
     var statusTextY = middleY + 40
@@ -2099,9 +2275,9 @@ function drawAITrainingScreen() {
     var trendMetricHeight = 32
     if(trainingMode.id == "selfplay") {
         drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Wins", aiTrainingState.evaluationWins.toLocaleString(), "#7fe0a2")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Loss", aiTrainingState.evaluationLosses.toLocaleString(), "#ff9f8f")
+        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Losses", aiTrainingState.evaluationLosses.toLocaleString(), "#ff9f8f")
         drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Ties", aiTrainingState.evaluationTies.toLocaleString(), "#62c5ff")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Champion", "v" + aiLearning.championGeneration, "#f7c76d")
+        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Session Champion", "v" + aiLearning.championGeneration, "#f7c76d")
     } else {
         drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Positive", aiTrainingState.sessionWins.toLocaleString(), "#7fe0a2")
         drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Negative", aiTrainingState.sessionLosses.toLocaleString(), "#ff9f8f")
@@ -2119,6 +2295,12 @@ function drawAITrainingScreen() {
     var rowGap = 6
     var listX = contentX + strategyWidth * 0.05
     var listWidth = strategyWidth * 0.9
+    if(topStrategyIndices.length == 0) {
+        ctx.textAlign = "center"
+        ctx.font = "12px Arial"
+        ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
+        ctx.fillText("No session matches recorded yet.", contentX + strategyWidth / 2, rowBaseY + 24, strategyWidth * 0.8)
+    }
     for(var topIndex = 0; topIndex < topStrategyIndices.length; topIndex++) {
         var strategyIndex = topStrategyIndices[topIndex]
         var strategyRowY = rowBaseY + topIndex * (rowHeight + rowGap)
@@ -2182,8 +2364,9 @@ getFrontMenuButtons = function() {
         var trainingRow1Y = canvas.height * 0.755
         var trainingRow2Y = trainingRow1Y + trainingButtonHeight + trainingGapY
         var trainingRow3Y = trainingRow2Y + trainingButtonHeight + trainingGapY
+        var trainingSaveState = getAITrainingSaveButtonState()
         buttons.push({ id: "training-toggle", x: trainingStartX, y: trainingRow1Y, width: trainingButtonWidth, height: trainingButtonHeight, label: aiTrainingState.running ? "Stop Trainer" : "Start Trainer" })
-        buttons.push({ id: "training-save", x: trainingStartX + (trainingButtonWidth + trainingGapX), y: trainingRow1Y, width: trainingButtonWidth, height: trainingButtonHeight, label: AI_CROSS_MATCH_LEARNING_ENABLED ? (aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight ? "Syncing..." : aiPersistenceState.contributionEnabled ? "Sync Global" : "Save Snapshot") : "Session Save" })
+        buttons.push({ id: "training-save", x: trainingStartX + (trainingButtonWidth + trainingGapX), y: trainingRow1Y, width: trainingButtonWidth, height: trainingButtonHeight, label: trainingSaveState.label })
         buttons.push({ id: "training-reset-session", x: trainingStartX + (trainingButtonWidth + trainingGapX) * 2, y: trainingRow1Y, width: trainingButtonWidth, height: trainingButtonHeight, label: getAITrainingResetSessionLabel() })
         buttons.push({ id: "training-speed-down", x: trainingStartX, y: trainingRow2Y, width: trainingButtonWidth, height: trainingButtonHeight, label: "Slower" })
         buttons.push({ id: "training-speed-up", x: trainingStartX + (trainingButtonWidth + trainingGapX), y: trainingRow2Y, width: trainingButtonWidth, height: trainingButtonHeight, label: "Faster" })
@@ -2198,7 +2381,7 @@ getFrontMenuButtons = function() {
 var baseIsFrontMenuButtonDisabled = isFrontMenuButtonDisabled
 isFrontMenuButtonDisabled = function(button) {
     if(button.id == "training-save") {
-        return AI_CROSS_MATCH_LEARNING_ENABLED && (aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight)
+        return getAITrainingSaveButtonState().disabled
     }
     if(button.id == "training-speed-down") {
         return aiTrainingState.batchOptionIndex <= 0
@@ -2213,7 +2396,7 @@ isFrontMenuButtonDisabled = function(button) {
         return aiTrainingState.goalOptionIndex >= AI_TRAINING_GOAL_OPTIONS.length - 1
     }
     if(button.id == "training-toggle") {
-        return AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.restoreComplete == false && aiPersistenceState.loadInFlight
+        return AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.loadInFlight || aiTrainingState.running == false && aiTrainingState.trueSelfPlayMatches >= getAITrainingGoalEpisodes()
     }
     return baseIsFrontMenuButtonDisabled(button)
 }
@@ -2246,7 +2429,7 @@ handleFrontMenuClick = function(x, y) {
             aiTrainingState.goalOptionIndex = Math.min(AI_TRAINING_GOAL_OPTIONS.length - 1, aiTrainingState.goalOptionIndex + 1)
             setAITrainingNotice("Training goal set to " + getAITrainingGoalEpisodes().toLocaleString() + " matches.", 1700)
         } else if(button.id == "training-save") {
-            requestAITrainingSave(true)
+            requestAITrainingControlSave()
         } else if(button.id == "training-reset-session") {
             requestAITrainingSessionReset()
         } else if(button.id == "back") {

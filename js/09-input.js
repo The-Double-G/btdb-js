@@ -953,8 +953,7 @@ function handleFarmerOrTargeting(side, keyCode, direction) {
     updateTowerTargetPriority(selectedTower, direction)
 }
 
-addEventListener("mousemove", updateMousePosition)
-addEventListener("mousedown", function(event) {
+function handleCanvasPointerDown(event) {
     var canvasPoint = getCanvasPointFromEvent(event)
     if(handleAITrainingTrueSelfPlayOverlayClick(canvasPoint.x, canvasPoint.y)) {
         return
@@ -967,7 +966,10 @@ addEventListener("mousedown", function(event) {
         markPauseToggleUsed()
         setGamePaused(false)
     }
-})
+}
+
+addEventListener("pointermove", updateMousePosition)
+addEventListener("pointerdown", handleCanvasPointerDown)
 
 var keyState = {}
 

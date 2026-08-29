@@ -78,6 +78,7 @@ var aiPersistenceState = {
     loadInFlight: false,
     saveInFlight: false,
     lastLoadedAt: 0,
+    updatedAt: "",
     lastSavedAt: 0,
     lastError: "",
     revision: 0,
@@ -92,6 +93,9 @@ var aiPersistenceState = {
     contributionEpoch: 1,
 }
 var aiTowerDpsCache = {}
+var aiLearningRefreshPromise = null
+var aiLearningRefreshForceQueued = false
+var aiLearningLastRefreshSucceeded = false
 var aiLoadoutLibraryReady = false
 var aiLoadoutLibrary = []
 var aiLoadoutsByKey = {}
@@ -680,6 +684,9 @@ function createLocalMatchSideTelemetry() {
 function resetLocalMatchCollection() {
     localMatchCollectionState = {
         recorded: false,
+        contributionStatus: "not-eligible",
+        contributionIds: [],
+        acceptedContributionIds: {},
         contributionEpoch: Math.max(1, Math.floor(aiPersistenceState.contributionEpoch)),
         sides: {
             1: createLocalMatchSideTelemetry(),
@@ -785,6 +792,9 @@ function startVsAIGameSetup(side) {
 }
 
 function isFrontMenuButtonDisabled(button) {
+    if(button.id == "ai-refresh") {
+        return AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.loadInFlight
+    }
     return false
 }
 
@@ -1622,45 +1632,97 @@ function shouldRequireAISaveFolder() {
     return false
 }
 
-function requestAILearningFromBackend() {
-    if(aiPersistenceState.restoreRequested || AI_CROSS_MATCH_LEARNING_ENABLED == false) {
+function applyAILearningEnvelope(parsed, forceModelInstall) {
+    if(!parsed || parsed.ok !== true || Number.isFinite(parsed.revision) == false || !parsed.model) {
+        throw new Error("Backend returned an invalid learning envelope")
+    }
+    var normalized = normalizeAILearningData(parsed.model)
+    if(isValidAILearningData(normalized) == false) {
+        throw new Error("Backend returned an invalid AI model")
+    }
+
+    var incomingRevision = Math.max(0, Math.floor(parsed.revision))
+    var incomingEpoch = Math.max(1, Math.floor(Number(parsed.contributionEpoch) || 1))
+    if(incomingEpoch < aiPersistenceState.contributionEpoch || incomingEpoch == aiPersistenceState.contributionEpoch && incomingRevision < aiPersistenceState.revision) {
+        return false
+    }
+    if(forceModelInstall || !aiLearning || incomingEpoch != aiPersistenceState.contributionEpoch || incomingRevision >= aiPersistenceState.revision) {
+        var installedAsHostedSnapshot = typeof installAITrainingHostedLearning == "function" && installAITrainingHostedLearning(normalized)
+        if(installedAsHostedSnapshot == false) {
+            aiLearning = normalized
+        }
+    }
+    aiPersistenceState.revision = incomingRevision
+    aiPersistenceState.modelDigest = parsed.modelDigest || ""
+    aiPersistenceState.updatedAt = typeof parsed.updatedAt == "string" ? parsed.updatedAt : ""
+    aiPersistenceState.writeEnabled = parsed.writeEnabled === true
+    aiPersistenceState.contributionEnabled = parsed.contributionEnabled === true
+    aiPersistenceState.contributionToken = typeof parsed.contributionToken == "string" ? parsed.contributionToken : ""
+    aiPersistenceState.contributionEpoch = incomingEpoch
+    discardStaleAIPublicContributions()
+    aiPersistenceState.lastLoadedAt = realNow()
+    aiPersistenceState.lastError = ""
+    updateAIPersistenceBackendLabel()
+    return true
+}
+
+function waitForAILearningRefreshIdle() {
+    if(!aiLearningRefreshPromise) {
+        return Promise.resolve(aiLearningLastRefreshSucceeded)
+    }
+    return aiLearningRefreshPromise.then(waitForAILearningRefreshIdle)
+}
+
+function refreshAILearningFromBackend(forceModelInstall) {
+    if(AI_CROSS_MATCH_LEARNING_ENABLED == false) {
         aiPersistenceState.restoreComplete = true
-        return
+        return Promise.resolve(false)
+    }
+    if(aiLearningRefreshPromise) {
+        if(forceModelInstall) {
+            aiLearningRefreshForceQueued = true
+        }
+        return waitForAILearningRefreshIdle()
     }
 
     aiPersistenceState.restoreRequested = true
     aiPersistenceState.loadInFlight = true
-    fetch(AI_LEARNING_ENDPOINT + "&t=" + realNow(), { cache: "no-store" }).then(function(response) {
+    aiLearningRefreshPromise = fetch(AI_LEARNING_ENDPOINT + "&t=" + realNow(), { cache: "no-store" }).then(function(response) {
         if(response.ok == false) {
             throw new Error("Backend load failed: " + response.status)
         }
         return response.json()
     }).then(function(parsed) {
-        if(!parsed || parsed.ok !== true || Number.isFinite(parsed.revision) == false || !parsed.model) {
-            throw new Error("Backend returned an invalid learning envelope")
-        }
-        var normalized = normalizeAILearningData(parsed.model)
-        if(isValidAILearningData(normalized) && (!aiLearning || getAILearningProgressTotal(normalized) >= getAILearningProgressTotal(aiLearning))) {
-            aiLearning = normalized
-        }
-        aiPersistenceState.revision = Math.max(0, Math.floor(parsed.revision))
-        aiPersistenceState.modelDigest = parsed.modelDigest || ""
-        aiPersistenceState.writeEnabled = parsed.writeEnabled === true
-        aiPersistenceState.contributionEnabled = parsed.contributionEnabled === true
-        aiPersistenceState.contributionToken = typeof parsed.contributionToken == "string" ? parsed.contributionToken : ""
-        aiPersistenceState.contributionEpoch = Math.max(1, Math.floor(Number(parsed.contributionEpoch) || 1))
-        discardStaleAIPublicContributions()
-        aiPersistenceState.lastLoadedAt = realNow()
-        aiPersistenceState.lastError = ""
-        updateAIPersistenceBackendLabel()
+        aiLearningLastRefreshSucceeded = applyAILearningEnvelope(parsed, forceModelInstall === true)
+        return aiLearningLastRefreshSucceeded
     }).catch(function(error) {
+        aiLearningLastRefreshSucceeded = false
         aiPersistenceState.lastError = String(error)
         aiPersistenceState.backend = "php backend shared unavailable"
+        if(getAIPublicContributionQueue().length > 0) {
+            aiPersistenceState.contributionRetryAt = Math.max(aiPersistenceState.contributionRetryAt, realNow() + 3000)
+        }
+        return false
     }).finally(function() {
         aiPersistenceState.loadInFlight = false
         aiPersistenceState.restoreComplete = true
-        flushAIPublicContributionQueue()
+        aiLearningRefreshPromise = null
+        if(aiLearningRefreshForceQueued) {
+            aiLearningRefreshForceQueued = false
+            refreshAILearningFromBackend(true)
+        } else {
+            flushAIPublicContributionQueue()
+        }
     })
+    return waitForAILearningRefreshIdle()
+}
+
+function requestAILearningFromBackend() {
+    if(aiPersistenceState.restoreRequested || AI_CROSS_MATCH_LEARNING_ENABLED == false) {
+        aiPersistenceState.restoreComplete = true
+        return waitForAILearningRefreshIdle()
+    }
+    return refreshAILearningFromBackend(false)
 }
 
 function ensureAILearningLoaded() {
@@ -1744,11 +1806,43 @@ function getAIPublicContributionEpoch(contribution) {
     return Math.max(1, Math.floor(Number(contribution && contribution.contributionEpoch) || 1))
 }
 
+function markAIPublicContributionStatus(contributionId, status) {
+    if(!contributionId) {
+        return
+    }
+    if(aiMatchTelemetry && aiMatchTelemetry.contributionId == contributionId) {
+        aiMatchTelemetry.contributionStatus = status
+    }
+    if(typeof aiContextsBySide != "undefined" && aiContextsBySide) {
+        for(var contextSide in aiContextsBySide) {
+            var contextTelemetry = aiContextsBySide[contextSide] && aiContextsBySide[contextSide].aiMatchTelemetry
+            if(contextTelemetry && contextTelemetry.contributionId == contributionId) {
+                contextTelemetry.contributionStatus = status
+            }
+        }
+    }
+    if(localMatchCollectionState && Array.isArray(localMatchCollectionState.contributionIds) && localMatchCollectionState.contributionIds.indexOf(contributionId) >= 0) {
+        if(status == "accepted") {
+            localMatchCollectionState.acceptedContributionIds[contributionId] = true
+            var allAccepted = localMatchCollectionState.contributionIds.every(function(id) {
+                return localMatchCollectionState.acceptedContributionIds[id] === true
+            })
+            localMatchCollectionState.contributionStatus = allAccepted ? "accepted" : "queued"
+        } else {
+            localMatchCollectionState.contributionStatus = status
+        }
+    }
+}
+
 function discardStaleAIPublicContributions() {
     var queue = getAIPublicContributionQueue()
     var currentEpoch = Math.max(1, Math.floor(Number(aiPersistenceState.contributionEpoch) || 1))
     var currentQueue = queue.filter(function(contribution) {
-        return getAIPublicContributionEpoch(contribution) == currentEpoch
+        var keep = getAIPublicContributionEpoch(contribution) == currentEpoch
+        if(!keep) {
+            markAIPublicContributionStatus(contribution.contributionId, "discarded")
+        }
+        return keep
     })
     if(currentQueue.length != queue.length) {
         setAIPublicContributionQueue(currentQueue)
@@ -1774,34 +1868,9 @@ function createAIContributionId() {
 
 function requestAIPublicContributionToken() {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.loadInFlight) {
-        return
+        return waitForAILearningRefreshIdle()
     }
-    fetch(AI_LEARNING_ENDPOINT + "&tokenRefresh=" + realNow(), { cache: "no-store" }).then(function(response) {
-        if(response.ok == false) {
-            throw new Error("Contribution token refresh failed: " + response.status)
-        }
-        return response.json()
-    }).then(function(parsed) {
-        var loadedEpoch = Math.max(1, Math.floor(Number(parsed && parsed.contributionEpoch) || 1))
-        if(loadedEpoch != aiPersistenceState.contributionEpoch && parsed && parsed.model) {
-            var normalized = normalizeAILearningData(parsed.model)
-            if(isValidAILearningData(normalized)) {
-                aiLearning = normalized
-            }
-        }
-        aiPersistenceState.contributionEnabled = parsed && parsed.contributionEnabled === true
-        aiPersistenceState.contributionToken = parsed && typeof parsed.contributionToken == "string" ? parsed.contributionToken : ""
-        aiPersistenceState.contributionEpoch = loadedEpoch
-        discardStaleAIPublicContributions()
-        if(parsed && Number.isFinite(parsed.revision)) {
-            aiPersistenceState.revision = Math.max(aiPersistenceState.revision, Math.floor(parsed.revision))
-            aiPersistenceState.modelDigest = parsed.modelDigest || aiPersistenceState.modelDigest
-        }
-        updateAIPersistenceBackendLabel()
-        flushAIPublicContributionQueue()
-    }).catch(function(error) {
-        aiPersistenceState.lastError = String(error)
-    })
+    return refreshAILearningFromBackend(true)
 }
 
 function queueAIPublicContribution(contribution) {
@@ -1811,12 +1880,13 @@ function queueAIPublicContribution(contribution) {
     var queue = getAIPublicContributionQueue()
     queue.push(contribution)
     setAIPublicContributionQueue(queue)
+    markAIPublicContributionStatus(contribution.contributionId, "queued")
     flushAIPublicContributionQueue()
     return true
 }
 
 function flushAIPublicContributionQueue() {
-    if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.contributionEnabled == false || aiPersistenceState.restoreComplete == false || aiPersistenceState.loadInFlight || aiPersistenceState.contributionInFlight) {
+    if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.contributionEnabled == false || aiPersistenceState.restoreComplete == false || aiPersistenceState.loadInFlight || aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight) {
         return false
     }
     var queue = getAIPublicContributionQueue()
@@ -1824,13 +1894,13 @@ function flushAIPublicContributionQueue() {
     if(queue.length == 0) {
         return false
     }
-    if(aiPersistenceState.contributionToken == "") {
-        requestAIPublicContributionToken()
-        return false
-    }
     var now = realNow()
     if(now < aiPersistenceState.contributionRetryAt) {
         setTimeout(flushAIPublicContributionQueue, Math.max(50, aiPersistenceState.contributionRetryAt - now))
+        return false
+    }
+    if(aiPersistenceState.contributionToken == "") {
+        requestAIPublicContributionToken()
         return false
     }
 
@@ -1865,33 +1935,47 @@ function flushAIPublicContributionQueue() {
             latestQueue = latestQueue.filter(function(item) { return item.contributionId != pending.contributionId })
         }
         setAIPublicContributionQueue(latestQueue)
-        aiPersistenceState.revision = Math.max(aiPersistenceState.revision, Math.floor(parsed.revision))
-        aiPersistenceState.modelDigest = parsed.modelDigest || aiPersistenceState.modelDigest
-        aiPersistenceState.contributionEpoch = Math.max(1, Math.floor(Number(parsed.contributionEpoch) || aiPersistenceState.contributionEpoch || 1))
+        markAIPublicContributionStatus(pending.contributionId, "accepted")
+        var contributionRevision = Math.max(0, Math.floor(parsed.revision))
+        var contributionEpoch = Math.max(1, Math.floor(Number(parsed.contributionEpoch) || 1))
+        var contributionMetadataCurrent = contributionEpoch >= aiPersistenceState.contributionEpoch && contributionRevision >= aiPersistenceState.revision
+        aiPersistenceState.revision = Math.max(aiPersistenceState.revision, contributionRevision)
+        aiPersistenceState.contributionEpoch = Math.max(aiPersistenceState.contributionEpoch, contributionEpoch)
+        if(contributionMetadataCurrent) {
+            aiPersistenceState.modelDigest = parsed.modelDigest || aiPersistenceState.modelDigest
+        }
         aiPersistenceState.lastContributionAt = realNow()
         aiPersistenceState.lastSavedAt = aiPersistenceState.lastContributionAt
         aiPersistenceState.contributionRetryAt = 0
         aiPersistenceState.lastError = ""
         updateAIPersistenceBackendLabel()
+        if(latestQueue.length == 0) {
+            return refreshAILearningFromBackend(true)
+        }
     }).catch(function(error) {
         var payload = error && error.payload
         var code = payload && payload.error ? payload.error.code : ""
         if(code == "contribution_epoch_mismatch" && payload && Number.isFinite(payload.currentContributionEpoch)) {
-            aiPersistenceState.contributionEpoch = Math.max(1, Math.floor(payload.currentContributionEpoch))
-            aiPersistenceState.contributionEnabled = false
-            discardStaleAIPublicContributions()
-            aiPersistenceState.contributionRetryAt = 0
-            aiPersistenceState.lastError = ""
-            requestAIPublicContributionToken()
-            return
+            aiPersistenceState.contributionToken = ""
+            aiPersistenceState.lastError = "Refreshing the global AI after a knowledge reset."
+            return refreshAILearningFromBackend(true).then(function(refreshed) {
+                aiPersistenceState.contributionRetryAt = refreshed ? 0 : realNow() + 3000
+            })
         }
-        if(payload && Number.isFinite(payload.currentRevision)) {
-            var retryQueue = getAIPublicContributionQueue()
-            if(retryQueue.length > 0 && retryQueue[0].contributionId == pending.contributionId) {
-                retryQueue[0].baseRevision = Math.max(0, Math.floor(payload.currentRevision))
-                setAIPublicContributionQueue(retryQueue)
-            }
-            aiPersistenceState.revision = Math.max(aiPersistenceState.revision, Math.floor(payload.currentRevision))
+        if(code == "contribution_revision_stale" && payload && Number.isFinite(payload.currentRevision)) {
+            aiPersistenceState.lastError = "Refreshing a stale global AI revision."
+            return refreshAILearningFromBackend(true).then(function(refreshed) {
+                if(refreshed) {
+                    var retryQueue = getAIPublicContributionQueue()
+                    if(retryQueue.length > 0 && retryQueue[0].contributionId == pending.contributionId) {
+                        retryQueue[0].baseRevision = aiPersistenceState.revision
+                        setAIPublicContributionQueue(retryQueue)
+                    }
+                    aiPersistenceState.contributionRetryAt = 0
+                } else {
+                    aiPersistenceState.contributionRetryAt = realNow() + 3000
+                }
+            })
         }
         if(code == "invalid_contribution_token") {
             aiPersistenceState.contributionToken = ""
@@ -1900,9 +1984,7 @@ function flushAIPublicContributionQueue() {
         aiPersistenceState.lastError = String(error)
     }).finally(function() {
         aiPersistenceState.contributionInFlight = false
-        if(aiPersistenceState.contributionToken == "") {
-            requestAIPublicContributionToken()
-        } else if(getAIPublicContributionQueue().length > 0) {
+        if(getAIPublicContributionQueue().length > 0) {
             setTimeout(flushAIPublicContributionQueue, Math.max(0, aiPersistenceState.contributionRetryAt - realNow()))
         }
     })
@@ -1918,7 +2000,7 @@ function saveAILearningSnapshot() {
         aiPersistenceState.backend = "session only"
         return false
     }
-    if(aiPersistenceState.restoreComplete == false || aiPersistenceState.loadInFlight || aiPersistenceState.saveInFlight) {
+    if(aiPersistenceState.restoreComplete == false || aiPersistenceState.loadInFlight || aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight || getAIPublicContributionQueue().length > 0) {
         return false
     }
     var trainerKey = getAITrainerKey()
@@ -1929,6 +2011,8 @@ function saveAILearningSnapshot() {
     }
 
     pruneAILearningForSave()
+    var savedLearningSnapshot = JSON.parse(JSON.stringify(aiLearning))
+    var expectedRevision = aiPersistenceState.revision
     aiPersistenceState.saveInFlight = true
     fetch(AI_LEARNING_ENDPOINT + "&action=commit", {
         method: "POST",
@@ -1939,8 +2023,8 @@ function saveAILearningSnapshot() {
         },
         body: JSON.stringify({
             protocolVersion: 1,
-            expectedRevision: aiPersistenceState.revision,
-            model: aiLearning,
+            expectedRevision: expectedRevision,
+            model: savedLearningSnapshot,
         }),
     }).then(function(response) {
         if(response.ok == false) {
@@ -1954,10 +2038,17 @@ function saveAILearningSnapshot() {
         if(!parsed || parsed.ok !== true || Number.isFinite(parsed.revision) == false) {
             throw new Error("Backend save returned an invalid response")
         }
-        aiPersistenceState.revision = Math.max(0, Math.floor(parsed.revision))
-        aiPersistenceState.modelDigest = parsed.modelDigest || ""
+        var committedRevision = Math.max(0, Math.floor(parsed.revision))
+        var installCommittedLearning = committedRevision >= aiPersistenceState.revision
+        aiPersistenceState.revision = Math.max(aiPersistenceState.revision, committedRevision)
+        if(installCommittedLearning) {
+            aiPersistenceState.modelDigest = parsed.modelDigest || ""
+        }
         aiPersistenceState.lastSavedAt = realNow()
         aiPersistenceState.lastError = ""
+        if(installCommittedLearning && typeof syncAITrainingCommittedLearning == "function") {
+            syncAITrainingCommittedLearning(savedLearningSnapshot)
+        }
         updateAIPersistenceBackendLabel()
     }).catch(function(error) {
         aiPersistenceState.lastError = String(error)
@@ -1973,6 +2064,7 @@ function saveAILearningSnapshot() {
                 requestAITrainingSave(false)
             }
         }
+        flushAIPublicContributionQueue()
     })
     return true
 }
@@ -2246,6 +2338,8 @@ function getCurrentAIStrategyId() {
 function createAIMatchTelemetry(strategyIndex, features, observedLoadoutSummary) {
     return {
         recorded: false,
+        contributionStatus: "not-eligible",
+        contributionId: "",
         contributionEpoch: Math.max(1, Math.floor(aiPersistenceState.contributionEpoch)),
         strategyIndex: strategyIndex,
         strategyId: AI_STRATEGY_LIBRARY[strategyIndex].id,
@@ -2653,20 +2747,30 @@ function createLocalHumanDemonstration(side, opponentSide, loadoutSummary, oppon
 }
 
 function finalizeLocalMatchCollection() {
-    if(selectedMenuMode != "local" || aiEnabled || practiceMode || bossMode || gameStarted == false || gameOver == false || !localMatchCollectionState || localMatchCollectionState.recorded || aiPersistenceState.contributionEnabled == false) {
+    if(selectedMenuMode != "local" || aiEnabled || practiceMode || bossMode || gameStarted == false || gameOver == false || !localMatchCollectionState || localMatchCollectionState.recorded) {
+        return false
+    }
+    if(aiPersistenceState.contributionEnabled == false) {
+        localMatchCollectionState.contributionStatus = AI_CROSS_MATCH_LEARNING_ENABLED ? "unavailable" : "not-eligible"
         return false
     }
     if(players[PLAYER_SIDE.left].towers.length != 3 || players[PLAYER_SIDE.right].towers.length != 3 || players[PLAYER_SIDE.left].boostTypes.length != 2 || players[PLAYER_SIDE.right].boostTypes.length != 2) {
+        localMatchCollectionState.contributionStatus = "not-eligible"
         return false
     }
     var leftSummary = summarizeLoadoutSelection(players[PLAYER_SIDE.left].towers, players[PLAYER_SIDE.left].boostTypes)
     var rightSummary = summarizeLoadoutSelection(players[PLAYER_SIDE.right].towers, players[PLAYER_SIDE.right].boostTypes)
     if(leftSummary.signature == "||" || rightSummary.signature == "||") {
+        localMatchCollectionState.contributionStatus = "not-eligible"
         return false
     }
     localMatchCollectionState.recorded = true
-    var leftQueued = queueAIPublicContribution(createLocalHumanDemonstration(PLAYER_SIDE.left, PLAYER_SIDE.right, leftSummary, rightSummary))
-    var rightQueued = queueAIPublicContribution(createLocalHumanDemonstration(PLAYER_SIDE.right, PLAYER_SIDE.left, rightSummary, leftSummary))
+    var leftContribution = createLocalHumanDemonstration(PLAYER_SIDE.left, PLAYER_SIDE.right, leftSummary, rightSummary)
+    var rightContribution = createLocalHumanDemonstration(PLAYER_SIDE.right, PLAYER_SIDE.left, rightSummary, leftSummary)
+    localMatchCollectionState.contributionIds = [leftContribution.contributionId, rightContribution.contributionId]
+    var leftQueued = queueAIPublicContribution(leftContribution)
+    var rightQueued = queueAIPublicContribution(rightContribution)
+    localMatchCollectionState.contributionStatus = leftQueued && rightQueued ? "queued" : "failed"
     return leftQueued && rightQueued
 }
 
@@ -2871,6 +2975,9 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.contributionEnabled == false || !aiMatchTelemetry) {
         return null
     }
+    if(selfPlayActive && typeof shouldAITrainingPublishContributions == "function" && shouldAITrainingPublishContributions() == false) {
+        return null
+    }
     var observations = []
     function addObservation(store, key, value) {
         if(observations.length < AI_MAX_CONTRIBUTION_OBSERVATIONS) {
@@ -2980,8 +3087,44 @@ function finalizeAIMatchLearning() {
     aiLearning.totalGames++
     aiLearning.totalPolicySamples++
     if(publicContribution) {
-        queueAIPublicContribution(publicContribution)
+        aiMatchTelemetry.contributionId = publicContribution.contributionId
+        aiMatchTelemetry.contributionStatus = queueAIPublicContribution(publicContribution) ? "queued" : "failed"
+    } else {
+        aiMatchTelemetry.contributionStatus = AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.contributionEnabled == false ? "unavailable" : "not-eligible"
     }
+}
+
+function getCompletedMatchAIContributionStatus() {
+    if(typeof aiTrainingState != "undefined" && aiTrainingState && aiTrainingState.trueSelfPlayActive && typeof aiContextsBySide != "undefined" && aiContextsBySide) {
+        var candidateContext = aiContextsBySide[aiTrainingState.candidateSide]
+        if(candidateContext && candidateContext.aiMatchTelemetry) {
+            return candidateContext.aiMatchTelemetry.contributionStatus || "not-eligible"
+        }
+    }
+    if(aiEnabled && aiMatchTelemetry) {
+        return aiMatchTelemetry.contributionStatus || "not-eligible"
+    }
+    if(selectedMenuMode == "local" && localMatchCollectionState) {
+        return localMatchCollectionState.contributionStatus || "not-eligible"
+    }
+    return "not-eligible"
+}
+
+function getCompletedMatchAIRematchMessage() {
+    var status = getCompletedMatchAIContributionStatus()
+    if(status == "queued") {
+        return "Refresh after the global AI contribution finishes syncing..."
+    }
+    if(status == "accepted") {
+        return "Refresh to rematch! Global AI contribution accepted."
+    }
+    if(status == "unavailable" || status == "failed") {
+        return "Refresh to rematch! Global AI sync was unavailable."
+    }
+    if(status == "discarded") {
+        return "Refresh to rematch! This contribution expired after an AI reset."
+    }
+    return "Refresh to rematch! No global AI contribution was recorded."
 }
 
 function getFrontMenuButtons() {
@@ -2991,13 +3134,14 @@ function getFrontMenuButtons() {
         var buttonHeight = canvas.height / 12
         var buttonX = canvas.width / 2 - buttonWidth / 2
         var gap = canvas.height / 30
-        var startY = canvas.height / 2 - (buttonHeight * 5 + gap * 4) / 2
+        var startY = canvas.height / 2 - (buttonHeight * 6 + gap * 5) / 2
 
         buttons.push({ id: "local", x: buttonX, y: startY, width: buttonWidth, height: buttonHeight, label: "Local" })
         buttons.push({ id: "multiplayer", x: buttonX, y: startY + buttonHeight + gap, width: buttonWidth, height: buttonHeight, label: "Multiplayer" })
         buttons.push({ id: "classic", x: buttonX, y: startY + (buttonHeight + gap) * 2, width: buttonWidth, height: buttonHeight, label: "Classic" })
         buttons.push({ id: "vs-ai", x: buttonX, y: startY + (buttonHeight + gap) * 3, width: buttonWidth, height: buttonHeight, label: "Vs AI" })
         buttons.push({ id: "ai-stats", x: buttonX, y: startY + (buttonHeight + gap) * 4, width: buttonWidth, height: buttonHeight, label: "AI Stats" })
+        buttons.push({ id: "ai-lab", x: buttonX, y: startY + (buttonHeight + gap) * 5, width: buttonWidth, height: buttonHeight, label: "AI Training Lab" })
         return buttons
     }
 
@@ -3011,7 +3155,9 @@ function getFrontMenuButtons() {
     } else if(frontMenuState == "stats") {
         var statsButtonWidth = canvas.width / 6.8
         var statsButtonHeight = canvas.height / 12
-        buttons.push({ id: "back", x: canvas.width / 2 - statsButtonWidth / 2, y: canvas.height * 0.91, width: statsButtonWidth, height: statsButtonHeight * 0.9, label: "Back" })
+        var statsButtonGap = canvas.width / 55
+        buttons.push({ id: "ai-refresh", x: canvas.width / 2 - statsButtonWidth - statsButtonGap / 2, y: canvas.height * 0.91, width: statsButtonWidth, height: statsButtonHeight * 0.9, label: aiPersistenceState.loadInFlight ? "Refreshing..." : "Refresh Stats" })
+        buttons.push({ id: "back", x: canvas.width / 2 + statsButtonGap / 2, y: canvas.height * 0.91, width: statsButtonWidth, height: statsButtonHeight * 0.9, label: "Back" })
     }
 
     return buttons
@@ -3034,6 +3180,9 @@ function handleFrontMenuClick(x, y) {
     if(!button) {
         return false
     }
+    if(isFrontMenuButtonDisabled(button)) {
+        return true
+    }
 
     if(button.id == "local") {
         startLocalGameSetup()
@@ -3045,7 +3194,12 @@ function handleFrontMenuClick(x, y) {
         frontMenuState = "side"
     } else if(button.id == "ai-stats") {
         ensureAILearningLoaded()
+        refreshAILearningFromBackend(true)
         frontMenuState = "stats"
+    } else if(button.id == "ai-refresh") {
+        refreshAILearningFromBackend(true)
+    } else if(button.id == "ai-lab" && typeof openAITrainingDashboard == "function") {
+        openAITrainingDashboard()
     } else if(button.id == "side-left") {
         startVsAIGameSetup(PLAYER_SIDE.left)
     } else if(button.id == "side-right") {
@@ -3081,10 +3235,58 @@ function getAIRuntimeModeLabel() {
     return AI_IS_LOCAL_RUNTIME ? "Local runtime" : "Hosted runtime"
 }
 
+function getAIStatsSourceDescription() {
+    if(AI_CROSS_MATCH_LEARNING_ENABLED == false) {
+        return "Session model: local learning is discarded when this browser session closes."
+    }
+    if(aiPersistenceState.loadInFlight) {
+        return "Community model: refreshing authoritative statistics from the hosted backend."
+    }
+    if(aiPersistenceState.lastError) {
+        return "Community model unavailable: showing the latest valid model loaded in this tab."
+    }
+    if(aiPersistenceState.contributionEnabled) {
+        return "Community model: shared match perspectives and human demonstrations accepted by the hosted backend."
+    }
+    return "Shared model: read-only statistics from the hosted backend."
+}
+
+function getAIStatsFreshnessLabel() {
+    if(!aiPersistenceState.updatedAt) {
+        return aiPersistenceState.lastLoadedAt > 0 ? "Loaded this session" : "Not loaded"
+    }
+    var updatedTime = Date.parse(aiPersistenceState.updatedAt)
+    if(Number.isFinite(updatedTime) == false) {
+        return "Updated " + aiPersistenceState.updatedAt
+    }
+    var ageMinutes = Math.max(0, Math.floor((realNow() - updatedTime) / 60000))
+    if(ageMinutes < 1) {
+        return "Updated less than a minute ago"
+    }
+    if(ageMinutes < 60) {
+        return "Updated " + ageMinutes + " minute" + (ageMinutes == 1 ? "" : "s") + " ago"
+    }
+    var ageHours = Math.floor(ageMinutes / 60)
+    return "Updated " + ageHours + " hour" + (ageHours == 1 ? "" : "s") + " ago"
+}
+
+function getAIStatsOverviewMetrics() {
+    return [
+        { label: "Champion", value: "v" + aiLearning.championGeneration },
+        { label: "Match Perspectives", value: aiLearning.totalGames.toLocaleString() },
+        { label: "Human Demos", value: aiLearning.totalHumanDemonstrations.toLocaleString() },
+        { label: "Policy Samples", value: aiLearning.totalPolicySamples.toLocaleString() },
+        { label: "Loadout Samples", value: aiLearning.totalLoadoutSamples.toLocaleString() },
+        { label: "Counter Records", value: Object.keys(aiLearning.loadoutCounterStats).length.toLocaleString() },
+    ]
+}
+
 function getTopStrategyIndicesForStats(limit) {
     var indices = []
     for(var i = 0; i < AI_STRATEGY_LIBRARY.length; i++) {
-        indices.push(i)
+        if(aiLearning.strategyStats[i].games > 0) {
+            indices.push(i)
+        }
     }
 
     indices.sort(function(a, b) {
@@ -3194,7 +3396,7 @@ function drawAIStatsScreen() {
 
     ctx.font = "15px Arial"
     ctx.fillStyle = "rgba(214, 228, 255, 0.86)"
-    ctx.fillText(AI_CROSS_MATCH_LEARNING_ENABLED ? "Hosted AI model with cross-match learning, counter records, and persistent strategy updates" : "Session AI model with local-only learning for this launch", canvas.width / 2, panelY + panelHeight * 0.125, panelWidth * 0.74)
+    ctx.fillText(getAIStatsSourceDescription(), canvas.width / 2, panelY + panelHeight * 0.125, panelWidth * 0.78)
 
     var innerPadding = panelWidth * 0.03
     var footerHeight = panelHeight * 0.12
@@ -3213,7 +3415,7 @@ function drawAIStatsScreen() {
     var rightY = contentTop
 
     drawAIStatsCard(leftX, overviewY, leftWidth, topSectionHeight, "Overview", "rgba(94, 197, 255, 0.92)")
-    drawAIStatsCard(leftX, featureY, panelWidth - innerPadding * 2, featureHeight, "Player Feature Model", "rgba(110, 220, 168, 0.92)")
+    drawAIStatsCard(leftX, featureY, panelWidth - innerPadding * 2, featureHeight, AI_CROSS_MATCH_LEARNING_ENABLED ? "Community Player Profile" : "Session Player Profile", "rgba(110, 220, 168, 0.92)")
     drawAIStatsCard(rightX, rightY, rightWidth, topSectionHeight, "Top Archetype Records", "rgba(255, 189, 92, 0.92)")
 
     var infoX = leftX + leftWidth * 0.05
@@ -3221,9 +3423,9 @@ function drawAIStatsScreen() {
     ctx.textAlign = "left"
     ctx.font = "13px Arial"
     ctx.fillStyle = "rgba(214, 226, 255, 0.92)"
-    ctx.fillText("Runtime: " + getAIRuntimeModeLabel(), infoX, infoY, leftWidth * 0.9)
+    ctx.fillText("Source: " + (AI_CROSS_MATCH_LEARNING_ENABLED ? "Community rev " + aiPersistenceState.revision + " / epoch " + aiPersistenceState.contributionEpoch : "Session model"), infoX, infoY, leftWidth * 0.9)
     ctx.fillText("Save backend: " + aiPersistenceState.backend, infoX, infoY + 18, leftWidth * 0.9)
-    var syncSummary = AI_CROSS_MATCH_LEARNING_ENABLED ? "Learning: Global community model" : "Learning: Session only"
+    var syncSummary = AI_CROSS_MATCH_LEARNING_ENABLED ? getAIStatsFreshnessLabel() : "Learning: Session only"
     if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.lastError) {
         syncSummary = "Sync: issue detected"
     } else if(AI_CROSS_MATCH_LEARNING_ENABLED && (aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight)) {
@@ -3241,14 +3443,7 @@ function drawAIStatsScreen() {
     var metricStartY = overviewY + 94
     var metricHeight = 38
     var metricColors = ["#62c5ff", "#7fe0a2", "#f7c76d", "#f08ba7", "#b698ff", "#7bd8d4"]
-    var metrics = [
-        { label: "Archetypes", value: AI_STRATEGY_LIBRARY.length },
-        { label: "Match Samples", value: aiLearning.totalGames },
-        { label: "Loadouts", value: Object.keys(aiLearning.loadoutStats).length },
-        { label: "Loadout Samples", value: aiLearning.totalLoadoutSamples },
-        { label: "Feature Samples", value: aiLearning.playerProfile.games },
-        { label: "Counter", value: Object.keys(aiLearning.loadoutCounterStats).length },
-    ]
+    var metrics = getAIStatsOverviewMetrics()
     for(var metricIndex = 0; metricIndex < metrics.length; metricIndex++) {
         var metricColumn = metricIndex % 2
         var metricRow = Math.floor(metricIndex / 2)
@@ -3278,11 +3473,17 @@ function drawAIStatsScreen() {
     var strategyRowSpacing = 40
     var topStrategyLimit = clamp(Math.floor((topSectionHeight - 56) / strategyRowSpacing), 4, 6)
     var topStrategyIndices = getTopStrategyIndicesForStats(topStrategyLimit)
+    if(topStrategyIndices.length == 0) {
+        ctx.textAlign = "center"
+        ctx.font = "14px Arial"
+        ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
+        ctx.fillText("No community match perspectives recorded yet.", rightX + rightWidth / 2, strategyListY + 30, rightWidth * 0.82)
+    }
     for(var strategyRow = 0; strategyRow < topStrategyIndices.length; strategyRow++) {
         var strategyIndex = topStrategyIndices[strategyRow]
         var strategy = AI_STRATEGY_LIBRARY[strategyIndex]
         var stats = aiLearning.strategyStats[strategyIndex]
-        var winRate = stats.games > 0 ? stats.wins / stats.games : 0
+        var evaluationScore = stats.games > 0 ? (stats.wins + stats.ties * 0.5) / stats.games : 0
         var rowY = strategyListY + strategyRow * strategyRowSpacing
         var rowHeight = 34
         var rewardColor = stats.lastReward >= 0 ? "#87f0ad" : "#ff9f8f"
@@ -3312,13 +3513,13 @@ function drawAIStatsScreen() {
         ctx.fillStyle = "rgba(255, 255, 255, 0.08)"
         ctx.fillRect(barX, rowY + 8, barWidth, 8)
         ctx.fillStyle = "#7fe0a2"
-        ctx.fillRect(barX, rowY + 8, barWidth * winRate, 8)
+        ctx.fillRect(barX, rowY + 8, barWidth * evaluationScore, 8)
         ctx.strokeStyle = "rgba(255, 255, 255, 0.08)"
         ctx.strokeRect(barX, rowY + 8, barWidth, 8)
         ctx.textAlign = "center"
         ctx.font = "11px Arial"
         ctx.fillStyle = "rgba(214, 226, 255, 0.84)"
-        ctx.fillText("Win " + Math.round(winRate * 100) + "%", barX + barWidth / 2, rowY + 28, barWidth)
+        ctx.fillText("Score " + Math.round(evaluationScore * 100) + "%", barX + barWidth / 2, rowY + 28, barWidth)
 
         var badgeX = strategyListX + strategyListWidth * 0.82
         var badgeWidth = strategyListWidth * 0.14
@@ -3332,10 +3533,10 @@ function drawAIStatsScreen() {
     ctx.textAlign = "left"
     ctx.font = "15px Arial"
     ctx.fillStyle = "rgba(214, 226, 255, 0.9)"
-    ctx.fillText(AI_CROSS_MATCH_LEARNING_ENABLED ? "Hosted runtime: the AI keeps improving between games and stores shared strategy, placement, crosspath, and counter data." : "Local runtime: the AI still learns during this session, but it will not keep that progress after you close the game.", panelX + innerPadding, panelY + panelHeight - 38, panelWidth - innerPadding * 2)
+    ctx.fillText(getAIStatsSourceDescription(), panelX + innerPadding, panelY + panelHeight - 38, panelWidth - innerPadding * 2)
     ctx.font = "13px Arial"
     ctx.fillStyle = "rgba(190, 204, 236, 0.78)"
-    ctx.fillText("Showing the top " + topStrategyIndices.length + " profiles by games, wins, and recent reward. Variants with close stats continue competing so the AI keeps testing nearby builds.", panelX + innerPadding, panelY + panelHeight - 16, panelWidth - innerPadding * 2)
+    ctx.fillText("Community statistics are separate from the repository's distributed-training checkpoint. Rankings use recorded games, tie-adjusted score, and recent reward.", panelX + innerPadding, panelY + panelHeight - 16, panelWidth - innerPadding * 2)
 }
 
 function drawFrontMenu() {
@@ -3351,8 +3552,13 @@ function drawFrontMenu() {
         var statsButtons = getFrontMenuButtons()
         for(var statsButtonIndex = 0; statsButtonIndex < statsButtons.length; statsButtonIndex++) {
             var statsFill = "rgba(58, 120, 139, 0.92)"
-            if(statsButtons[statsButtonIndex].id == "back") {
-                statsFill = "rgba(143, 77, 62, 0.92)"
+        if(statsButtons[statsButtonIndex].id == "back") {
+            statsFill = "rgba(143, 77, 62, 0.92)"
+        } else if(statsButtons[statsButtonIndex].id == "ai-refresh") {
+            statsFill = "rgba(61, 139, 104, 0.92)"
+        }
+        if(isFrontMenuButtonDisabled(statsButtons[statsButtonIndex])) {
+            statsFill = "rgba(78, 78, 90, 0.92)"
             }
             drawFrontMenuButton(statsButtons[statsButtonIndex], statsFill)
         }
@@ -3403,6 +3609,8 @@ function drawFrontMenu() {
             fillStyle = "rgba(123, 75, 159, 0.92)"
         } else if(buttons[i].id == "ai-stats") {
             fillStyle = "rgba(58, 120, 139, 0.92)"
+        } else if(buttons[i].id == "ai-lab") {
+            fillStyle = "rgba(62, 111, 166, 0.92)"
         } else if(buttons[i].id == "back") {
             fillStyle = "rgba(143, 77, 62, 0.92)"
         }
@@ -7743,6 +7951,13 @@ function tickAIControllers() {
 
 ensureAILearningLoaded()
 
+function handleAIWindowFocus() {
+    updateAIPregameObservePauseState()
+    if(AI_CROSS_MATCH_LEARNING_ENABLED && (frontMenuState == "stats" || aiPersistenceState.lastLoadedAt <= 0 || realNow() - aiPersistenceState.lastLoadedAt >= 60000)) {
+        refreshAILearningFromBackend(false)
+    }
+}
+
 document.addEventListener("visibilitychange", updateAIPregameObservePauseState)
 addEventListener("blur", updateAIPregameObservePauseState)
-addEventListener("focus", updateAIPregameObservePauseState)
+addEventListener("focus", handleAIWindowFocus)
