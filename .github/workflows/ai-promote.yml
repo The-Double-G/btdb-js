@@ -9,26 +9,27 @@ on:
 
 permissions:
   actions: read
-  contents: write
-
-concurrency:
-  group: ai-checkpoint-promotion
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  promote:
+  validate:
+    if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED != 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      candidate_sha256: ${{ steps.bundle.outputs.candidate_sha256 }}
+      training_sha: ${{ steps.metadata.outputs.training_sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
         with:
           fetch-depth: 0
           ref: ${{ github.event.repository.default_branch }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Validate training run metadata
+      - id: metadata
+        name: Validate training run metadata
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.training_run_id }}
@@ -43,27 +44,73 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY" > "$RUNNER_TEMP/repository.json"
           node -e "const run=require(process.argv[1]);const workflow=require(process.argv[2]);const repo=require(process.argv[3]);if(workflow.path!=='.github/workflows/ai-training.yml'||workflow.name!=='Distributed AI Training')throw new Error('Run is not from the distributed training workflow');if(run.event!=='workflow_dispatch'||run.conclusion!=='success')throw new Error('Training run must be a successful workflow_dispatch');if(run.head_branch!==repo.default_branch)throw new Error('Training run is not from the current default branch');if(!run.head_sha||!repo.default_branch)throw new Error('Training run metadata is incomplete');" "$RUNNER_TEMP/training-run.json" "$RUNNER_TEMP/training-workflow.json" "$RUNNER_TEMP/repository.json"
           training_sha=$(node -e "const run=require(process.argv[1]);process.stdout.write(run.head_sha);" "$RUNNER_TEMP/training-run.json")
-          git merge-base --is-ancestor "$training_sha" HEAD
+          if [ "$training_sha" != "$(git rev-parse HEAD)" ]; then
+            echo "Training run is not from the exact current default-branch commit." >&2
+            exit 1
+          fi
+          echo "training_sha=$training_sha" >> "$GITHUB_OUTPUT"
       - name: Download evaluated bundle
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.training_run_id }}
         run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name ai-training-bundle --dir "$RUNNER_TEMP/bundle"
-      - name: Validate promotion gate
+      - id: bundle
+        name: Validate and stage promotion
         run: |
           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
           npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline training/checkpoints/champion.json --minimum-score 0.56 --minimum-games 32
-      - name: Stage promoted checkpoint
-        run: cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
+          cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
+          echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Install browser for promotion checks
+        run: npx playwright install --with-deps chromium
       - name: Run promotion checks
-        run: |
-          npm test
-          npm run test:endpoint
-      - name: Commit promoted checkpoint
+        run: npm test
+
+  promote:
+    needs: validate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ai-checkpoint-promotion
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-training-bundle
+          path: ${{ runner.temp }}/bundle
+          run-id: ${{ inputs.training_run_id }}
+          github-token: ${{ github.token }}
+      - name: Prepare validated checkpoint commit
         env:
+          CANDIDATE_SHA256: ${{ needs.validate.outputs.candidate_sha256 }}
           RUN_ID: ${{ inputs.training_run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TRAINING_SHA: ${{ needs.validate.outputs.training_sha }}
         run: |
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$TRAINING_SHA" ] || [ "$(git rev-parse HEAD)" != "$TRAINING_SHA" ]; then
+            echo "Default branch changed after training began; refusing stale promotion." >&2
+            exit 1
+          fi
+
+          if [ ! -f "$RUNNER_TEMP/bundle/candidate.json" ] || [ -L "$RUNNER_TEMP/bundle/candidate.json" ]; then
+            echo "Candidate artifact is not a regular file." >&2
+            exit 1
+          fi
+          actual_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)
+          if [ -z "$CANDIDATE_SHA256" ] || [ "$actual_sha256" != "$CANDIDATE_SHA256" ]; then
+            echo "Candidate artifact checksum changed after validation." >&2
+            exit 1
+          fi
+
+          cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add training/checkpoints/champion.json
@@ -71,5 +118,42 @@ jobs:
             echo "Checkpoint is already current."
             exit 0
           fi
+          if [ "$(git diff --cached --name-only)" != "training/checkpoints/champion.json" ]; then
+            echo "Promotion attempted to modify unexpected files." >&2
+            exit 1
+          fi
           git commit -m "Promote AI checkpoint from run $RUN_ID"
-          git push
+      - name: Require CI on the exact promotion commit
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          TRAINING_SHA: ${{ needs.validate.outputs.training_sha }}
+        run: |
+          promotion_branch="ai-promotion/manual-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          promotion_sha=$(git rev-parse HEAD)
+          cleanup() {
+            git push origin --delete "$promotion_branch" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          git push origin "HEAD:refs/heads/$promotion_branch"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$promotion_branch"
+
+          ci_run_id=""
+          for attempt in $(seq 1 30); do
+            ci_run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$promotion_branch" --event workflow_dispatch --limit 100 --json databaseId,headSha --jq ".[] | select(.headSha == \"$promotion_sha\") | .databaseId" | head -n 1)
+            if [ -n "$ci_run_id" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$ci_run_id" ]; then
+            echo "Could not locate the promotion CI run." >&2
+            exit 1
+          fi
+          gh run watch "$ci_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$TRAINING_SHA" ]; then
+            echo "Default branch changed while promotion CI ran; refusing stale promotion." >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"

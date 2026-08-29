@@ -426,7 +426,15 @@ async function main() {
     console.log(`${mode == "train" ? "Trained" : "Evaluated"} ${result.id}: ${result.metrics.wins}-${result.metrics.losses}-${result.metrics.ties}, score ${result.metrics.score.toFixed(4)}, output ${result.output}`)
 }
 
-main().catch(error => {
-    console.error(error.stack || error.message)
-    process.exitCode = 1
-})
+if(require.main === module) {
+    main().catch(error => {
+        console.error(error.stack || error.message)
+        process.exitCode = 1
+    })
+}
+
+module.exports = {
+    assertRuntimeClean,
+    closeRuntime,
+    openRuntime,
+}

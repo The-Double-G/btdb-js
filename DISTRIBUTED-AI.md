@@ -23,9 +23,10 @@ Inputs:
 - `workers`: parallel candidate and evaluation shards.
 - `training_matches`: exactly 96 self-play matches per candidate: one 64-train/32-evaluate cycle.
 - `evaluation_matches`: frozen matches per evaluation shard; this must be a positive multiple of eight.
-- `base_seed`: first deterministic seed allocated to the run.
+- `base_seed`: optional first deterministic seed; blank allocates a unique block from the workflow run number.
 - `minimum_score`: frozen evaluation score required for promotion.
 - `minimum_games`: minimum total frozen evaluation sample.
+- `continuous`: queue another generation after completion and automatically promote a passing candidate.
 
 The `ai-training-bundle` artifact contains:
 
@@ -36,16 +37,30 @@ The `ai-training-bundle` artifact contains:
 
 Artifacts are public in a public repository and have short retention. They must never contain production guards, tokens, secrets, client hashes, or mutable hosted state.
 
+## Continuous Operation
+
+Set the repository Actions variable `AI_CONTINUOUS_TRAINING_ENABLED` to `true` to enable unattended operation. Set it to `false` to stop automatic promotion, successor dispatch, and watchdog restarts; an already-running read-only training generation may still finish and publish its report. Continuous runs are accepted only from the repository's default branch.
+
+The **Continuous AI Training Watchdog** runs at minute 17 of each hour. It checks the 100 most recent default-branch training runs and starts a continuous run only when none is active. Default-branch training is serialized, so active work normally remains at the top of that list. A healthy continuous run queues its successor before it finishes, making the watchdog a liveness fallback rather than a source of overlapping work.
+
+Continuous defaults use two training shards with 96 matches each and two 16-match evaluation shards. Each newly dispatched generation receives a deterministic seed block derived from its workflow run number; rerunning one generation intentionally reuses that block. Explicit seeds are rejected in continuous mode. The 32-bit allocator supports 42,934 workflow run numbers, after which configuration validation stops the chain rather than reusing seeds. Failed candidates leave `champion.json` unchanged and the next new generation explores a new block.
+
+A passing continuous candidate is automatically promoted only after the fixed 56% score, 32-game minimum, balanced coverage, checkpoint identity, publication, endpoint, browser, and deterministic model checks pass against the staged candidate. Two narrowly scoped training jobs have repository write access, and neither runs repository JavaScript: the first accepts only the checksum validated by the read-only report job and pushes the exact checkpoint commit to a temporary branch for both CI jobs; the short finalizer rechecks the default-branch parent, optionally pushes that same commit to `main` while continuous mode remains enabled, and removes the temporary branch. Promotion updates the repository checkpoint only; it does not update or deploy hosted community state.
+
+Protect `main` with the `validate` and `headless-smoke` CI jobs as required status checks. Promotion commits already carry those checks from their temporary branch before they reach `main`.
+
+GitHub schedules can be delayed, and public-repository schedules can be disabled after prolonged repository inactivity. The hourly watchdog restarts a stopped chain, but GitHub Actions is not a guaranteed real-time service.
+
 ## Promote A Checkpoint
 
-Promotion is intentionally separate from training:
+Manually dispatched non-continuous runs remain separate from promotion:
 
 1. Review `evaluation.md` from a completed training run.
 2. Copy the workflow run ID from its URL.
 3. Open **Promote AI Checkpoint** in Actions.
 4. Run it with that training run ID.
 
-The promotion workflow accepts only a successful `workflow_dispatch` run of `.github/workflows/ai-training.yml` from the current default branch whose commit is an ancestor of the checked-out branch. It validates candidate and aggregate digests, requires balanced coverage, enforces at least 32 games and a 56% score regardless of training-run inputs, and requires the candidate parent and evaluation baseline to match the current committed champion. It runs repository and endpoint tests before committing only `training/checkpoints/champion.json`. It does not deploy the checkpoint to the hosted game.
+Manual promotion is disabled while `AI_CONTINUOUS_TRAINING_ENABLED` is `true`, preventing it from racing the automatic promotion transaction. Otherwise, the workflow accepts only a successful `workflow_dispatch` run of `.github/workflows/ai-training.yml` from the exact current default-branch commit. Its read-only job validates candidate and aggregate digests, requires balanced coverage, enforces at least 32 games and a 56% score regardless of training-run inputs, requires the candidate parent and evaluation baseline to match the current committed champion, stages the candidate, and runs repository, endpoint, and browser tests. A separate write-only job verifies the validated checksum and requires CI on the exact promotion commit before updating `main`. It does not deploy the checkpoint to the hosted game.
 
 ## Local Commands
 
@@ -76,6 +91,7 @@ npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json
 ## Determinism And Safety
 
 - Playwright and Chromium are pinned through `package-lock.json`.
+- Third-party GitHub Actions are pinned to immutable commit SHAs.
 - `Math.random` and `Date.now` are replaced before game scripts load.
 - Browser timers are disabled; the worker advances the game at fixed `1000 / 60` millisecond steps.
 - Rendering uses a no-op canvas context.
@@ -85,6 +101,6 @@ npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json
 
 ## Scaling
 
-Start with two workers and short runs. A normal match currently takes roughly 20 to 30 seconds on a typical desktop Chromium runner, although GitHub performance varies. Increase worker and match counts only after several successful runs.
+The continuous loop deliberately uses two workers. The first hosted two-worker generation took about 74 minutes wall-clock, including 192 training matches and 32 frozen evaluation matches. GitHub performance varies; more workers increase candidate diversity and total runner use but do not make one candidate train for more than its fixed 96-match cycle.
 
 Standard public GitHub-hosted runners do not consume the private-repository monthly minute allowance, but GitHub concurrency, six-hour job duration, artifact storage, and acceptable-use limits still apply.

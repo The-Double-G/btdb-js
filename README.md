@@ -26,13 +26,13 @@ The endpoint integration test also requires PHP on `PATH`.
 
 ## Distributed AI
 
-GitHub Actions can run deterministic Chromium self-play without a laptop remaining online. Workers start from one shared checkpoint and train independent policies with unique seeds. Selection materializes only the winning policy into a clone of the baseline model, and a balanced frozen evaluation compares that exact checkpoint with the current champion.
+GitHub Actions can run deterministic Chromium self-play without a laptop remaining online. Workers start from one shared checkpoint and train independent policies with unique seeds. Selection materializes only the winning policy into a clone of the baseline model, and a balanced frozen evaluation compares that exact checkpoint with the current champion. An hourly watchdog keeps a bounded continuous generation loop alive; only passing, current-branch candidates can advance the committed champion.
 
 See [DISTRIBUTED-AI.md](DISTRIBUTED-AI.md) for operation, checkpoint promotion, limits, and safety guarantees.
 
 ## Repository Safety
 
-Runtime files under `data/`, browser automation captures, production credentials, and local screenshots are excluded from Git. Distributed workers run only on `127.0.0.1`, block hosted writes, and cannot promote or deploy models.
+Runtime files under `data/`, browser automation captures, production credentials, and local screenshots are excluded from Git. Distributed workers run only on `127.0.0.1`, block hosted writes, and have read-only repository access. Separate least-privilege promotion jobs can commit only a verified checkpoint; no workflow can deploy a model or access production.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
 

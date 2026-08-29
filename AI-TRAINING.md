@@ -47,6 +47,6 @@ node tools/test-ai-endpoint.js
 
 ## Distributed Training
 
-The public GitHub workflow runs deterministic AI-versus-AI candidates in isolated localhost Chromium workers. Every shard starts from the same committed checkpoint, uses a unique seed, and cannot access hosted persistence. Selection copies only the winning policy into a clone of the baseline model, synchronizes candidate and champion policy, advances the generation once, and discards all shard-learned stores and statistics. The exact materialized checkpoint is evaluated in balanced eight-match blocks by map, candidate side, and responder role before a separate manual promotion workflow can update the shared training checkpoint.
+The public GitHub workflow runs deterministic AI-versus-AI candidates in isolated localhost Chromium workers. Every shard starts from the same committed checkpoint, uses a unique seed, and cannot access hosted persistence. Selection copies only the winning policy into a clone of the baseline model, synchronizes candidate and champion policy, advances the generation once, and discards all shard-learned stores and statistics. The exact materialized checkpoint is evaluated in balanced eight-match blocks by map, candidate side, and responder role. Passing continuous runs can advance the committed checkpoint through a least-privilege automatic gate; manually dispatched runs retain the separate manual promotion workflow.
 
 See `DISTRIBUTED-AI.md` for operation and safety details.

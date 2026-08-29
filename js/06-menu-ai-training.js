@@ -212,6 +212,7 @@ function createAIProfileState() {
         lastAimX: 0,
         lastAimY: 0,
         aimLocked: false,
+        manualAimAction: null,
         currentAction: null,
         policySnapshot: null,
         learningEnabled: false,

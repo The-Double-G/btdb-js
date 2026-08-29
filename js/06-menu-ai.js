@@ -22,6 +22,7 @@ var aiProfile = {
     lastAimX: 0,
     lastAimY: 0,
     aimLocked: false,
+    manualAimAction: null,
     currentAction: null,
     policySnapshot: null,
     learningEnabled: false,
@@ -718,6 +719,7 @@ function resetAIProfile() {
     aiProfile.lastAimX = 0
     aiProfile.lastAimY = 0
     aiProfile.aimLocked = false
+    aiProfile.manualAimAction = null
     aiProfile.currentAction = null
     aiProfile.policySnapshot = null
     aiProfile.learningEnabled = false
@@ -4902,7 +4904,7 @@ function moveAICursorToward(side, targetX, targetY) {
 }
 
 function isAITrainingDirectAIActionMode() {
-    return gameStarted
+    return typeof isAITrainingTrueSelfPlayActive == "function" && isAITrainingTrueSelfPlayActive()
 }
 
 function isManualAimTower(tower) {
@@ -4928,23 +4930,152 @@ function getManualAimTowers(side) {
     return aimTowers
 }
 
-function setTowerToManualAimFollow(tower) {
-    tower.targetPrio = getManualAimFollowPriority(tower)
-    aiProfile.aimLocked = false
+function isManualAimTowerLocked(tower) {
+    return tower.targetPrio == getManualAimLockPriority(tower)
 }
 
-function lockTowerAimToCursor(side, tower) {
-    tower.targetX = players[side].cursor.x
-    tower.targetY = players[side].cursor.y
-    tower.targetPrio = getManualAimLockPriority(tower)
-    aiProfile.aimLocked = true
+function isManualAimTowerLockedAt(tower, targetX, targetY) {
+    return isManualAimTowerLocked(tower) && Math.abs(tower.targetX - targetX) < 1 && Math.abs(tower.targetY - targetY) < 1
 }
 
-function lockActiveAIAimTowersAtCursor(side) {
-    var aimTowers = getManualAimTowers(side)
-    for(var i = 0; i < aimTowers.length; i++) {
-        lockTowerAimToCursor(side, aimTowers[i])
+function getManualAimFollowDirection(tower) {
+    if(tower.towerType == "mortar" && tower.path3Upgrades >= 1 && tower.targetPrio == 6) {
+        return -1
     }
+    return 1
+}
+
+function startAIManualAimAction(side, type, aimTowers, targetX, targetY) {
+    if(type != "follow" && type != "lock" || !aimTowers || aimTowers.length == 0) {
+        return false
+    }
+
+    aiProfile.manualAimAction = {
+        side: side,
+        type: type,
+        towerIDs: aimTowers.map(function(tower) { return tower.towerID }),
+        towerIndex: 0,
+        phase: "move-to-tower",
+        targetX: targetX,
+        targetY: targetY,
+        readyAt: 0,
+    }
+    aiProfile.aimLocked = false
+    return true
+}
+
+function advanceAIManualAimTower(action) {
+    action.towerIndex++
+    action.phase = "move-to-tower"
+    action.readyAt = 0
+}
+
+function advanceAIManualAimAction(side) {
+    var action = aiProfile.manualAimAction
+    if(!action || action.side != side) {
+        return false
+    }
+
+    while(action.towerIndex < action.towerIDs.length) {
+        var tower = getAITowerByID(action.towerIDs[action.towerIndex])
+        if(!tower || tower.playerSide != side || !isManualAimTower(tower)) {
+            advanceAIManualAimTower(action)
+            continue
+        }
+        if(action.type == "follow" && tower.targetPrio == getManualAimFollowPriority(tower)) {
+            advanceAIManualAimTower(action)
+            continue
+        }
+        if(action.type == "lock" && isManualAimTowerLockedAt(tower, action.targetX, action.targetY)) {
+            advanceAIManualAimTower(action)
+            continue
+        }
+
+        if(action.phase == "move-to-tower") {
+            var reachedTower = false
+            if(isAITrainingDirectAIActionMode()) {
+                players[side].cursor.x = tower.x
+                players[side].cursor.y = tower.y
+                reachedTower = true
+            } else {
+                reachedTower = moveAICursorToward(side, tower.x, tower.y)
+            }
+            if(!reachedTower) {
+                return true
+            }
+
+            selectTowerAt(side, players[side].cursor.x, players[side].cursor.y)
+            if(getSelectedTower(side) != tower) {
+                advanceAIManualAimTower(action)
+                return true
+            }
+            action.phase = "wait-selected"
+            action.readyAt = gameNow() + keyMsCooldown
+            return true
+        }
+
+        if(getSelectedTower(side) != tower) {
+            action.phase = "move-to-tower"
+            action.readyAt = 0
+            return true
+        }
+
+        if(action.phase == "wait-selected") {
+            if(gameNow() < action.readyAt) {
+                return true
+            }
+            if(tower.targetPrio != getManualAimFollowPriority(tower)) {
+                updateTowerTargetPriority(tower, getManualAimFollowDirection(tower))
+                action.readyAt = gameNow() + keyMsCooldown
+                return true
+            }
+            if(tower.towerType == "mortar" && tower.path3Upgrades >= 1) {
+                tower.target = -1
+            }
+            if(action.type == "follow") {
+                advanceAIManualAimTower(action)
+                return true
+            }
+            action.phase = "move-to-aim"
+            return true
+        }
+
+        if(action.phase == "move-to-aim") {
+            if(tower.targetPrio != getManualAimFollowPriority(tower)) {
+                action.phase = "wait-selected"
+                action.readyAt = gameNow()
+                return true
+            }
+            if(!moveAICursorToward(side, action.targetX, action.targetY)) {
+                return true
+            }
+            updateTowerTargetPriority(tower, 1)
+            action.phase = "wait-lock"
+            return true
+        }
+
+        if(action.phase == "wait-lock") {
+            if(isManualAimTowerLockedAt(tower, action.targetX, action.targetY)) {
+                advanceAIManualAimTower(action)
+                return true
+            }
+            var transientPriority = getManualAimLockPriority(tower) - 1
+            if(tower.targetPrio == transientPriority) {
+                return true
+            }
+            action.phase = "wait-selected"
+            action.readyAt = gameNow() + keyMsCooldown
+            return true
+        }
+
+        action.phase = "move-to-tower"
+        return true
+    }
+
+    aiProfile.manualAimAction = null
+    var aimTowers = getManualAimTowers(side)
+    aiProfile.aimLocked = aimTowers.length > 0 && aimTowers.every(isManualAimTowerLocked)
+    return true
 }
 
 function getAIAimSnapshot(side) {
@@ -5229,10 +5360,10 @@ function executeAIAction(action) {
             selectTowerAt(action.side, players[action.side].cursor.x, players[action.side].cursor.y)
             action.phase = "upgrade"
             action.readyAt = gameNow() + keyMsCooldown
-            return false
+            return "pending"
         }
         if(action.readyAt && gameNow() < action.readyAt) {
-            return false
+            return "pending"
         }
         var upgradeSucceeded = aiTryUpgradeTower(action.side, action.tower, action.pathNumber)
         if(upgradeSucceeded) {
@@ -5258,6 +5389,20 @@ function executeAIAction(action) {
     }
 
     return false
+}
+
+function handleAIActionResult(action, result) {
+    if(result === true) {
+        clearAIAction()
+        return
+    }
+    if(result == "pending") {
+        return
+    }
+    action.attempts = (action.attempts || 0) + 1
+    if(action.attempts >= 2) {
+        clearAIAction()
+    }
 }
 
 function getAITowerByID(towerID) {
@@ -5304,13 +5449,15 @@ function runAICursor() {
     }
 
     if(aiProfile.currentAction == null) {
+        if(runAIAiming(aiSide)) {
+            return
+        }
         if(getSelectedTower(aiSide) && isPointOverSideTower(aiSide, players[aiSide].cursor.x, players[aiSide].cursor.y) == false) {
             selectTowerAt(aiSide, players[aiSide].cursor.x, players[aiSide].cursor.y)
         } else if(getSelectedTower(aiSide)) {
             aiRequestDeselectTower(aiSide, AI_ACTION_PRIORITY.low)
             return
         }
-        runAIAiming(aiSide)
         return
     }
 
@@ -5333,57 +5480,68 @@ function runAICursor() {
     if(isAITrainingDirectAIActionMode()) {
         players[action.side].cursor.x = action.targetX
         players[action.side].cursor.y = action.targetY
-        if(executeAIAction(action)) {
-            clearAIAction()
-        } else {
-            action.attempts = (action.attempts || 0) + 1
-            if(action.attempts >= 2) {
-                clearAIAction()
-            }
-        }
+        handleAIActionResult(action, executeAIAction(action))
         return
     }
     var reachedTarget = moveAICursorToward(action.side, action.targetX, action.targetY)
     if(reachedTarget) {
-        if(executeAIAction(action)) {
-            clearAIAction()
-        }
+        handleAIActionResult(action, executeAIAction(action))
     }
 }
 
 function runAIAiming(side) {
     if(gameStarted == false) {
-        return
+        return false
     }
 
     var aimTowers = getManualAimTowers(side)
     if(aimTowers.length == 0) {
         aiProfile.aimLocked = false
-        return
+        aiProfile.manualAimAction = null
+        return false
+    }
+    if(aiProfile.manualAimAction) {
+        return advanceAIManualAimAction(side)
     }
 
     var aimSnapshot = getAIAimSnapshot(side)
     if(!aimSnapshot) {
-        if(aiProfile.aimLocked == false) {
-            lockActiveAIAimTowersAtCursor(side)
+        var unlockedTowers = aimTowers.filter(function(tower) { return !isManualAimTowerLocked(tower) })
+        if(unlockedTowers.length > 0) {
+            startAIManualAimAction(side, "lock", unlockedTowers, players[side].cursor.x, players[side].cursor.y)
+            return advanceAIManualAimAction(side)
         }
-        return
+        aiProfile.aimLocked = true
+        return false
     }
 
-    var desiredShift = Math.sqrt((aimSnapshot.x - aiProfile.lastAimX) ** 2 + (aimSnapshot.y - aiProfile.lastAimY) ** 2)
-    if(aiProfile.aimLocked == false || desiredShift >= 42) {
-        for(var i = 0; i < aimTowers.length; i++) {
-            setTowerToManualAimFollow(aimTowers[i])
-        }
+    aiProfile.lastAimX = aimSnapshot.x
+    aiProfile.lastAimY = aimSnapshot.y
+    var lockedTowers = aimTowers.filter(isManualAimTowerLocked)
+    aiProfile.aimLocked = lockedTowers.length == aimTowers.length
+    var desiredShift = 0
+    for(var i = 0; i < lockedTowers.length; i++) {
+        desiredShift = Math.max(desiredShift, Math.sqrt((aimSnapshot.x - lockedTowers[i].targetX) ** 2 + (aimSnapshot.y - lockedTowers[i].targetY) ** 2))
+    }
+
+    if(desiredShift >= 42 && lockedTowers.length > 0) {
+        startAIManualAimAction(side, "follow", lockedTowers, aimSnapshot.x, aimSnapshot.y)
+        return advanceAIManualAimAction(side)
+    }
+    if(aiProfile.aimLocked) {
+        return false
     }
 
     var reachedTarget = moveAICursorToward(side, aimSnapshot.x, aimSnapshot.y)
-    aiProfile.lastAimX = aimSnapshot.x
-    aiProfile.lastAimY = aimSnapshot.y
 
     if(reachedTarget && shouldAILockAim(aimSnapshot)) {
-        lockActiveAIAimTowersAtCursor(side)
+        var towersToLock = aimTowers.filter(function(tower) { return !isManualAimTowerLockedAt(tower, aimSnapshot.x, aimSnapshot.y) })
+        if(towersToLock.length > 0) {
+            startAIManualAimAction(side, "lock", towersToLock, aimSnapshot.x, aimSnapshot.y)
+            return advanceAIManualAimAction(side)
+        }
     }
+    return !reachedTarget
 }
 
 function aiSelectEcoSend(side, matchup) {

@@ -339,6 +339,65 @@ function tickBloonQueueForSide(side) {
     }
 }
 
+function updateManualAimTowerTargets() {
+    for(var i = 0; i < towers.length; i++) {
+        if(towers[i].towerType == "dartling") {
+            if(towers[i].targetPrio == 0 || towers[i].targetPrio == 1) {
+                if(towers[i].playerSide == 1) {
+                    towers[i].targetX = cursor[0].x
+                    towers[i].targetY = cursor[0].y
+                } else {
+                    towers[i].targetX = cursor[1].x
+                    towers[i].targetY = cursor[1].y
+                }
+            }
+            if(towers[i].targetPrio == 1) {
+                towers[i].targetPrio = 2
+            }
+        } else if(towers[i].towerType == "mortar" && towers[i].path3Upgrades < 1) {
+            if(towers[i].targetPrio == 0 || towers[i].targetPrio == 1) {
+                if(towers[i].playerSide == 1) {
+                    towers[i].targetX = cursor[0].x
+                    towers[i].targetY = cursor[0].y
+                } else {
+                    towers[i].targetX = cursor[1].x
+                    towers[i].targetY = cursor[1].y
+                }
+            }
+            if(towers[i].targetPrio == 1) {
+                towers[i].targetPrio = 2
+            }
+        } else if(towers[i].towerType == "mortar" && towers[i].path3Upgrades >= 1) {
+            if(towers[i].targetPrio <= 3) {
+                towers[i].findTarget()
+                if(towers[i].target == -1) {
+                    if(towers[i].playerSide == 1) {
+                        towers[i].targetX = cursor[0].x
+                        towers[i].targetY = cursor[0].y
+                    } else {
+                        towers[i].targetX = cursor[1].x
+                        towers[i].targetY = cursor[1].y
+                    }
+                } else {
+                    towers[i].targetX = bloons[towers[i].target].x
+                    towers[i].targetY = bloons[towers[i].target].y
+                }
+            } else if(towers[i].targetPrio == 4 || towers[i].targetPrio == 5) {
+                if(towers[i].playerSide == 1) {
+                    towers[i].targetX = cursor[0].x
+                    towers[i].targetY = cursor[0].y
+                } else {
+                    towers[i].targetX = cursor[1].x
+                    towers[i].targetY = cursor[1].y
+                }
+            }
+            if(towers[i].targetPrio == 5) {
+                towers[i].targetPrio = 6
+            }
+        }
+    }
+}
+
 var fpsWindowStart = nativeDateNow()
 var fpsWindowFrames = 0
 
@@ -2018,62 +2077,7 @@ function animate() {
             }
         }
 
-        for(var i = 0; i < towers.length; i++) {
-            if(towers[i].towerType == "dartling") {
-                if(towers[i].targetPrio == 0 || towers[i].targetPrio == 1) {
-                    if(towers[i].playerSide == 1) {
-                        towers[i].targetX = cursor[0].x
-                        towers[i].targetY = cursor[0].y
-                    } else {
-                        towers[i].targetX = cursor[1].x
-                        towers[i].targetY = cursor[1].y
-                    }
-                }
-                if(towers[i].targetPrio == 1) {
-                    towers[i].targetPrio = 2
-                }
-            } else if(towers[i].towerType == "mortar" && towers[i].path3Upgrades < 1) {
-                if(towers[i].targetPrio == 0 || towers[i].targetPrio == 1) {
-                    if(towers[i].playerSide == 1) {
-                        towers[i].targetX = cursor[0].x
-                        towers[i].targetY = cursor[0].y
-                    } else {
-                        towers[i].targetX = cursor[1].x
-                        towers[i].targetY = cursor[1].y
-                    }
-                }
-                if(towers[i].targetPrio == 1) {
-                    towers[i].targetPrio = 2
-                }
-            } else if(towers[i].towerType == "mortar" && towers[i].path3Upgrades >= 1) {
-                if(towers[i].targetPrio <= 3) {
-                    towers[i].findTarget()
-                    if(towers[i].target == -1) {
-                        if(towers[i].playerSide == 1) {
-                            towers[i].targetX = cursor[0].x
-                            towers[i].targetY = cursor[0].y
-                        } else {
-                            towers[i].targetX = cursor[1].x
-                            towers[i].targetY = cursor[1].y
-                        }
-                    } else {
-                        towers[i].targetX = bloons[towers[i].target].x
-                        towers[i].targetY = bloons[towers[i].target].y
-                    }
-                } else if(towers[i].targetPrio == 4 || towers[i].targetPrio == 5) {
-                    if(towers[i].playerSide == 1) {
-                        towers[i].targetX = cursor[0].x
-                        towers[i].targetY = cursor[0].y
-                    } else {
-                        towers[i].targetX = cursor[1].x
-                        towers[i].targetY = cursor[1].y
-                    }
-                }
-                if(towers[i].targetPrio == 5) {
-                    towers[i].targetPrio = 6
-                }
-            }
-        }
+        updateManualAimTowerTargets()
 
         for(var i = 0; i < projectiles.length; i++) {
             if(projectiles[i].popAdjustChecked == false) {
