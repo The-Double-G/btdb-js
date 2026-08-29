@@ -141,20 +141,16 @@ async function main() {
                 advanceRuntimeClock()
             }
             const initialAimActionCompleted = aiProfile.manualAimAction == null
-            let cumulativeFollowStarted = false
-            let prematureFollowStarted = false
-            for(const shift of [14, 28, 43]) {
-                aimBloon.x = aimX + shift
-                runAIAiming(aiSide)
-                if(aiProfile.manualAimAction && aiProfile.manualAimAction.type == "follow") {
-                    if(shift < 42) {
-                        prematureFollowStarted = true
-                    } else {
-                        cumulativeFollowStarted = true
-                    }
-                    break
-                }
+            const originalDecisionScorer = scoreAIDecisionCandidate
+            scoreAIDecisionCandidate = function(side, familyIndex, metadata, matchup, stateFeatures, policyOverride) {
+                const decision = originalDecisionScorer(side, familyIndex, metadata, matchup, stateFeatures, policyOverride)
+                decision.score = metadata && metadata.id == "aim|follow" ? 2 : -2
+                return decision
             }
+            aimBloon.x = aimX + 14
+            runAIAiming(aiSide)
+            const neuralFollowStarted = !!aiProfile.manualAimAction && aiProfile.manualAimAction.type == "follow"
+            scoreAIDecisionCandidate = originalDecisionScorer
 
             gameStarted = false
             aiEnabled = false
@@ -218,6 +214,97 @@ async function main() {
 
             const originalFetch = window.fetch
             const originalCrossMatchLearning = AI_CROSS_MATCH_LEARNING_ENABLED
+            const originalLocalRuntime = AI_IS_LOCAL_RUNTIME
+            function trainerCounts(total, queued, inProgress, succeeded, failed, cancelled, skipped) {
+                return { total, queued, inProgress, succeeded, failed, cancelled, skipped }
+            }
+            const trainerStatus = {
+                kind: "btdb-ai-training-status",
+                formatVersion: 1,
+                repository: "The-Double-G/btdb-js",
+                branch: "main",
+                publishedAt: "2026-08-29T19:30:00.000Z",
+                current: {
+                    runId: 33270691652,
+                    runNumber: 7,
+                    runAttempt: 1,
+                    state: "in_progress",
+                    conclusion: null,
+                    headSha: "2f9820862963685e48d8516b2034b51391015c0d",
+                    url: "https://github.com/The-Double-G/btdb-js/actions/runs/33270691652",
+                    createdAt: "2026-08-29T19:22:05.000Z",
+                    startedAt: "2026-08-29T19:22:09.000Z",
+                    updatedAt: "2026-08-29T19:30:00.000Z",
+                    phase: "training",
+                    projection: {
+                        jobs: { total: 21, queued: 0, inProgress: 20, completed: 1, succeeded: 1, failed: 0, cancelled: 0, skipped: 0 },
+                        workers: {
+                            training: trainerCounts(20, 0, 20, 0, 0, 0, 0),
+                            evaluation: trainerCounts(20, 20, 0, 0, 0, 0, 0),
+                        },
+                    },
+                },
+                latestEvaluation: {
+                    runId: 33200000000,
+                    runNumber: 6,
+                    runAttempt: 1,
+                    aggregateId: "sha256:" + "1".repeat(64),
+                    candidateCheckpointId: "sha256:" + "2".repeat(64),
+                    baselineCheckpointId: "sha256:" + "3".repeat(64),
+                    passed: true,
+                    games: 320,
+                    wins: 190,
+                    losses: 118,
+                    ties: 12,
+                    score: 0.6125,
+                    minimumScore: 0.58,
+                    minimumGames: 160,
+                    minimumBucketScore: 0.48,
+                    worstBucketScore: 0.59,
+                    survivalRate: 0.63125,
+                    minimumSurvivalRate: 0.5,
+                    severeCollapseRate: 0.1,
+                    maximumSevereCollapseRate: 0.27,
+                },
+                latestPromotion: {
+                    runId: 33200000000,
+                    runNumber: 6,
+                    runAttempt: 1,
+                    snapshotId: "sha256:" + "4".repeat(64),
+                    promotionId: "sha256:" + "2".repeat(64),
+                    duplicate: false,
+                    revision: 29,
+                    modelDigest: "sha256:" + "5".repeat(64),
+                    contributionEpoch: 2,
+                    championGeneration: 5,
+                    promotedPolicyDigest: "sha256:" + "6".repeat(64),
+                    candidatePolicyPreserved: false,
+                },
+            }
+            let trainerFetchRequest = null
+            AI_IS_LOCAL_RUNTIME = false
+            aiTrainerStatusState = { status: null, loadInFlight: false, lastLoadedAt: 0, lastError: "" }
+            window.fetch = async (url, options) => {
+                trainerFetchRequest = { url, options }
+                return { ok: true, status: 200, text: async () => JSON.stringify(trainerStatus) }
+            }
+            const trainerStatusSucceeded = await refreshAITrainerStatus(true)
+            const trainerMetrics = getAITrainerStatusMetrics().map(metric => ({ label: metric.label, value: metric.value }))
+            const trainerStatusBeforeFailure = JSON.stringify(aiTrainerStatusState.status)
+            const modelErrorBeforeTrainerFailure = aiPersistenceState.lastError
+            window.fetch = async () => ({ ok: true, status: 200, text: async () => "{}" })
+            const invalidTrainerStatusSucceeded = await refreshAITrainerStatus(true)
+            const trainerFailureIsolation = {
+                preserved: JSON.stringify(aiTrainerStatusState.status) == trainerStatusBeforeFailure,
+                modelErrorUnchanged: aiPersistenceState.lastError == modelErrorBeforeTrainerFailure,
+                hasOwnError: aiTrainerStatusState.lastError.length > 0,
+            }
+            let localTrainerFetches = 0
+            AI_IS_LOCAL_RUNTIME = true
+            window.fetch = async () => { localTrainerFetches++; throw new Error("Local trainer fetch should not run") }
+            const localTrainerStatusSucceeded = await refreshAITrainerStatus(true)
+            AI_IS_LOCAL_RUNTIME = originalLocalRuntime
+            window.fetch = originalFetch
             AI_CROSS_MATCH_LEARNING_ENABLED = true
             aiPersistenceState.loadInFlight = true
             const refreshingSaveState = getAITrainingSaveButtonState()
@@ -487,6 +574,14 @@ async function main() {
                     migratedModel.policy.decision.WCandidate1[0].length,
                     migratedModel.policy.decision.WCandidate2.length,
                     migratedModel.policy.decision.WCandidate2[0].length,
+                    migratedModel.policy.decision.WStateToMemory.length,
+                    migratedModel.policy.decision.WStateToMemory[0].length,
+                    migratedModel.policy.decision.WMemoryToMemory.length,
+                    migratedModel.policy.decision.WMemoryToMemory[0].length,
+                    migratedModel.policy.decision.WMemoryToState.length,
+                    migratedModel.policy.decision.WMemoryToState[0].length,
+                    migratedModel.policy.decision.WSurvival.length,
+                    migratedModel.policy.decision.WSurvival[0].length,
                     migratedModel.policy.decision.familyBias.length,
                 ],
                 parameterCount: getAIPolicyParameterCount(migratedModel.policy),
@@ -507,16 +602,55 @@ async function main() {
                 populationSize: migratedModel.populationPolicies.length,
             }
 
+            const schema9Policy = cloneAIPolicy(migratedModel.policy)
+            schema9Policy.decision.stateInputSize = 48
+            schema9Policy.decision.candidateInputSize = 32
+            schema9Policy.decision.WState1 = schema9Policy.decision.WState1.map(row => row.slice(0, 48))
+            schema9Policy.decision.WCandidate1 = schema9Policy.decision.WCandidate1.map(row => row.slice(0, 32))
+            for(const key of ["memorySize", "survivalClassCount", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival"]) delete schema9Policy.decision[key]
+            const schema9State = Array.from({ length: 48 }, (_, index) => (index % 9 - 4) / 4)
+            const schema9Candidate = Array.from({ length: 32 }, (_, index) => (index % 7 - 3) / 3)
+            const schema9StateEmbedding = aiDecisionEncode(schema9State, schema9Policy.decision.WState1, schema9Policy.decision.bState1, schema9Policy.decision.WState2, schema9Policy.decision.bState2).embedding
+            const schema9CandidateEmbedding = aiDecisionEncode(schema9Candidate, schema9Policy.decision.WCandidate1, schema9Policy.decision.bCandidate1, schema9Policy.decision.WCandidate2, schema9Policy.decision.bCandidate2).embedding
+            const schema9Dot = schema9StateEmbedding.reduce((sum, value, index) => sum + value * schema9CandidateEmbedding[index], 0)
+            const schema9StateNorm = Math.sqrt(schema9StateEmbedding.reduce((sum, value) => sum + value * value, 0) + 1e-6)
+            const schema9CandidateNorm = Math.sqrt(schema9CandidateEmbedding.reduce((sum, value) => sum + value * value, 0) + 1e-6)
+            const schema9Score = Math.tanh(schema9Dot / (schema9StateNorm * schema9CandidateNorm) + schema9Policy.decision.familyBias[AI_DECISION_FAMILY.upgrade])
+            const schema10Policy = migrateAIPolicy(schema9Policy)
+            const schema10Forward = aiDecisionForward(schema9State.concat(Array(24).fill(0)), schema9Candidate.concat(Array(8).fill(0)), AI_DECISION_FAMILY.upgrade, Array(AI_DECISION_MEMORY_SIZE).fill(0), schema10Policy)
+            const schema9Migration = {
+                valid: isValidAIPolicy(schema10Policy),
+                scoreDelta: Math.abs(schema10Forward.score - schema9Score),
+                stateColumnsZero: schema10Policy.decision.WState1.every(row => row.slice(48).every(value => value == 0)),
+                candidateColumnsZero: schema10Policy.decision.WCandidate1.every(row => row.slice(32).every(value => value == 0)),
+                memoryProjectionZero: schema10Policy.decision.WMemoryToState.every(row => row.every(value => value == 0)),
+                headsZero: schema10Policy.decision.WValue.every(value => value == 0) && schema10Policy.decision.WSurvival.every(row => row.every(value => value == 0)),
+            }
+
             const decisionPolicy = cloneAIPolicy(migratedModel.policy)
-            const decisionState = Array.from({ length: 48 }, (_, index) => (index % 9 - 4) / 4)
-            const decisionCandidate = Array.from({ length: 32 }, (_, index) => (index % 7 - 3) / 3)
-            const decisionBefore = aiDecisionForward(decisionState, decisionCandidate, AI_DECISION_FAMILY.upgrade, decisionPolicy).score
-            const decisionTarget = decisionBefore >= 0 ? -0.8 : 0.8
+            const decisionState = Array.from({ length: AI_DECISION_STATE_INPUT_SIZE }, (_, index) => (index % 9 - 4) / 4)
+            const decisionCandidate = Array.from({ length: AI_DECISION_CANDIDATE_INPUT_SIZE }, (_, index) => (index % 7 - 3) / 3)
+            const rejectedCandidate = Array.from({ length: AI_DECISION_CANDIDATE_INPUT_SIZE }, (_, index) => (3 - index % 7) / 3)
+            const decisionMemory = Array.from({ length: AI_DECISION_MEMORY_SIZE }, (_, index) => (index % 5 - 2) / 4)
+            const decisionBeforeForward = aiDecisionForward(decisionState, decisionCandidate, AI_DECISION_FAMILY.upgrade, decisionMemory, decisionPolicy)
+            const rejectedBeforeForward = aiDecisionForward(decisionState, rejectedCandidate, AI_DECISION_FAMILY.upgrade, decisionMemory, decisionPolicy)
+            const decisionBefore = decisionBeforeForward.actorLogit - rejectedBeforeForward.actorLogit
+            const decisionTarget = 0.8
             let decisionTrainSucceeded = true
             for(let trainIndex = 0; trainIndex < 12; trainIndex++) {
-                decisionTrainSucceeded = trainAIDecision(decisionState, decisionCandidate, AI_DECISION_FAMILY.upgrade, decisionTarget, decisionPolicy) && decisionTrainSucceeded
+                decisionTrainSucceeded = trainAIDecision({
+                    familyIndex: AI_DECISION_FAMILY.upgrade,
+                    stateFeatures: decisionState,
+                    chosenCandidateFeatures: decisionCandidate,
+                    rejectedCandidateFeatures: rejectedCandidate,
+                    memoryIn: decisionMemory,
+                    localReward: decisionTarget,
+                    age: 0,
+                }, decisionTarget, 3, decisionPolicy) && decisionTrainSucceeded
             }
-            const decisionAfter = aiDecisionForward(decisionState, decisionCandidate, AI_DECISION_FAMILY.upgrade, decisionPolicy).score
+            const decisionAfterForward = aiDecisionForward(decisionState, decisionCandidate, AI_DECISION_FAMILY.upgrade, decisionMemory, decisionPolicy)
+            const rejectedAfterForward = aiDecisionForward(decisionState, rejectedCandidate, AI_DECISION_FAMILY.upgrade, decisionMemory, decisionPolicy)
+            const decisionAfter = decisionAfterForward.actorLogit - rejectedAfterForward.actorLogit
             const decisionTraining = {
                 before: decisionBefore,
                 after: decisionAfter,
@@ -524,6 +658,8 @@ async function main() {
                 target: decisionTarget,
                 succeeded: decisionTrainSucceeded,
                 valid: isValidAIPolicy(decisionPolicy),
+                valueChanged: decisionAfterForward.value != decisionBeforeForward.value,
+                survivalChanged: decisionPolicy.decision.bSurvival.some(value => value != 0),
             }
 
             const originalDecisionEncode = aiDecisionEncode
@@ -539,6 +675,63 @@ async function main() {
             aiDecisionEncode = originalDecisionEncode
             aiDecisionStateCache = null
 
+            const factualFeaturesBefore = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48)
+            towers.reverse()
+            bloons.reverse()
+            const factualFeaturesAfter = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48)
+            towers.reverse()
+            bloons.reverse()
+            const relationshipFeaturesLowHeuristic = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, { id: "factual-relation", type: "wizard", x: 100, y: 200, cost: 300, money: 1000, heuristic: -100 }).slice(32)
+            const relationshipFeaturesHighHeuristic = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, { id: "factual-relation", type: "wizard", x: 100, y: 200, cost: 300, money: 1000, heuristic: 100 }).slice(32)
+
+            aiProfile.decisionMemory = Array(AI_DECISION_MEMORY_SIZE).fill(0)
+            const memoryState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null)
+            const memoryCandidateA = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.upgrade, { id: "memory-a", type: "wizard" }, null, memoryState)
+            const memoryCandidateB = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.upgrade, { id: "memory-b", type: "bomb" }, null, memoryState)
+            const selectedMemoryCandidate = isAIDecisionScoreBetter(memoryCandidateA, memoryCandidateB) ? memoryCandidateA : memoryCandidateB
+            const memoryBeforeCommit = aiProfile.decisionMemory.slice()
+            recordAIDecisionTraceSample(selectedMemoryCandidate, 0)
+            const memoryAfterFirstCommit = aiProfile.decisionMemory.slice()
+            recordAIDecisionTraceSample(selectedMemoryCandidate, 0)
+            const memoryAfterSecondCommit = aiProfile.decisionMemory.slice()
+            const memoryLifecycle = {
+                scoringDidNotCommit: memoryBeforeCommit.every(value => value == 0),
+                selectedOutputCommitted: memoryAfterFirstCommit.every((value, index) => value == selectedMemoryCandidate.memoryOut[index]),
+                committedOnce: memoryAfterSecondCommit.every((value, index) => value == memoryAfterFirstCommit[index]),
+            }
+
+            const originalBestTowerUpgradeOption = getBestTowerUpgradeOption
+            const originalBestPlacementOption = getBestPlacementOption
+            const originalBestEconomyUtilityOption = getBestAIEconomyUtilityOption
+            const originalScoreDecisionCandidate = scoreAIDecisionCandidate
+            let crossFamilyNoOp
+            try {
+                const option = (type, familyIndex, score) => ({
+                    type,
+                    score,
+                    decisionSample: { id: `${type}|test`, familyIndex, score, stateFeatures: [] },
+                })
+                getBestTowerUpgradeOption = () => option("upgrade", AI_DECISION_FAMILY.upgrade, 0.8)
+                getBestPlacementOption = () => option("place", AI_DECISION_FAMILY.placement, 0.7)
+                getBestAIEconomyUtilityOption = () => option("sell", AI_DECISION_FAMILY.sell, 0.6)
+                scoreAIDecisionCandidate = (side, familyIndex) => ({
+                    id: `noop|${familyIndex}`,
+                    familyIndex,
+                    score: familyIndex == AI_DECISION_FAMILY.placement ? 0.2 : 0.9,
+                    stateFeatures: [],
+                })
+                const selectedCrossFamilyOption = getBestNonEmergencyDefenseOption(aiSide, {})
+                crossFamilyNoOp = {
+                    familyIndex: selectedCrossFamilyOption && selectedCrossFamilyOption.decisionSample.familyIndex,
+                    type: selectedCrossFamilyOption && selectedCrossFamilyOption.type,
+                }
+            } finally {
+                getBestTowerUpgradeOption = originalBestTowerUpgradeOption
+                getBestPlacementOption = originalBestPlacementOption
+                getBestAIEconomyUtilityOption = originalBestEconomyUtilityOption
+                scoreAIDecisionCandidate = originalScoreDecisionCandidate
+            }
+
             aiProfile.policySnapshot = null
             aiProfile.learningEnabled = false
             aiLearning.policy.decision.familyBias[AI_DECISION_FAMILY.upgrade] = 0.25
@@ -547,8 +740,10 @@ async function main() {
 
             aiProfile.tacticalTrace = Array.from({ length: 40 }, (_, index) => ({
                 familyIndex: index % AI_DECISION_FAMILY_COUNT,
-                stateFeatures: Array.from({ length: 48 }, (__, featureIndex) => ((index + featureIndex) % 11 - 5) / 5),
-                candidateFeatures: Array.from({ length: 32 }, (__, featureIndex) => ((index + featureIndex) % 9 - 4) / 4),
+                stateFeatures: Array.from({ length: AI_DECISION_STATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex) % 11 - 5) / 5),
+                chosenCandidateFeatures: Array.from({ length: AI_DECISION_CANDIDATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex) % 9 - 4) / 4),
+                rejectedCandidateFeatures: Array.from({ length: AI_DECISION_CANDIDATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex + 2) % 9 - 4) / 4),
+                memoryIn: Array.from({ length: AI_DECISION_MEMORY_SIZE }, (__, featureIndex) => ((index + featureIndex) % 5 - 2) / 2),
                 localReward: (index % 5 - 2) / 2,
                 recordedAt: gameNow(),
             }))
@@ -565,18 +760,21 @@ async function main() {
             const contributionContract = {
                 exists: !!boundedContribution,
                 count: boundedContribution ? boundedContribution.decisionSamples.length : -1,
-                exactKeys: boundedContribution ? boundedContribution.decisionSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["familyIndex", "stateFeatures", "candidateFeatures", "localReward", "age"])) : false,
-                bounded: boundedContribution ? boundedContribution.decisionSamples.every(sample => sample.stateFeatures.length == 48 && sample.candidateFeatures.length == 32 && sample.stateFeatures.every(value => value >= -1 && value <= 1) && sample.candidateFeatures.every(value => value >= -1 && value <= 1) && sample.localReward >= -1 && sample.localReward <= 1 && sample.age >= 0) : false,
+                exactKeys: boundedContribution ? boundedContribution.decisionSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["familyIndex", "stateFeatures", "chosenCandidateFeatures", "rejectedCandidateFeatures", "memoryIn", "localReward", "age"])) : false,
+                bounded: boundedContribution ? boundedContribution.decisionSamples.every(sample => sample.stateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.chosenCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.rejectedCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.memoryIn.length == AI_DECISION_MEMORY_SIZE && [sample.stateFeatures, sample.chosenCandidateFeatures, sample.rejectedCandidateFeatures, sample.memoryIn].every(vector => vector.every(value => value >= -1 && value <= 1)) && sample.localReward >= -1 && sample.localReward <= 1 && sample.age >= 0) : false,
                 ageRange: boundedContribution ? [Math.min(...boundedContribution.decisionSamples.map(sample => sample.age)), Math.max(...boundedContribution.decisionSamples.map(sample => sample.age))] : [],
                 familyCounts: boundedContribution ? Array.from({ length: AI_DECISION_FAMILY_COUNT }, (_, familyIndex) => boundedContribution.decisionSamples.filter(sample => sample.familyIndex == familyIndex).length) : [],
                 hasModel: boundedContribution ? Object.prototype.hasOwnProperty.call(boundedContribution, "model") : true,
+                byteLength: boundedContribution ? new TextEncoder().encode(JSON.stringify(boundedContribution)).byteLength : Infinity,
             }
 
             aiProfile.tacticalTrace = []
             const makeTraceEntry = familyIndex => ({
                 familyIndex,
-                stateFeatures: Array(48).fill(0),
-                candidateFeatures: Array(32).fill(0),
+                stateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
+                chosenCandidateFeatures: Array(AI_DECISION_CANDIDATE_INPUT_SIZE).fill(0),
+                rejectedCandidateFeatures: Array(AI_DECISION_CANDIDATE_INPUT_SIZE).fill(0.1),
+                memoryIn: Array(AI_DECISION_MEMORY_SIZE).fill(0),
                 localReward: 0,
                 recordedAt: gameNow(),
             })
@@ -613,7 +811,7 @@ async function main() {
                 communityGenerationAfterSessionClose,
                 candidateContributionStatus,
                 contextContributionStatus,
-                cumulativeFollowStarted,
+                neuralFollowStarted,
                 emptyTrainingStrategyCount,
                 hostedRefreshDuringSession,
                 acceptedContributionMessage,
@@ -630,15 +828,18 @@ async function main() {
                 migrationDeterministic: JSON.stringify(migratedPolicy) == JSON.stringify(repeatedMigratedPolicy),
                 migrationMaxOutputDelta,
                 migrationRetention,
+                schema9Migration,
                 normalDelta: { x: normalEnd.x - normalStart.x, y: normalEnd.y - normalStart.y },
                 normalDirectMode,
                 overviewLabels,
                 policyContract,
+                factualFeaturesPermutationInvariant: factualFeaturesBefore.every((value, index) => value == factualFeaturesAfter[index]),
+                relationshipFeaturesHeuristicIndependent: relationshipFeaturesLowHeuristic.every((value, index) => value == relationshipFeaturesHighHeuristic[index]),
+                memoryLifecycle,
                 olderEpochRefresh,
                 pendingContributionFlushes,
                 pendingContributionSaveState,
                 pendingContributionSyncStarted,
-                prematureFollowStarted,
                 queuedContributionMessage,
                 resetEpochRefresh,
                 resetEpochRefreshSucceeded,
@@ -665,11 +866,24 @@ async function main() {
                 trainingDirectMode,
                 trainingEnd,
                 contributionContract,
+                crossFamilyNoOp,
                 decisionEncodeCalls,
                 decisionTraining,
+                invalidTrainerStatusSucceeded,
+                localTrainerFetches,
+                localTrainerStatusSucceeded,
                 retainedSampleFamilyCounts,
                 retainedSparseAges,
                 retainedTraceFamilyCounts,
+                trainerFailureIsolation,
+                trainerFetchRequest: {
+                    credentials: trainerFetchRequest.options.credentials,
+                    mode: trainerFetchRequest.options.mode,
+                    referrerPolicy: trainerFetchRequest.options.referrerPolicy,
+                    url: trainerFetchRequest.url,
+                },
+                trainerMetrics,
+                trainerStatusSucceeded,
                 unsnapshottedInferenceUsesCandidate,
                 trainingTarget: { x: canvas.width / 2 + 240, y: 360 },
             }
@@ -692,8 +906,7 @@ async function main() {
             assert.deepEqual({ x: tower.targetX, y: tower.targetY }, result.aimTarget)
         }
         assert.equal(result.aimActionCompleted, true)
-        assert.equal(result.prematureFollowStarted, false)
-        assert.equal(result.cumulativeFollowStarted, true)
+        assert.equal(result.neuralFollowStarted, true)
         assert.ok(result.modeButtonIds.includes("ai-lab"))
         assert.equal(result.labOpenedByPointer, true)
         assert.deepEqual(result.statsButtonIds, ["ai-refresh", "back"])
@@ -760,24 +973,33 @@ async function main() {
             placementStoreRetained: true,
             populationSize: 2,
         })
+        assert.equal(result.schema9Migration.valid, true)
+        assert.ok(result.schema9Migration.scoreDelta < 1e-12)
+        assert.equal(result.schema9Migration.stateColumnsZero, true)
+        assert.equal(result.schema9Migration.candidateColumnsZero, true)
+        assert.equal(result.schema9Migration.memoryProjectionZero, true)
+        assert.equal(result.schema9Migration.headsZero, true)
         assert.deepEqual(result.policyContract, {
-            version: 9,
-            modelFamily: "shared-neural-controller-v1",
+            version: 10,
+            modelFamily: "shared-recurrent-actor-critic-v2",
             formatVersion: 2,
             policyKeys: ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"],
             strategyKeys: ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"],
-            decisionKeys: ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "familyBias"],
+            decisionKeys: ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"],
             familyIndices: [0, 1, 2, 3, 4, 5, 6, 7],
             strategyDimensions: [64, 17, 32, 64, 75, 32],
-            decisionDimensions: [96, 48, 48, 96, 48, 32, 48, 48, 8],
-            parameterCount: 19011,
+            decisionDimensions: [96, 72, 48, 96, 48, 40, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 8],
+            parameterCount: 23752,
             valid: true,
         })
         assert.equal(result.decisionTraining.succeeded, true)
         assert.equal(result.decisionTraining.valid, true)
         assert.equal(result.decisionTraining.familySamples, 12)
-        assert.ok(Math.abs(result.decisionTraining.target - result.decisionTraining.after) < Math.abs(result.decisionTraining.target - result.decisionTraining.before))
+        assert.ok(result.decisionTraining.after > result.decisionTraining.before)
+        assert.equal(result.decisionTraining.valueChanged, true)
+        assert.equal(result.decisionTraining.survivalChanged, true)
         assert.equal(result.decisionEncodeCalls, 4)
+        assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)
         assert.equal(result.retainedTraceFamilyCounts.reduce((sum, count) => sum + count, 0), 128)
         assert.deepEqual(result.retainedTraceFamilyCounts.slice(0, 3), [1, 1, 1])
@@ -785,13 +1007,31 @@ async function main() {
         assert.deepEqual(result.retainedSparseAges, [202, 201, 200])
         assert.deepEqual(result.contributionContract, {
             exists: true,
-            count: 32,
+            count: 12,
             exactKeys: true,
             bounded: true,
-            ageRange: [0, 31],
-            familyCounts: [4, 4, 4, 4, 4, 4, 4, 4],
+            ageRange: [0, 15],
+            familyCounts: [2, 2, 2, 2, 1, 1, 1, 1],
             hasModel: false,
+            byteLength: result.contributionContract.byteLength,
         })
+        assert.ok(result.contributionContract.byteLength <= 131072)
+        assert.equal(result.trainerStatusSucceeded, true)
+        assert.equal(result.invalidTrainerStatusSucceeded, false)
+        assert.deepEqual(result.trainerFailureIsolation, { preserved: true, modelErrorUnchanged: true, hasOwnError: true })
+        assert.equal(result.localTrainerStatusSucceeded, false)
+        assert.equal(result.localTrainerFetches, 0)
+        assert.equal(result.trainerFetchRequest.credentials, "omit")
+        assert.equal(result.trainerFetchRequest.mode, "cors")
+        assert.equal(result.trainerFetchRequest.referrerPolicy, "no-referrer")
+        assert.match(result.trainerFetchRequest.url, /^https:\/\/raw\.githubusercontent\.com\/The-Double-G\/btdb-js\/ai-status\/ai-training-status\.json\?t=\d+$/)
+        assert.deepEqual(result.trainerMetrics, [
+            { label: "GitHub Trainer", value: "Training" },
+            { label: "Run", value: "#7 · training" },
+            { label: "Workers", value: "0/20 (20 live)" },
+            { label: "Frozen Eval", value: "61.3% / S63.1% / 320" },
+            { label: "Promotion", value: "Champion v5" },
+        ])
         assert.deepEqual(result.overviewLabels, ["Hosted Champion", "Match Perspectives", "Human Demos", "Decision Samples", "Loadout Samples", "Counter Records"])
         assert.match(result.queuedContributionMessage, /finishes syncing/)
         assert.match(result.acceptedContributionMessage, /accepted/)

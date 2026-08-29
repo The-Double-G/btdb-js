@@ -1,19 +1,21 @@
 Current Version: v2.6.0
 
 v2.6.0 -
-Replaced the small strategy-only policy with a 19,011-parameter schema-9 shared neural controller
-Added a widened strategy network and a dual-encoder scorer for loadouts, strategies, placements, upgrades, sales, eco, rushes, and boosts
-Kept deterministic code only for legal actions, execution, cooldowns, collision and upgrade-path rules, and immediate-lethal safety
-Added per-family cold-start heuristic bootstraps that travel with each policy and fade out after 5,000 samples in that family
+Replaced the small strategy-only policy with a 23,752-parameter schema-10 recurrent actor-critic
+Added widened state and candidate encoders, 16-value recurrent memory, a value head, final-life survival classes, and factual entity relationships
+Made neural comparisons rank every legal loadout, placement, upgrade, sale, send, aiming, and boost candidate without handcrafted score bonuses
+Kept deterministic code only for legality, affordability, execution, cooldowns, collision, and upgrade-path rules
 Added bounded decision-sample learning to browser matches, Browser Lab self-play, and the hosted PHP authority
 Added family-balanced traces, selected no-op learning, policy-controlled self-play loadouts, and aggregate server update clipping
-Made browser and hosted schema-8 migration use one canonical deterministic neural initializer
-Added a lock-safe state-preserving migration from schema 8 to schema 9 without resetting aggregate knowledge or the contribution epoch
+Added factual life-and-pop local rewards, exactly-once recurrent memory commits, and per-family no-op comparisons
+Added a lock-safe migration from schema 9 to schema 10 that preserves actor logits and aggregate knowledge
 Expanded Browser Lab generations to 128 learning and 64 frozen internal evaluation matches with a 58% promotion gate
 Expanded continuous GitHub generations to 3,840 training matches and 320 frozen evaluation matches
-Raised continuous promotion requirements to 58% over at least 160 balanced games
-Made complete strategy-and-decision policy bundles atomic across selection, promotion, reconciliation, and the audit mirror
+Raised continuous promotion requirements to 58% over at least 160 balanced games, with map/side/role, survival, and severe-collapse gates
+Added deterministic score-weighted policy aggregation across every validated training shard
+Made complete strategy-and-decision policy bundles atomic across aggregation, promotion, reconciliation, and the audit mirror
 Added quarter-hour watchdog recovery, unresolved-promotion detection, and a three-failure circuit breaker for unattended training
+Added a sanitized trainer-status publisher with retained frozen-evaluation and hosted-promotion evidence
 Raised validated model and artifact limits to 8 MiB while retaining 128 KiB public contribution limits
 
 v2.5.3 -

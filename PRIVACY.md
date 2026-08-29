@@ -2,7 +2,7 @@
 
 ## Hosted Community Learning
 
-The hosted game may submit bounded completed-match contributions when community learning is enabled. These records can include aggregate play-style features, selected loadout signatures, final lives, strategy choices, capped tactical or placement observations, and at most 32 normalized neural decision samples. A decision sample contains bounded state and legal-candidate feature vectors, an action-family index, and a local outcome; it is not a screen recording or replay.
+The hosted game may submit bounded completed-match contributions when community learning is enabled. These records can include aggregate play-style features, selected loadout signatures, final lives, strategy choices, capped tactical or placement observations, and at most 12 normalized neural decision samples. A decision sample contains bounded state, chosen-candidate, rejected-candidate, and recurrent-memory input vectors, an action-family index, and a factual local outcome; it is not a screen recording or replay.
 
 The game does not intentionally include player names, email addresses, raw keyboard history, or full replay history in a contribution. The server requires an explicit same-host Origin and uses short-lived same-origin tokens, contribution identifiers, deduplication, and per-address rate limits. Rate-limit state can include hashed network-address values and must be treated as private runtime data.
 
@@ -10,7 +10,7 @@ Standard hosted Local matches can contribute two aggregate human perspectives. P
 
 ## Public Training Artifacts
 
-GitHub Actions workers use AI-versus-AI matches only. Each generation uses an immutable snapshot of the publicly readable Hosted Model, which can include aggregate human-derived statistics and policies. Promotable checkpoints clone that snapshot and copy only the selected policy; shard-learned statistics and stores are discarded.
+GitHub Actions workers use AI-versus-AI matches only. Each generation uses an immutable snapshot of the publicly readable Hosted Model, which can include aggregate human-derived statistics and policies. Promotable checkpoints clone that snapshot and copy only the deterministic score-weighted aggregate of validated shard policies; shard-learned statistics and stores are discarded.
 
 Public artifacts include the model snapshot and a credential-free source manifest. They must never contain contribution tokens, guards, contribution identifiers, rate-limit records, network-address hashes, trainer or promotion credentials, or the private runtime state envelope. Runtime `data/` is excluded from Git.
 

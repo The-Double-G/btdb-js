@@ -81,7 +81,7 @@ assert(!towerSource.includes("this.overclockFactor * (this.cobraBoosted"), "Dart
 assert(!bloonSource.includes("&& health < 68"), "Freeplay Bloon adjustment uses an undefined health variable")
 assert(projectileSource.includes("this.hitBloons = new Set()"), "Projectile hit history is missing")
 assert(!aiSource.includes("canAIInvestInFarmNow"), "Farm investment heuristics cannot override the neural placement decision")
-assert(aiSource.includes("farm.aiPlacedAt > 0 && farm.aiPlacedRound == visibleRound && players[side].lives > 35"), "New AI farms can be sold in their placement round")
+assert(aiSource.includes('tower.towerType == "farm" && tower.aiPlacedAt > 0 && tower.aiPlacedRound == visibleRound'), "New AI farms can be sold in their placement round")
 assert((rounds.match(/else if\(round == 43\)/g) || []).length === 2, "Round 43 must appear exactly once per round mode")
 assert(/maxCounter = 5\s+setTimeout\(function\(\) \{\s+if\(counter < 5\)/.test(rounds), "Mastery round 80 counter mismatch returned")
 assert(!rounds.includes("Math.ceil(9200 *"), "Mastery round 67 side asymmetry returned")

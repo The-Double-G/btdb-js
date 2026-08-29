@@ -10,11 +10,13 @@ const {
     MODEL_FAMILY,
     MODEL_SCHEMA_VERSION,
     POLICY_FORMAT_VERSION,
+    POLICY_PARAMETER_COUNT,
     TRAIN_RESULT_KIND,
     TRAINING_INTERNAL_EVALUATION_MATCHES,
     TRAINING_LEARNING_MATCHES,
     TRAINING_MATCHES,
     aggregateEvaluationResults,
+    aggregateTrainResultPolicies,
     buildPolicyPromotionRequest,
     canonicalStringify,
     computeMetrics,
@@ -24,6 +26,7 @@ const {
     finalizeResult,
     hostedDigest,
     makeSelectionReport,
+    materializeAggregatedPolicyCandidate,
     materializePolicyOnlyCandidate,
     selectBestTrainResult,
     validateCheckpoint,
@@ -65,20 +68,30 @@ function policy(value = 0) {
             b3: vector(75),
         },
         decision: {
-            stateInputSize: 48,
-            candidateInputSize: 32,
+            stateInputSize: 72,
+            candidateInputSize: 40,
             stateHiddenSize: 96,
             candidateHiddenSize: 48,
             embeddingSize: 48,
+            memorySize: 16,
+            survivalClassCount: 4,
             trainingSamples: vector(8),
-            WState1: matrix(96, 48, value),
+            WState1: matrix(96, 72, value),
             bState1: vector(96),
             WState2: matrix(48, 96, value),
             bState2: vector(48),
-            WCandidate1: matrix(48, 32, value),
+            WCandidate1: matrix(48, 40, value),
             bCandidate1: vector(48),
             WCandidate2: matrix(48, 48, value),
             bCandidate2: vector(48),
+            WStateToMemory: matrix(16, 48, value),
+            WMemoryToMemory: matrix(16, 16, value),
+            bMemory: vector(16),
+            WMemoryToState: matrix(48, 16, value),
+            WValue: vector(48),
+            bValue: 0,
+            WSurvival: matrix(4, 48, value),
+            bSurvival: vector(4),
             familyBias: vector(8),
         },
     }
@@ -211,7 +224,7 @@ function policyParameterCounts(candidatePolicy) {
     const decision = candidatePolicy.decision
     return {
         strategy: [strategy.W1, strategy.b1, strategy.W2, strategy.b2, strategy.W3, strategy.b3].reduce((total, tensor) => total + countTensor(tensor), 0),
-        decision: [decision.WState1, decision.bState1, decision.WState2, decision.bState2, decision.WCandidate1, decision.bCandidate1, decision.WCandidate2, decision.bCandidate2, decision.familyBias].reduce((total, tensor) => total + countTensor(tensor), 0),
+        decision: [decision.WState1, decision.bState1, decision.WState2, decision.bState2, decision.WCandidate1, decision.bCandidate1, decision.WCandidate2, decision.bCandidate2, decision.WStateToMemory, decision.WMemoryToMemory, decision.bMemory, decision.WMemoryToState, decision.WValue, decision.bValue, decision.WSurvival, decision.bSurvival, decision.familyBias].reduce((total, tensor) => total + countTensor(tensor), 0),
     }
 }
 
@@ -233,8 +246,9 @@ function fakeResponse(chunks, contentLength = null) {
 }
 
 async function main() {
-    assert.equal(MODEL_SCHEMA_VERSION, 9)
-    assert.equal(MODEL_FAMILY, "shared-neural-controller-v1")
+    assert.equal(MODEL_SCHEMA_VERSION, 10)
+    assert.equal(MODEL_FAMILY, "shared-recurrent-actor-critic-v2")
+    assert.equal(POLICY_PARAMETER_COUNT, 23752)
     assert.equal(TRAINING_MATCHES, 192)
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
@@ -274,8 +288,8 @@ async function main() {
     const exactPolicy = policy()
     assert.deepEqual(Object.keys(exactPolicy).sort(), ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"].sort())
     assert.deepEqual(Object.keys(exactPolicy.strategy).sort(), ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"].sort())
-    assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "familyBias"].sort())
-    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 13304 })
+    assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"].sort())
+    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 18045 })
 
     const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
     validateCheckpoint(base)
@@ -303,7 +317,7 @@ async function main() {
     assert.throws(() => validateModel(coercibleDimensionsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /incompatible hidden dimensions/)
     const oldSchemaModel = model()
     oldSchemaModel.version = 8
-    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 9/)
+    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 10/)
 
     assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
     const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
@@ -345,6 +359,17 @@ async function main() {
     assert.equal(materialized.model.championGeneration, base.model.championGeneration + 1)
     assert.equal(materialized.model.candidateGeneration, materialized.model.championGeneration)
     assert.deepEqual(materialized.model.populationPolicies, [base.model.championPolicy])
+    const aggregatedPolicy = aggregateTrainResultPolicies([trainA, trainB, trainC], base)
+    const aggregationRawWeights = [trainA, trainB, trainC].map(result => Math.exp((result.metrics.builtInEvaluationScore - trainC.metrics.builtInEvaluationScore) * 8))
+    const aggregationWeightTotal = aggregationRawWeights.reduce((sum, weight) => sum + weight, 0)
+    const expectedAggregatedBias = [trainA, trainB, trainC].reduce((sum, result, index) => sum + result.candidate.model.policy.strategy.b1[0] * aggregationRawWeights[index] / aggregationWeightTotal, 0)
+    assert.ok(Math.abs(aggregatedPolicy.strategy.b1[0] - expectedAggregatedBias) < 1e-12)
+    assert.equal(aggregatedPolicy.decision.trainingSamples[0], trainA.seed + trainB.seed + trainC.seed)
+    const aggregatedCandidate = materializeAggregatedPolicyCandidate([trainA, trainB, trainC], base)
+    validatePolicyOnlyCandidate(aggregatedCandidate, base)
+    assert.deepEqual(aggregatedCandidate.model.policy, aggregatedPolicy)
+    assert.equal(aggregatedCandidate.provenance.shard, "aggregate-3")
+    assert.equal(aggregatedCandidate.provenance.matches, TRAINING_MATCHES * 3)
 
     const contaminatedModel = structuredClone(materialized.model)
     contaminatedModel.totalDecisionSamples++
@@ -384,6 +409,8 @@ async function main() {
     assert.equal(report.selectedScore, 0.625)
     assert.equal(report.selectedSourceCheckpointId, trainC.candidate.checkpointId)
     assert.equal(report.materializedCheckpointId, materialized.checkpointId)
+    assert.equal(report.aggregationMethod, "score-weighted-policy-average")
+    assert.equal(report.contributorCount, 3)
 
     const evaluationA = evaluationResult("eval-a", 31, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], materialized, base)
     validateEvaluationResult(evaluationA)
@@ -400,10 +427,39 @@ async function main() {
     assert.equal(gateAggregate.overall.games, 64)
     assert.equal(gateAggregate.overall.score, 0.6875)
     assert.equal(gateAggregate.coverage.balanced, true)
+    assert.equal(gateAggregate.thresholds.minimumBucketScore, 0.48)
+    assert.equal(gateAggregate.thresholds.minimumSurvivalRate, 0.5)
+    assert.ok(Math.abs(gateAggregate.thresholds.maximumSevereCollapseRate - 0.27) < 1e-12)
+    assert.equal(gateAggregate.safety.survivalRate, 0.75)
+    assert.equal(gateAggregate.safety.severeCollapseRate, 0)
     assert.equal(gateAggregate.passed, true)
     validatePromotionBundle(materialized, gateAggregate, base)
 
-    const shortEvaluation = evaluationResult("eval-short", 33, ["win", "win"], materialized, base)
+    const weakBucketOutcomes = Array.from({ length: 64 }, (_, index) => index % 8 >= 4 || Math.floor(index / 8) * 4 + index % 4 < 12 ? "win" : "loss")
+    const weakBucketAggregate = aggregateEvaluationResults([evaluationResult("eval-weak-bucket", 33, weakBucketOutcomes, materialized, base)], 0.58, 64)
+    assert.ok(weakBucketAggregate.overall.score > 0.58)
+    assert.ok(weakBucketAggregate.byRole.responder.score < weakBucketAggregate.thresholds.minimumBucketScore)
+    assert.equal(weakBucketAggregate.passed, false)
+
+    const collapseEvaluation = structuredClone(gateEvaluation)
+    let extraCollapses = 2
+    for(const matchSummary of collapseEvaluation.matches) {
+        if(matchSummary.result != "loss" && extraCollapses <= 0) continue
+        if(matchSummary.result != "loss") extraCollapses--
+        matchSummary.result = "loss"
+        matchSummary.candidateLives = 0
+        matchSummary.opponentLives = 100
+        matchSummary.leftLives = matchSummary.candidateSide == "left" ? 0 : 100
+        matchSummary.rightLives = matchSummary.candidateSide == "right" ? 0 : 100
+    }
+    collapseEvaluation.metrics = computeMetrics(collapseEvaluation.matches)
+    collapseEvaluation.resultId = digest(Object.fromEntries(Object.entries(collapseEvaluation).filter(([key]) => key != "resultId")))
+    const collapseAggregate = aggregateEvaluationResults([collapseEvaluation], 0.58, 64)
+    assert.ok(collapseAggregate.overall.score > 0.58)
+    assert.ok(collapseAggregate.safety.severeCollapseRate > collapseAggregate.thresholds.maximumSevereCollapseRate)
+    assert.equal(collapseAggregate.passed, false)
+
+    const shortEvaluation = evaluationResult("eval-short", 34, ["win", "win"], materialized, base)
     const unbalanced = aggregateEvaluationResults([shortEvaluation], 0, 2)
     assert.equal(unbalanced.byRole.probe.games, 0)
     assert.equal(unbalanced.coverage.balanced, false)
@@ -534,7 +590,7 @@ async function main() {
     validateEvaluationAggregate(stalePromotion)
     assert.throws(() => validatePromotionBundle(materialized, stalePromotion, base, 0.56, 8), /current baseline/)
 
-    console.log("Distributed AI unit tests passed: schema-9 bundles, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
+    console.log("Distributed AI unit tests passed: schema-10 bundles, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
 }
 
 main().catch(error => {

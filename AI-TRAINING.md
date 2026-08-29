@@ -1,16 +1,21 @@
 # AI Training v2.6.0
 
-The authoritative Hosted Model uses schema 9 and the `shared-neural-controller-v1` family. Each candidate and champion is one atomic 19,011-parameter policy bundle:
+The authoritative Hosted Model uses schema 10 and the `shared-recurrent-actor-critic-v2` family. Each candidate and champion is one atomic 23,752-parameter policy bundle:
 
 - A widened `17 -> 64 -> 32 -> 75` strategy network.
-- A shared dual-encoder scorer with 48 state inputs, 32 legal-candidate inputs, and 48-value embeddings.
+- A `72 -> 96 -> 48` state encoder and `40 -> 48 -> 48` legal-candidate encoder.
+- A 16-value recurrent memory, a scalar value head, and a four-class final-life survival head.
 - Per-family decision-training counters that travel with the policy and determine its exact bootstrap behavior.
 
-The scorer ranks legal candidates across loadout, strategy, placement, upgrade, sale, eco, rush, and boost families. Deterministic code remains for legality, affordability, collision/path rules, cooldowns, execution, and immediate-lethal safety. Existing heuristics provide a cold-start bootstrap that fades independently for each family over its first 5,000 neural decision samples; after that, the network supplies the ranking. Large loadout and placement spaces use deterministic, non-heuristic shortlists after bootstrap rather than permanently excluding candidates by legacy rank.
+The actor ranks legal candidates across loadout, strategy, placement, upgrade, sale, eco, rush, and boost families. Deterministic code remains for legality, affordability, collision/path rules, cooldowns, and execution, but it does not add a handcrafted value to an actor score. Loadout selection evaluates the complete legal library, and placement selection evaluates the complete legal grid at its fixed search resolution. Upgrade, sale, send, boost, and aiming choices enumerate every currently legal candidate. Exploration noise is enabled only for learning matches. Upgrade, placement, and sale/collect families each compare their best legal action with their own learned no-op before the surviving actions are compared across families.
+
+The first 48 state and 32 candidate columns retain the schema-9 meaning. Schema 10 appends 24 permutation-invariant factual entity aggregates across both sides and eight factual candidate relationships. The appended columns use observed entities, positions, tiers, ownership, affordability, and candidate relations rather than heuristic scores. Memory advances exactly once after a selected decision; scoring rejected candidates never mutates recurrent state.
 
 ## Match Learning
 
-Hosted Vs AI and candidate self-play matches train and run inference from the live candidate unless a frozen evaluation or opponent snapshot is explicit. Strategy learning uses the terminal match result. Selected neural actions, including selected no-ops, record bounded state/candidate vectors and combine local outcome change with a decayed terminal reward. Contribution samples are selected across action families before recent samples fill remaining capacity, so early loadout and strategy choices are not displaced by frequent tactical actions. Parameters and features are finite, bounded, and validated after every update.
+Hosted Vs AI and candidate self-play matches train and run inference from the live candidate unless a frozen evaluation or opponent snapshot is explicit. Strategy learning uses the terminal match result. Selected neural actions, including selected no-ops, record bounded state, chosen-candidate, rejected-candidate, and memory-input vectors. Local rewards use only observed life and pop changes; the value target combines that local result with a decayed terminal result. Final-life survival classes are trained only when the completed-match outcome is observable. Contribution samples are selected across action families before recent samples fill remaining capacity, so early loadout and strategy choices are not displaced by frequent tactical actions. Parameters and features are finite, bounded, and validated after every update.
+
+Pairwise actor learning uses factual alternatives from the scored candidate batch and a bounded shadow continue alternative when no second candidate is available. It does not fabricate emergency labels. Exact counterfactual rollout from a complete pre-action game snapshot is deferred: the current game does not yet expose a compact deterministic snapshot/restore boundary for every legal action family. Frozen evaluation remains the authority for promotion.
 
 Completed standard Local matches submit two human demonstration perspectives. Demonstrations contain aggregate play-style features, loadout signatures, and final lives. They do not contain names, input history, or replay history, and they do not invent an AI action or directly update the neural policy.
 
@@ -18,7 +23,7 @@ Localhost and file-based sessions remain session-only.
 
 ## Public Contributions
 
-Public browsers never upload a model or gradient. A normal contribution contains outcome data, the chosen strategy, approved aggregate observations, and at most 32 selected neural decision samples. The server derives each sample's terminal component from final lives, replays SGD into only the current candidate under the model lock, and clips the aggregate policy-parameter delta from the complete contribution to an L2 norm of 0.35.
+Public browsers never upload a model or gradient. A normal contribution contains outcome data, the chosen strategy, approved aggregate observations, and at most 12 selected neural decision samples. Before queuing, the browser trims observations and then decision samples until the serialized UTF-8 request is at most 128 KiB. The server derives each sample's terminal and survival targets from final lives, replays the same pairwise actor-critic update into only the current candidate under the model lock, and clips the aggregate policy-parameter delta from the complete contribution to an L2 norm of 0.35.
 
 Contribution requests require an explicit same-host Origin and use short-lived same-origin tokens, unique IDs, per-address rate limits, strict dimensions and schemas, 128 KiB body limits, revision-lag checks, epoch checks, deduplication, and atomic writes. Public events cannot replace or promote the champion, change generations, reset knowledge, or upload synthetic checkpoints.
 
@@ -57,9 +62,13 @@ The `action=promote` route accepts only a complete validated policy bundle. It c
 
 ## Migration And Reset
 
-The endpoint migrates a valid schema-8 model to schema 9 once under the exclusive lock. Migration expands each strategic policy without changing its initial logits, initializes the decision scorer with the same canonical values used by the browser, preserves aggregate knowledge and generations, retains the contribution epoch, and increments the revision once.
+The endpoint migrates every valid schema-9 candidate, champion, and retained history policy to schema 10 once under the exclusive lock. Migration preserves all strategy tensors and old actor columns, appends zero input columns, initializes recurrent tensors with the browser's canonical deterministic values, and zeros the memory-to-state, value, and survival heads so initial actor logits are unchanged. Aggregate knowledge and generations are preserved. The migration increments both revision and contribution epoch and clears contribution guards so stale schema-9 samples cannot update schema 10. Valid schema-8 stores can still migrate directly to the current contract.
 
-A knowledge reset is different and destructive. Always back up `data/ai-learning-global.json` first. Submit `action=reset` with a fresh schema-9 model, trainer key, and exact revision. A reset advances both revision and epoch and clears contribution guards.
+A knowledge reset is different and destructive. Always back up `data/ai-learning-global.json` first. Submit `action=reset` with a fresh schema-10 model, trainer key, and exact revision. A reset advances both revision and epoch and clears contribution guards.
+
+## Continuous Coordination
+
+The continuous-training watchdog is the only automatic dispatcher. It starts one 20-shard run only after CI succeeds for the exact commit currently at `main`, and the training workflow independently validates that commit through its `expected_sha` input before any shard starts. A normal `main` update cancels and waits for obsolete continuous runs unless one has entered a promotion transaction. A checkpoint-only promotion waits for its creating transaction to finish instead of cancelling it; the transaction-completion event then lets the watchdog dispatch the successor without a second dispatcher racing it. Any retained `ai-promotion/*` branch blocks automatic training until it is reconciled or removed.
 
 ## Validation
 

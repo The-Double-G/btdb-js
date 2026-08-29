@@ -5,6 +5,9 @@ on:
     - cron: "17 * * * *"
     - cron: "2,32,47 * * * *"
   workflow_dispatch:
+  workflow_run:
+    workflows: [CI, Distributed AI Training]
+    types: [completed]
 
 permissions:
   actions: write
@@ -18,13 +21,33 @@ jobs:
   ensure-running:
     if: ${{ vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Start training only when the transaction is idle and healthy
+      - name: Coordinate the exact main training run
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$SOURCE_WORKFLOW" = "CI" ]; then
+            if [ "$SOURCE_CONCLUSION" != "success" ] || [ "$SOURCE_SHA" != "$current_sha" ]; then
+              echo "Ignoring CI completion that is unsuccessful or no longer current."
+              exit 0
+            fi
+          fi
+
+          ci_success=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$current_sha" -f status=success -f per_page=1 --jq '.total_count')
+          if [ "$ci_success" -lt 1 ]; then
+            echo "Current main SHA $current_sha does not have a successful exact-SHA CI run; not dispatching."
+            exit 0
+          fi
+
           retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
           if [ -n "$retained" ]; then
             echo "Retained AI promotion branch(es) indicate an unresolved hosted/audit transaction:" >&2
@@ -33,22 +56,121 @@ jobs:
             exit 1
           fi
 
-          active=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" -f branch="$DEFAULT_BRANCH" -f per_page=100 --jq '[.workflow_runs[] | select(.status != "completed")] | length')
-          if [ "$active" -gt 0 ]; then
-            echo "Distributed AI training is already active."
-            exit 0
+          checkpoint_parent=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
+            'if ((.parents | length) == 1 and (.files | length) == 1 and .files[0].filename == "training/checkpoints/champion.json") then .parents[0].sha else "" end')
+          source_run_id=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
+            'try (.commit.message | capture("^Promote AI checkpoint from run (?<id>[0-9]+)").id) catch ""')
+
+          active=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
+            -f branch="$DEFAULT_BRANCH" -f per_page=100 --jq \
+            '[.workflow_runs[] | select(.status != "completed") | select(.display_title == "Distributed AI Training" or (.display_title | startswith("Continuous AI training for ")))]')
+
+          if [ -n "$checkpoint_parent" ]; then
+            source_active=$(jq --arg parent "$checkpoint_parent" --arg source "$source_run_id" \
+              '[.[] | select(.head_sha == $parent or ($source != "" and (.id | tostring) == $source))] | length' <<<"$active")
+            if [ "$source_active" -gt 0 ]; then
+              echo "Checkpoint-only main update belongs to its active training transaction; waiting for that transaction to finish."
+              exit 0
+            fi
           fi
 
-          recent=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" -f branch="$DEFAULT_BRANCH" -f status=completed -f per_page=3 --jq '[.workflow_runs[].conclusion]')
-          if node -e 'const values=JSON.parse(process.argv[1]);const failed=new Set(["failure","timed_out","startup_failure","action_required"]);process.exit(values.length>=3&&values.slice(0,3).every(value=>failed.has(value))?0:1)' "$recent"; then
-            echo "Circuit breaker open: the last 3 default-branch training runs failed. Investigate before retrying." >&2
+          expected_title="Continuous AI training for $current_sha"
+          keep_id=$(jq -r --arg sha "$current_sha" --arg title "$expected_title" \
+            '[.[] | select(.head_sha == $sha and .display_title == $title) | .id] | sort | first // empty' <<<"$active")
+          cancel_ids=$(jq -r --arg sha "$current_sha" --arg title "$expected_title" --arg keep "$keep_id" \
+            '.[] | select((.head_sha != $sha or .display_title != $title) or ($keep != "" and (.id | tostring) != $keep)) | .id' <<<"$active")
+
+          for run_id in $cancel_ids; do
+            transaction_ref=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/$run_id-" --jq '.[].ref')
+            promotion_jobs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" -f per_page=100 --jq \
+              '[.jobs[] | select((.name == "promote" or .name == "publish-hosted" or .name == "finalize-promotion") and .status != "completed")] | length')
+            if [ -n "$transaction_ref" ] || [ "$promotion_jobs" -gt 0 ]; then
+              echo "Run $run_id has entered a promotion transaction; refusing to cancel or dispatch around it." >&2
+              exit 1
+            fi
+          done
+
+          for run_id in $cancel_ids; do
+            echo "Cancelling obsolete continuous training run $run_id."
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" >/dev/null; then
+              status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status')
+              if [ "$status" != "completed" ]; then
+                echo "Could not cancel active run $run_id." >&2
+                exit 1
+              fi
+            fi
+          done
+
+          pending="$cancel_ids"
+          for _ in $(seq 1 120); do
+            next_pending=""
+            for run_id in $pending; do
+              status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status')
+              if [ "$status" != "completed" ]; then next_pending="$next_pending $run_id"; fi
+            done
+            pending="$next_pending"
+            if [ -z "$pending" ]; then break; fi
+            sleep 5
+          done
+          if [ -n "$pending" ]; then
+            echo "Timed out waiting for obsolete training run(s) to quiesce:$pending" >&2
             exit 1
           fi
 
+          refreshed_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          if [ "$refreshed_sha" != "$current_sha" ]; then
+            echo "Main changed while training was being quiesced; a later coordinator run will handle $refreshed_sha."
+            exit 0
+          fi
+
+          if [ -n "$keep_id" ]; then
+            keep_status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$keep_id" --jq '.status')
+            if [ "$keep_status" != "completed" ]; then
+              echo "Exact-SHA continuous training run $keep_id is already active."
+              exit 0
+            fi
+          fi
+
+          retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
+          if [ -n "$retained" ]; then
+            echo "A promotion transaction started while training was being coordinated; not dispatching." >&2
+            exit 1
+          fi
+          ci_success=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$current_sha" -f status=success -f per_page=1 --jq '.total_count')
+          if [ "$ci_success" -lt 1 ]; then
+            echo "Successful exact-SHA CI is no longer available; not dispatching." >&2
+            exit 1
+          fi
+
+          recent=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
+            -f head_sha="$current_sha" -f status=completed -f per_page=100 --jq \
+            "[.workflow_runs[] | select(.display_title == \"$expected_title\") | .conclusion][0:3]")
+          if node -e 'const values=JSON.parse(process.argv[1]);const failed=new Set(["failure","timed_out","startup_failure","action_required"]);process.exit(values.length>=3&&values.every(value=>failed.has(value))?0:1)' "$recent"; then
+            echo "Circuit breaker open: the last 3 continuous training runs for $current_sha failed. Investigate before retrying." >&2
+            exit 1
+          fi
+
+          before_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
+            -f per_page=100 --jq '[.workflow_runs[].id] | max // 0')
           gh workflow run ai-training.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
             -f workers=20 \
             -f training_matches=192 \
             -f evaluation_matches=16 \
             -f minimum_score=0.58 \
             -f minimum_games=160 \
-            -f continuous=true
+            -f continuous=true \
+            -f expected_sha="$current_sha"
+
+          dispatched_id=""
+          for _ in $(seq 1 30); do
+            dispatched_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
+              -f per_page=100 --jq ".workflow_runs[] | select(.id > $before_id and .display_title == \"$expected_title\") | .id" | head -n 1)
+            if [ -n "$dispatched_id" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$dispatched_id" ]; then
+            echo "Continuous dispatch was accepted but its exact-SHA run could not be located." >&2
+            exit 1
+          fi
+          echo "Dispatched continuous training run $dispatched_id for exact main SHA $current_sha."
