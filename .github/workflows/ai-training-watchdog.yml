@@ -29,7 +29,7 @@ jobs:
           fi
 
           gh workflow run ai-training.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
-            -f workers=2 \
+            -f workers=20 \
             -f training_matches=96 \
             -f evaluation_matches=16 \
             -f minimum_score=0.56 \

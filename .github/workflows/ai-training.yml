@@ -8,7 +8,7 @@ on:
         required: true
         type: choice
         default: "8"
-        options: ["2", "4", "8", "16"]
+        options: ["2", "4", "8", "16", "20"]
       training_matches:
         description: Self-play matches per training shard
         required: true
@@ -87,7 +87,7 @@ jobs:
               return value
           }
 
-          const workers = integer("WORKERS", 1, 16)
+          const workers = integer("WORKERS", 1, 20)
           const training = integer("TRAINING_MATCHES", 1)
           const evaluation = integer("EVALUATION_MATCHES", 1)
           const minimumGames = integer("MINIMUM_GAMES", 1)
