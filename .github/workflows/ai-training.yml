@@ -440,7 +440,7 @@ jobs:
           gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$promotion_branch"
 
           ci_run_id=""
-           for _ in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             ci_run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$promotion_branch" --event workflow_dispatch --limit 100 --json databaseId,headSha --jq ".[] | select(.headSha == \"$promotion_sha\") | .databaseId" | head -n 1)
             if [ -n "$ci_run_id" ]; then break; fi
             sleep 2
@@ -520,18 +520,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
         with:
           fetch-depth: 0
           ref: ${{ github.event.repository.default_branch }}
-      - id: push
-        name: Push the checked promotion commit
+      - id: merge
+        name: Merge the checked promotion pull request
         if: ${{ needs.publish-hosted.result == 'success' && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PROMOTION_BRANCH: ${{ needs.promote.outputs.promotion_branch }}
           PROMOTION_SHA: ${{ needs.promote.outputs.promotion_sha }}
+          RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
           git fetch --no-tags origin "+refs/heads/$PROMOTION_BRANCH:refs/remotes/origin/$PROMOTION_BRANCH"
@@ -551,14 +554,25 @@ jobs:
             echo "Promotion commit contains unexpected files." >&2
             exit 1
           fi
-          git push origin "$PROMOTION_SHA:refs/heads/$DEFAULT_BRANCH"
+          pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$PROMOTION_BRANCH" \
+            --title "Promote AI checkpoint from run $RUN_ID" \
+            --body "This checkpoint passed exact-commit CI and hosted publication. Merge only this checkpoint-only promotion commit.")
+          pr_number="${pr_url##*/}"
+          if ! [[ "$pr_number" =~ ^[0-9]+$ ]]; then
+            echo "GitHub returned an invalid promotion pull request URL: $pr_url" >&2
+            exit 1
+          fi
+          gh pr checks "$pr_number" --repo "$GITHUB_REPOSITORY" --required --watch --interval 10
+          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch \
+            --subject "Promote AI checkpoint from run $RUN_ID" \
+            --body "Merge the validated checkpoint after required branch-protection checks passed."
       - name: Remove temporary promotion branch
         if: ${{ always() }}
         env:
           PROMOTION_BRANCH: ${{ needs.promote.outputs.promotion_branch }}
-          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          MERGE_OUTCOME: ${{ steps.merge.outcome }}
         run: |
-          if [ -n "$PROMOTION_BRANCH" ] && [ "$PUSH_OUTCOME" = "success" ]; then
+          if [ -n "$PROMOTION_BRANCH" ] && [ "$MERGE_OUTCOME" = "success" ]; then
             git push origin --delete "$PROMOTION_BRANCH" >/dev/null 2>&1 || true
           elif [ -n "$PROMOTION_BRANCH" ]; then
             echo "Retaining $PROMOTION_BRANCH for hosted/audit reconciliation." >> "$GITHUB_STEP_SUMMARY"
