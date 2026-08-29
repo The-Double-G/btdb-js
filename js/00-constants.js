@@ -4,7 +4,7 @@ const CANVAS_SIZE = {
     height: 768,
 }
 
-const GAME_VERSION = "v2.5.3"
+const GAME_VERSION = "v2.6.0"
 
 const ECONOMY_SETTINGS = {
     startingMoney: 650,

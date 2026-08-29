@@ -19,7 +19,7 @@ const {
     writeText,
 } = require("./common")
 
-const usage = "Usage: node tools/distributed-ai/aggregate-evaluation.js --results-dir DIR --output aggregate.json [--report report.md] [--minimum-score 0.56] [--minimum-games 32]"
+const usage = "Usage: node tools/distributed-ai/aggregate-evaluation.js --results-dir DIR --output aggregate.json [--report report.md] [--minimum-score 0.58] [--minimum-games 64]"
 
 function main() {
     const args = parseArgs(process.argv.slice(2), ["results-dir", "output", "report", "minimum-score", "minimum-games"])
@@ -29,9 +29,9 @@ function main() {
     }
     const resultsDirectory = requiredArg(args, "results-dir")
     const output = requiredArg(args, "output")
-    const minimumScore = numberArg(args, "minimum-score", 0.56)
+    const minimumScore = numberArg(args, "minimum-score", 0.58)
     if(minimumScore < 0 || minimumScore > 1) fail("--minimum-score must be between 0 and 1")
-    const minimumGames = args["minimum-games"] == null ? 32 : integerArg(args, "minimum-games", { minimum: 1 })
+    const minimumGames = args["minimum-games"] == null ? 64 : integerArg(args, "minimum-games", { minimum: 1 })
     const results = []
     for(const file of jsonFilesRecursively(resultsDirectory)) {
         const document = readJson(file)

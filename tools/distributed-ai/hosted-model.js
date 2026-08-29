@@ -7,6 +7,7 @@ const {
     createHostedSnapshot,
     digest,
     fail,
+    MAX_JSON_BYTES,
     numberArg,
     integerArg,
     parseArgs,
@@ -21,9 +22,11 @@ const {
 
 const usage = [
     "Fetch: node tools/distributed-ai/hosted-model.js --mode fetch --endpoint https://example/ai-learning.php?protocol=1 --output baseline.json --manifest hosted-source.json",
-    "Publish: node tools/distributed-ai/hosted-model.js --mode publish --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --receipt receipt.json [--minimum-score 0.56] [--minimum-games 32]",
-    "Reconcile: node tools/distributed-ai/hosted-model.js --mode reconcile --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --receipt receipt.json [--minimum-score 0.56] [--minimum-games 32]",
+    "Publish: node tools/distributed-ai/hosted-model.js --mode publish --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --receipt receipt.json [--minimum-score 0.58] [--minimum-games 64]",
+    "Reconcile: node tools/distributed-ai/hosted-model.js --mode reconcile --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --receipt receipt.json [--minimum-score 0.58] [--minimum-games 64]",
 ].join("\n")
+
+const HOSTED_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 
 function validateEndpointUrl(value) {
     let url
@@ -37,17 +40,37 @@ function validateEndpointUrl(value) {
     return url.toString()
 }
 
+async function readResponseBody(response, maximumBytes = HOSTED_RESPONSE_MAX_BYTES) {
+    const contentLength = Number(response.headers.get("content-length"))
+    if(Number.isFinite(contentLength) && contentLength > maximumBytes) fail(`Hosted endpoint response exceeds ${maximumBytes} bytes`)
+    if(!response.body) return ""
+    const reader = response.body.getReader()
+    const chunks = []
+    let size = 0
+    try {
+        while(true) {
+            const { done, value } = await reader.read()
+            if(done) break
+            size += value.byteLength
+            if(size > maximumBytes) fail(`Hosted endpoint response exceeds ${maximumBytes} bytes`)
+            chunks.push(Buffer.from(value))
+        }
+    } catch(error) {
+        await reader.cancel().catch(() => {})
+        throw error
+    }
+    return Buffer.concat(chunks, size).toString("utf8")
+}
+
 async function requestJson(url, options = {}) {
+    if(typeof options.body == "string" && Buffer.byteLength(options.body) > MAX_JSON_BYTES) fail(`Hosted endpoint request exceeds ${MAX_JSON_BYTES} bytes`)
     const response = await fetch(url, {
         ...options,
         redirect: "error",
         signal: AbortSignal.timeout(20000),
         headers: { Accept: "application/json", ...(options.headers || {}) },
     })
-    const contentLength = Number(response.headers.get("content-length"))
-    if(Number.isFinite(contentLength) && contentLength > 2 * 1024 * 1024) fail("Hosted endpoint response exceeds 2 MiB")
-    const body = await response.text()
-    if(Buffer.byteLength(body) > 2 * 1024 * 1024) fail("Hosted endpoint response exceeds 2 MiB")
+    const body = await readResponseBody(response)
     let parsed
     try {
         parsed = JSON.parse(body)
@@ -61,8 +84,24 @@ async function requestJson(url, options = {}) {
     return parsed
 }
 
+async function requestJsonWithRetry(url, options = {}, attempts = 3) {
+    let lastError
+    for(let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            return await requestJson(url, options)
+        } catch(error) {
+            lastError = error
+            if(attempt < attempts) {
+                console.warn(`Hosted endpoint read attempt ${attempt} failed; retrying a safe read.`)
+                await new Promise(resolve => setTimeout(resolve, attempt * 500))
+            }
+        }
+    }
+    throw lastError
+}
+
 async function fetchHostedSnapshot(endpoint) {
-    const envelope = await requestJson(validateEndpointUrl(endpoint), { cache: "no-store" })
+    const envelope = await requestJsonWithRetry(validateEndpointUrl(endpoint), { cache: "no-store" })
     return createHostedSnapshot(envelope)
 }
 
@@ -108,7 +147,7 @@ function createHostedReconciliation({ envelope, manifest, baseline, candidate, e
 }
 
 async function reconcileHostedPromotion(options) {
-    const envelope = await requestJson(validateEndpointUrl(options.endpoint), { cache: "no-store" })
+    const envelope = await requestJsonWithRetry(validateEndpointUrl(options.endpoint), { cache: "no-store" })
     return createHostedReconciliation({ ...options, envelope })
 }
 
@@ -132,8 +171,8 @@ async function main() {
         const manifest = readJson(requiredArg(args, "manifest"))
         const candidate = readJson(requiredArg(args, "candidate"))
         const evaluation = readJson(requiredArg(args, "evaluation"))
-        const minimumScore = numberArg(args, "minimum-score", 0.56)
-        const minimumGames = args["minimum-games"] == null ? 32 : integerArg(args, "minimum-games", { minimum: 1 })
+        const minimumScore = numberArg(args, "minimum-score", 0.58)
+        const minimumGames = args["minimum-games"] == null ? 64 : integerArg(args, "minimum-games", { minimum: 1 })
         const options = { endpoint, manifest, baseline, candidate, evaluation, minimumScore, minimumGames }
         const result = mode == "publish"
             ? await publishHostedPromotion({ ...options, key: process.env.AI_POLICY_PROMOTION_KEY })
@@ -150,4 +189,13 @@ if(require.main === module) main().catch(error => {
     process.exitCode = 1
 })
 
-module.exports = { createHostedReconciliation, fetchHostedSnapshot, publishHostedPromotion, reconcileHostedPromotion, requestJson, validateEndpointUrl }
+module.exports = {
+    HOSTED_RESPONSE_MAX_BYTES,
+    createHostedReconciliation,
+    fetchHostedSnapshot,
+    publishHostedPromotion,
+    readResponseBody,
+    reconcileHostedPromotion,
+    requestJson,
+    validateEndpointUrl,
+}

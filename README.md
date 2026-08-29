@@ -2,7 +2,7 @@
 
 A browser tower-defense game with adaptive AI, deterministic self-play, and distributed candidate evaluation.
 
-The current game release is `v2.5.3`. One authoritative Hosted Model combines bounded public match contributions, Browser Lab contributions, and verified GitHub self-play promotions.
+The current game release is `v2.6.0`. One authoritative Hosted Model combines bounded public match contributions, Browser Lab contributions, and verified GitHub self-play promotions. Its schema-9 policy is a 19,011-parameter shared neural controller that ranks strategy and legal candidates across loadouts, placements, upgrades, sales, sends, and boosts.
 
 ## Run Locally
 
@@ -26,7 +26,7 @@ The endpoint integration test also requires PHP on `PATH`.
 
 ## Distributed AI
 
-GitHub Actions can run deterministic Chromium self-play without a laptop remaining online. Each generation fetches one immutable snapshot of the Hosted Model, and all workers train independent policies from that exact snapshot with unique seeds. A balanced frozen evaluation gates a policy-only hosted promotion; `training/checkpoints/champion.json` records the checked promotion as an audit mirror.
+GitHub Actions can run deterministic Chromium self-play without a laptop remaining online. Each generation fetches one immutable snapshot of the Hosted Model, and all workers train independent complete policy bundles from that exact snapshot with unique seeds. A balanced frozen evaluation gates a policy-only hosted promotion; `training/checkpoints/champion.json` records the checked promotion as an audit mirror.
 
 See [DISTRIBUTED-AI.md](DISTRIBUTED-AI.md) for operation, checkpoint promotion, limits, and safety guarantees.
 

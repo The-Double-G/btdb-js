@@ -5,51 +5,88 @@ const crypto = require("node:crypto")
 const {
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
+    GAME_VERSION,
+    MAX_JSON_BYTES,
+    MODEL_FAMILY,
+    MODEL_SCHEMA_VERSION,
+    POLICY_FORMAT_VERSION,
     TRAIN_RESULT_KIND,
+    TRAINING_INTERNAL_EVALUATION_MATCHES,
+    TRAINING_LEARNING_MATCHES,
+    TRAINING_MATCHES,
     aggregateEvaluationResults,
+    buildPolicyPromotionRequest,
     canonicalStringify,
     computeMetrics,
     createCheckpoint,
     createHostedSnapshot,
     digest,
     finalizeResult,
+    hostedDigest,
     makeSelectionReport,
     materializePolicyOnlyCandidate,
-    buildPolicyPromotionRequest,
     selectBestTrainResult,
     validateCheckpoint,
     validateEvaluationAggregate,
     validateEvaluationResult,
     validateHostedPromotionResponse,
     validateHostedSnapshotManifest,
+    validateModel,
     validatePolicyOnlyCandidate,
+    validatePolicyPromotionRequest,
     validatePromotionBundle,
     validateTrainResult,
 } = require("./distributed-ai/common")
-const { createHostedReconciliation, validateEndpointUrl } = require("./distributed-ai/hosted-model")
+const {
+    HOSTED_RESPONSE_MAX_BYTES,
+    createHostedReconciliation,
+    readResponseBody,
+    validateEndpointUrl,
+} = require("./distributed-ai/hosted-model")
 
 const vector = (length, value = 0) => Array.from({ length }, () => value)
 const matrix = (rows, columns, value = 0) => Array.from({ length: rows }, () => vector(columns, value))
 
-function policy() {
+function policy(value = 0) {
     return {
-        hiddenSize1: 12,
-        hiddenSize2: 8,
-        learningRate: 0.09,
-        W1: matrix(12, 17, 0.01),
-        b1: vector(12),
-        W2: matrix(8, 12, -0.01),
-        b2: vector(8),
-        W3: matrix(75, 8, 0.02),
-        b3: vector(75),
+        formatVersion: POLICY_FORMAT_VERSION,
+        strategyLearningRate: 0.03,
+        decisionLearningRate: 0.02,
+        strategy: {
+            hiddenSize1: 64,
+            hiddenSize2: 32,
+            W1: matrix(64, 17, value),
+            b1: vector(64),
+            W2: matrix(32, 64, value),
+            b2: vector(32),
+            W3: matrix(75, 32, value),
+            b3: vector(75),
+        },
+        decision: {
+            stateInputSize: 48,
+            candidateInputSize: 32,
+            stateHiddenSize: 96,
+            candidateHiddenSize: 48,
+            embeddingSize: 48,
+            trainingSamples: vector(8),
+            WState1: matrix(96, 48, value),
+            bState1: vector(96),
+            WState2: matrix(48, 96, value),
+            bState2: vector(48),
+            WCandidate1: matrix(48, 32, value),
+            bCandidate1: vector(48),
+            WCandidate2: matrix(48, 48, value),
+            bCandidate2: vector(48),
+            familyBias: vector(8),
+        },
     }
 }
 
 function model() {
     const candidatePolicy = policy()
     return {
-        version: 8,
-        modelFamily: "bounded-contextual-bandit-v1",
+        version: MODEL_SCHEMA_VERSION,
+        modelFamily: MODEL_FAMILY,
         totalGames: 0,
         totalSyntheticEpisodes: 0,
         totalPolicySamples: 0,
@@ -67,6 +104,7 @@ function model() {
         tacticalStats: {},
         tacticalFamilyStats: {},
         totalTacticalSamples: 0,
+        totalDecisionSamples: 0,
         candidateGeneration: 0,
         championGeneration: 0,
         policy: candidatePolicy,
@@ -75,65 +113,42 @@ function model() {
     }
 }
 
-function match(index, map, candidateSide, result, candidateRole = Math.floor(index % 8 / 4) % 2 == 0 ? "responder" : "probe") {
-    const lives = result == "win" ? [80, 0] : result == "loss" ? [0, 65] : [0, 0]
-    const leftLives = candidateSide == "left" ? lives[0] : lives[1]
-    const rightLives = candidateSide == "right" ? lives[0] : lives[1]
+function match(index, result, evaluation) {
+    const scenarioIndex = index % 8
+    const candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right"
+    const candidateRole = Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe"
+    const candidateLives = result == "win" ? 80 : result == "loss" ? 0 : 50
+    const opponentLives = result == "win" ? 0 : result == "loss" ? 65 : 50
     return {
         index,
-        map,
+        map: index % 2,
         candidateSide,
         candidateRole,
         result,
-        candidateLives: lives[0],
-        opponentLives: lives[1],
-        leftLives,
-        rightLives,
+        candidateLives,
+        opponentLives,
+        leftLives: candidateSide == "left" ? candidateLives : opponentLives,
+        rightLives: candidateSide == "right" ? candidateLives : opponentLives,
         round: 12 + index,
         frames: 1000 + index,
-        evaluation: false,
+        evaluation,
     }
 }
 
-const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
-
-const hostedModel = model()
-hostedModel.totalHumanDemonstrations = 2
-hostedModel.playerProfile.games = 2
-const hostedEnvelope = {
-    ok: true,
-    protocolVersion: 1,
-    gameVersion: "v2.5.3",
-    modelSchema: 8,
-    revision: 14,
-    modelDigest: `sha256:${"1".repeat(64)}`,
-    policyDigest: `sha256:${"2".repeat(64)}`,
-    championPolicyDigest: `sha256:${"9".repeat(64)}`,
-    promotionBaseDigest: `sha256:${"3".repeat(64)}`,
-    updatedAt: "2026-08-28T00:00:00Z",
-    model: hostedModel,
-    writeEnabled: false,
-    promotionEnabled: true,
-    contributionEnabled: true,
-    contributionToken: "excluded-from-snapshot",
-    contributionRateLimit: 120,
-    contributionEpoch: 3,
+function trainingOutcomes(internalOutcomes) {
+    assert.equal(internalOutcomes.length, TRAINING_INTERNAL_EVALUATION_MATCHES)
+    return [...Array.from({ length: TRAINING_LEARNING_MATCHES }, (_, index) => index % 3 == 0 ? "win" : index % 3 == 1 ? "loss" : "tie"), ...internalOutcomes]
 }
-const hostedSnapshot = createHostedSnapshot(hostedEnvelope)
-validateHostedSnapshotManifest(hostedSnapshot.manifest, hostedSnapshot.checkpoint)
-assert.equal(hostedSnapshot.manifest.revision, 14)
-assert.equal(hostedSnapshot.checkpoint.model.totalHumanDemonstrations, 2)
-assert.equal(JSON.stringify(hostedSnapshot).includes("excluded-from-snapshot"), false)
-assert.equal(hostedSnapshot.manifest.checkpointModelDigest, digest(hostedModel))
-assert.throws(() => createHostedSnapshot({ ...hostedEnvelope, gameVersion: "v-old" }), /incompatible with this game build/)
-const tamperedManifest = structuredClone(hostedSnapshot.manifest)
-tamperedManifest.revision++
-assert.throws(() => validateHostedSnapshotManifest(tamperedManifest, hostedSnapshot.checkpoint), /snapshotId/)
 
-function trainResult(shard, seed, outcomes, builtInEvaluationScore = null, sourceCheckpoint = base) {
-    const summaries = outcomes.map((outcome, index) => match(index, index % 2, index % 2 ? "right" : "left", outcome))
+function trainResult(shard, seed, internalOutcomes, sourceCheckpoint) {
+    const outcomes = trainingOutcomes(internalOutcomes)
+    const summaries = outcomes.map((outcome, index) => match(index, outcome, index >= TRAINING_LEARNING_MATCHES))
     const candidateModel = model()
-    candidateModel.policy.b1[0] = seed / 1000
+    candidateModel.policy.strategy.b1[0] = seed / 1000
+    candidateModel.policy.decision.familyBias[0] = -seed / 2000
+    candidateModel.policy.decision.trainingSamples[0] = seed
+    candidateModel.totalDecisionSamples = seed
+    candidateModel.placementStats.learned = { samples: 1, score: 0.5, mean: 0.5, m2: 0 }
     const candidate = createCheckpoint({
         gameVersion: sourceCheckpoint.gameVersion,
         model: candidateModel,
@@ -143,6 +158,7 @@ function trainResult(shard, seed, outcomes, builtInEvaluationScore = null, sourc
         shard,
         matches: summaries.length,
     })
+    const internalMetrics = computeMetrics(summaries.slice(TRAINING_LEARNING_MATCHES))
     return finalizeResult({
         kind: TRAIN_RESULT_KIND,
         formatVersion: FORMAT_VERSION,
@@ -157,18 +173,13 @@ function trainResult(shard, seed, outcomes, builtInEvaluationScore = null, sourc
         requestedMatches: summaries.length,
         completedMatches: summaries.length,
         candidate,
-        metrics: computeMetrics(summaries, { builtInEvaluationScore }),
+        metrics: computeMetrics(summaries, { builtInEvaluationScore: internalMetrics.score }),
         matches: summaries,
     })
 }
 
-function evaluationResult(shard, seed, outcomes, candidateCheckpoint = trainA.candidate, baselineCheckpoint = base) {
-    const summaries = outcomes.map((outcome, index) => {
-        const scenarioIndex = index % 8
-        const candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right"
-        const candidateRole = Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe"
-        return { ...match(index, index % 2, candidateSide, outcome, candidateRole), evaluation: true }
-    })
+function evaluationResult(shard, seed, outcomes, candidateCheckpoint, baselineCheckpoint) {
+    const summaries = outcomes.map((outcome, index) => match(index, outcome, true))
     return finalizeResult({
         kind: EVALUATION_RESULT_KIND,
         formatVersion: FORMAT_VERSION,
@@ -189,169 +200,315 @@ function evaluationResult(shard, seed, outcomes, candidateCheckpoint = trainA.ca
     })
 }
 
-assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
-const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
-assert.equal(digest({ b: 1, a: 2 }), expectedDigest)
-assert.equal(digest({ a: 2, b: 1 }), expectedDigest)
-assert.throws(() => digest({ bad: Infinity }), /non-finite/)
-assert.equal(validateEndpointUrl("https://example.invalid/ai-learning.php?protocol=1"), "https://example.invalid/ai-learning.php?protocol=1")
-assert.throws(() => validateEndpointUrl("http://example.invalid/ai-learning.php?protocol=1"), /HTTPS/)
-assert.throws(() => validateEndpointUrl("https://example.invalid/ai-learning.php?protocol=1&token=secret"), /only the protocol=1/)
-validateCheckpoint(base)
-const tamperedCheckpoint = structuredClone(base)
-tamperedCheckpoint.model.policy.b1[0] = 5
-assert.throws(() => validateCheckpoint(tamperedCheckpoint), /between -4 and 4/)
-
-const trainA = trainResult("a", 10, ["win"], 0.4)
-const trainB = trainResult("b", 11, ["win", "loss"], null)
-const trainC = trainResult("c", 12, ["loss"], 0.6)
-validateTrainResult(trainA)
-assert.equal(selectBestTrainResult([trainA, trainB, trainC], base).resultId, trainC.resultId)
-const materialized = materializePolicyOnlyCandidate(trainC, base)
-validatePolicyOnlyCandidate(materialized, base)
-assert.deepEqual(materialized.model.policy, trainC.candidate.model.policy)
-assert.deepEqual(materialized.model.championPolicy, trainC.candidate.model.policy)
-assert.equal(materialized.model.totalGames, base.model.totalGames)
-assert.deepEqual(materialized.model.tacticalStats, base.model.tacticalStats)
-assert.equal(materialized.model.championGeneration, base.model.championGeneration + 1)
-assert.equal(materialized.model.candidateGeneration, materialized.model.championGeneration)
-assert.deepEqual(materialized.model.populationPolicies, [base.model.championPolicy])
-const hostedTrain = trainResult("hosted", 13, ["win"], 0.8, hostedSnapshot.checkpoint)
-const hostedCandidate = materializePolicyOnlyCandidate(hostedTrain, hostedSnapshot.checkpoint)
-const promotionRequest = buildPolicyPromotionRequest(hostedSnapshot.manifest, hostedCandidate, hostedSnapshot.checkpoint)
-assert.deepEqual(Object.keys(promotionRequest).sort(), ["expectedChampionGeneration", "expectedContributionEpoch", "expectedPolicyDigest", "expectedPromotionBaseDigest", "policy", "promotionId", "protocolVersion", "sourceRevision"].sort())
-assert.equal(promotionRequest.promotionId, hostedCandidate.checkpointId)
-assert.equal(promotionRequest.sourceRevision, 14)
-assert.equal(Object.prototype.hasOwnProperty.call(promotionRequest, "model"), false)
-const promotionResponse = {
-    ok: true,
-    protocolVersion: 1,
-    promotionId: promotionRequest.promotionId,
-    duplicate: false,
-    revision: 20,
-    modelDigest: `sha256:${"4".repeat(64)}`,
-    contributionEpoch: 3,
-    championGeneration: 1,
-    promotedPolicyDigest: `sha256:${"5".repeat(64)}`,
-    candidatePolicyPreserved: true,
+function countTensor(value) {
+    return Array.isArray(value) ? value.reduce((total, child) => total + countTensor(child), 0) : 1
 }
-validateHostedPromotionResponse(promotionResponse, promotionRequest)
-assert.throws(() => validateHostedPromotionResponse({ ...promotionResponse, contributionEpoch: 4 }, promotionRequest), /changed the contribution epoch/)
-const report = makeSelectionReport([trainA, trainB, trainC], trainC, materialized)
-assert.equal(report.selectedScoreSource, "built-in-evaluation")
-assert.equal(report.selectedScore, 0.6)
-assert.equal(report.selectedSourceCheckpointId, trainC.candidate.checkpointId)
-assert.equal(report.materializedCheckpointId, materialized.checkpointId)
 
-const contaminatedModel = structuredClone(materialized.model)
-contaminatedModel.placementStats.injected = { samples: 1, score: 1, mean: 1, m2: 0 }
-const contaminated = createCheckpoint({
-    gameVersion: materialized.gameVersion,
-    model: contaminatedModel,
-    parentCheckpointId: base.checkpointId,
-    mode: "train",
-    seed: materialized.provenance.seed,
-    shard: materialized.provenance.shard,
-    matches: materialized.provenance.matches,
-})
-assert.throws(() => validatePolicyOnlyCandidate(contaminated, base), /model state other than/)
-
-const populatedModel = model()
-populatedModel.populationPolicies = [0.1, 0.2, 0.3, 0.4].map(value => {
-    const historical = policy()
-    historical.b1[0] = value
-    return historical
-})
-const populatedBase = createCheckpoint({ gameVersion: "v-test", model: populatedModel, mode: "initialize", seed: 3, shard: "populated", matches: 0 })
-const populatedResult = trainResult("populated-train", 25, ["win"], 0.7, populatedBase)
-const populatedCandidate = materializePolicyOnlyCandidate(populatedResult, populatedBase)
-assert.equal(populatedCandidate.model.populationPolicies.length, 4)
-assert.deepEqual(populatedCandidate.model.populationPolicies[3], populatedBase.model.championPolicy)
-
-const tieZ = trainResult("z", 22, ["win", "loss"], null)
-const tieA = trainResult("a", 23, ["win", "loss"], null)
-assert.equal(selectBestTrainResult([tieZ, tieA], base).shard, "a")
-const otherBase = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 2, shard: "other-init", matches: 0 })
-const incompatible = trainResult("other", 24, ["win"], null, otherBase)
-assert.throws(() => selectBestTrainResult([trainA, incompatible], base), /supplied baseline/)
-assert.throws(() => validatePolicyOnlyCandidate(materialized, otherBase), /does not descend/)
-
-const evaluationA = evaluationResult("eval-a", 31, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], materialized, base)
-validateEvaluationResult(evaluationA)
-const aggregate = aggregateEvaluationResults([evaluationA], 0.56, 8)
-validateEvaluationAggregate(aggregate)
-assert.deepEqual(aggregate.overall, { games: 8, wins: 3, losses: 2, ties: 3, score: 0.5625 })
-assert.deepEqual(aggregate.byMap["0"], { games: 4, wins: 2, losses: 1, ties: 1, score: 0.625 })
-assert.deepEqual(aggregate.byMap["1"], { games: 4, wins: 1, losses: 1, ties: 2, score: 0.5 })
-assert.deepEqual(aggregate.bySide.left, aggregate.byMap["1"])
-assert.deepEqual(aggregate.bySide.right, aggregate.byMap["0"])
-assert.deepEqual(aggregate.byRole.responder, aggregate.byMap["0"])
-assert.deepEqual(aggregate.byRole.probe, aggregate.byMap["1"])
-assert.equal(aggregate.coverage.balanced, true)
-assert.equal(aggregate.passed, true)
-validatePromotionBundle(materialized, aggregate, base, 0.56, 8)
-const hostedEvaluation = evaluationResult("hosted-eval", 44, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], hostedCandidate, hostedSnapshot.checkpoint)
-const hostedAggregate = aggregateEvaluationResults([hostedEvaluation], 0.56, 8)
-const reconciledEnvelope = {
-    ...hostedEnvelope,
-    revision: 20,
-    modelDigest: `sha256:${"6".repeat(64)}`,
-    policyDigest: `sha256:${"7".repeat(64)}`,
-    promotionBaseDigest: `sha256:${"8".repeat(64)}`,
-    model: hostedCandidate.model,
+function policyParameterCounts(candidatePolicy) {
+    const strategy = candidatePolicy.strategy
+    const decision = candidatePolicy.decision
+    return {
+        strategy: [strategy.W1, strategy.b1, strategy.W2, strategy.b2, strategy.W3, strategy.b3].reduce((total, tensor) => total + countTensor(tensor), 0),
+        decision: [decision.WState1, decision.bState1, decision.WState2, decision.bState2, decision.WCandidate1, decision.bCandidate1, decision.WCandidate2, decision.bCandidate2, decision.familyBias].reduce((total, tensor) => total + countTensor(tensor), 0),
+    }
 }
-const reconciliation = createHostedReconciliation({
-    envelope: reconciledEnvelope,
-    manifest: hostedSnapshot.manifest,
-    baseline: hostedSnapshot.checkpoint,
-    candidate: hostedCandidate,
-    evaluation: hostedAggregate,
-    minimumScore: 0.56,
-    minimumGames: 8,
+
+function fakeResponse(chunks, contentLength = null) {
+    let index = 0
+    return {
+        headers: { get: name => name == "content-length" ? contentLength : null },
+        body: {
+            getReader() {
+                return {
+                    async read() {
+                        return index < chunks.length ? { done: false, value: chunks[index++] } : { done: true, value: undefined }
+                    },
+                    async cancel() {},
+                }
+            },
+        },
+    }
+}
+
+async function main() {
+    assert.equal(MODEL_SCHEMA_VERSION, 9)
+    assert.equal(MODEL_FAMILY, "shared-neural-controller-v1")
+    assert.equal(TRAINING_MATCHES, 192)
+    assert.equal(TRAINING_LEARNING_MATCHES, 128)
+    assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
+    assert.equal(MAX_JSON_BYTES, 8 * 1024 * 1024)
+    assert.equal(HOSTED_RESPONSE_MAX_BYTES, 8 * 1024 * 1024)
+    assert.equal(await readResponseBody(fakeResponse([Buffer.from("1234"), Buffer.from("5678")]), 8), "12345678")
+    await assert.rejects(readResponseBody(fakeResponse([Buffer.alloc(8), Buffer.alloc(1)]), 8), /exceeds 8 bytes/)
+    await assert.rejects(readResponseBody(fakeResponse([], "8388609")), /exceeds 8388608 bytes/)
+
+    const exactPolicy = policy()
+    assert.deepEqual(Object.keys(exactPolicy).sort(), ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"].sort())
+    assert.deepEqual(Object.keys(exactPolicy.strategy).sort(), ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"].sort())
+    assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "familyBias"].sort())
+    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 13304 })
+
+    const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
+    validateCheckpoint(base)
+    assert.equal(base.model.totalDecisionSamples, 0)
+    const extraModelField = model()
+    extraModelField.unexpected = 0
+    assert.throws(() => validateModel(extraModelField, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /keys must be exactly/)
+    const missingDecisionCounter = model()
+    delete missingDecisionCounter.totalDecisionSamples
+    assert.throws(() => validateModel(missingDecisionCounter, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /keys must be exactly/)
+    const extraPolicyModel = model()
+    extraPolicyModel.policy.legacy = true
+    assert.throws(() => validateModel(extraPolicyModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /keys must be exactly/)
+    const outOfBoundsModel = model()
+    outOfBoundsModel.policy.decision.familyBias[0] = 4.01
+    assert.throws(() => validateModel(outOfBoundsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /between -4 and 4/)
+    const invalidFamilyCounterModel = model()
+    invalidFamilyCounterModel.policy.decision.trainingSamples[0] = -1
+    assert.throws(() => validateModel(invalidFamilyCounterModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /integer/)
+    const excessiveDecisionRateModel = model()
+    excessiveDecisionRateModel.policy.decisionLearningRate = 0.100001
+    assert.throws(() => validateModel(excessiveDecisionRateModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /between/)
+    const coercibleDimensionsModel = model()
+    coercibleDimensionsModel.policy.strategy.hiddenSize1 = "64"
+    assert.throws(() => validateModel(coercibleDimensionsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /incompatible hidden dimensions/)
+    const oldSchemaModel = model()
+    oldSchemaModel.version = 8
+    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 9/)
+
+    assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
+    const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
+    assert.equal(digest({ b: 1, a: 2 }), expectedDigest)
+    assert.equal(digest({ a: 2, b: 1 }), expectedDigest)
+    assert.throws(() => digest({ bad: Infinity }), /non-finite/)
+    assert.equal(validateEndpointUrl("https://example.invalid/ai-learning.php?protocol=1"), "https://example.invalid/ai-learning.php?protocol=1")
+    assert.throws(() => validateEndpointUrl("http://example.invalid/ai-learning.php?protocol=1"), /HTTPS/)
+    assert.throws(() => validateEndpointUrl("https://example.invalid/ai-learning.php?protocol=1&token=secret"), /only the protocol=1/)
+
+    const low = Array(TRAINING_INTERNAL_EVALUATION_MATCHES).fill("loss")
+    const medium = Array(TRAINING_INTERNAL_EVALUATION_MATCHES).fill("tie")
+    const high = [...Array(40).fill("win"), ...Array(24).fill("loss")]
+    const trainA = trainResult("a", 10, low, base)
+    const trainB = trainResult("b", 11, medium, base)
+    const trainC = trainResult("c", 12, high, base)
+    validateTrainResult(trainA)
+    assert.equal(trainC.metrics.builtInEvaluationScore, 0.625)
+    assert.equal(selectBestTrainResult([trainA, trainB, trainC], base).resultId, trainC.resultId)
+
+    const wrongPhase = structuredClone(trainC)
+    wrongPhase.matches[127].evaluation = true
+    wrongPhase.resultId = digest(Object.fromEntries(Object.entries(wrongPhase).filter(([key]) => key != "resultId")))
+    assert.throws(() => validateTrainResult(wrongPhase), /wrong learning\/evaluation phase/)
+    const wrongInternalScore = structuredClone(trainC)
+    wrongInternalScore.metrics.builtInEvaluationScore = 0.5
+    wrongInternalScore.resultId = digest(Object.fromEntries(Object.entries(wrongInternalScore).filter(([key]) => key != "resultId")))
+    assert.throws(() => validateTrainResult(wrongInternalScore), /does not match its 64 frozen matches/)
+
+    const materialized = materializePolicyOnlyCandidate(trainC, base)
+    validatePolicyOnlyCandidate(materialized, base)
+    assert.deepEqual(materialized.model.policy, trainC.candidate.model.policy)
+    assert.deepEqual(materialized.model.championPolicy, trainC.candidate.model.policy)
+    assert.deepEqual(materialized.model.policy.strategy, trainC.candidate.model.policy.strategy)
+    assert.deepEqual(materialized.model.policy.decision, trainC.candidate.model.policy.decision)
+    assert.equal(materialized.model.policy.decision.trainingSamples[0], trainC.seed)
+    assert.equal(materialized.model.totalDecisionSamples, base.model.totalDecisionSamples)
+    assert.deepEqual(materialized.model.placementStats, base.model.placementStats)
+    assert.equal(materialized.model.championGeneration, base.model.championGeneration + 1)
+    assert.equal(materialized.model.candidateGeneration, materialized.model.championGeneration)
+    assert.deepEqual(materialized.model.populationPolicies, [base.model.championPolicy])
+
+    const contaminatedModel = structuredClone(materialized.model)
+    contaminatedModel.totalDecisionSamples++
+    const contaminated = createCheckpoint({
+        gameVersion: materialized.gameVersion,
+        model: contaminatedModel,
+        parentCheckpointId: base.checkpointId,
+        mode: "train",
+        seed: materialized.provenance.seed,
+        shard: materialized.provenance.shard,
+        matches: materialized.provenance.matches,
+    })
+    assert.throws(() => validatePolicyOnlyCandidate(contaminated, base), /model state other than/)
+
+    const populatedModel = model()
+    populatedModel.populationPolicies = [0.1, 0.2].map(value => policy(value))
+    const populatedBase = createCheckpoint({ gameVersion: "v-test", model: populatedModel, mode: "initialize", seed: 3, shard: "populated", matches: 0 })
+    const populatedResult = trainResult("populated-train", 25, high, populatedBase)
+    const populatedCandidate = materializePolicyOnlyCandidate(populatedResult, populatedBase)
+    assert.equal(populatedCandidate.model.populationPolicies.length, 2)
+    assert.deepEqual(populatedCandidate.model.populationPolicies[0], populatedBase.model.populationPolicies[1])
+    assert.deepEqual(populatedCandidate.model.populationPolicies[1], populatedBase.model.championPolicy)
+    const oversizedPopulation = model()
+    oversizedPopulation.populationPolicies = [policy(0.1), policy(0.2), policy(0.3)]
+    assert.throws(() => validateModel(oversizedPopulation, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /at most two policy bundles/)
+
+    const tieZ = trainResult("z", 22, medium, base)
+    const tieA = trainResult("a", 23, medium, base)
+    assert.equal(selectBestTrainResult([tieZ, tieA], base).shard, "a")
+    const otherBase = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 2, shard: "other-init", matches: 0 })
+    const incompatible = trainResult("other", 24, high, otherBase)
+    assert.throws(() => selectBestTrainResult([trainA, incompatible], base), /supplied baseline/)
+    assert.throws(() => validatePolicyOnlyCandidate(materialized, otherBase), /does not descend/)
+
+    const report = makeSelectionReport([trainA, trainB, trainC], trainC, materialized)
+    assert.equal(report.selectedScoreSource, "built-in-evaluation")
+    assert.equal(report.selectedScore, 0.625)
+    assert.equal(report.selectedSourceCheckpointId, trainC.candidate.checkpointId)
+    assert.equal(report.materializedCheckpointId, materialized.checkpointId)
+
+    const evaluationA = evaluationResult("eval-a", 31, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], materialized, base)
+    validateEvaluationResult(evaluationA)
+    const aggregate = aggregateEvaluationResults([evaluationA], 0.56, 8)
+    validateEvaluationAggregate(aggregate)
+    assert.deepEqual(aggregate.overall, { games: 8, wins: 3, losses: 2, ties: 3, score: 0.5625 })
+    assert.equal(aggregate.coverage.balanced, true)
+    assert.equal(aggregate.passed, true)
+    validatePromotionBundle(materialized, aggregate, base, 0.56, 8)
+
+    const gateOutcomes = [...Array(40).fill("win"), ...Array(8).fill("tie"), ...Array(16).fill("loss")]
+    const gateEvaluation = evaluationResult("eval-gate", 32, gateOutcomes, materialized, base)
+    const gateAggregate = aggregateEvaluationResults([gateEvaluation], 0.58, 64)
+    assert.equal(gateAggregate.overall.games, 64)
+    assert.equal(gateAggregate.overall.score, 0.6875)
+    assert.equal(gateAggregate.coverage.balanced, true)
+    assert.equal(gateAggregate.passed, true)
+    validatePromotionBundle(materialized, gateAggregate, base)
+
+    const shortEvaluation = evaluationResult("eval-short", 33, ["win", "win"], materialized, base)
+    const unbalanced = aggregateEvaluationResults([shortEvaluation], 0, 2)
+    assert.equal(unbalanced.byRole.probe.games, 0)
+    assert.equal(unbalanced.coverage.balanced, false)
+    assert.equal(unbalanced.passed, false)
+    const wrongRole = structuredClone(evaluationA)
+    wrongRole.matches[0].candidateRole = "probe"
+    wrongRole.resultId = digest(Object.fromEntries(Object.entries(wrongRole).filter(([key]) => key != "resultId")))
+    assert.throws(() => validateEvaluationResult(wrongRole), /fairness schedule/)
+
+    const hostedModel = model()
+    hostedModel.totalHumanDemonstrations = 2
+    hostedModel.playerProfile.games = 2
+    const hostedEnvelope = {
+        ok: true,
+        protocolVersion: 1,
+        gameVersion: GAME_VERSION,
+        modelSchema: MODEL_SCHEMA_VERSION,
+        revision: 14,
+        modelDigest: hostedDigest(hostedModel),
+        policyDigest: hostedDigest(hostedModel.policy),
+        championPolicyDigest: hostedDigest(hostedModel.championPolicy),
+        promotionBaseDigest: `sha256:${"3".repeat(64)}`,
+        updatedAt: "2026-08-29T00:00:00Z",
+        model: hostedModel,
+        writeEnabled: false,
+        promotionEnabled: true,
+        contributionEnabled: true,
+        contributionToken: "excluded-from-snapshot",
+        contributionRateLimit: 120,
+        contributionEpoch: 3,
+    }
+    const hostedSnapshot = createHostedSnapshot(hostedEnvelope)
+    validateHostedSnapshotManifest(hostedSnapshot.manifest, hostedSnapshot.checkpoint)
+    assert.equal(hostedSnapshot.manifest.revision, 14)
+    assert.equal(hostedSnapshot.checkpoint.model.totalHumanDemonstrations, 2)
+    assert.equal(JSON.stringify(hostedSnapshot).includes("excluded-from-snapshot"), false)
+    assert.equal(hostedSnapshot.manifest.checkpointModelDigest, digest(hostedModel))
+    assert.throws(() => createHostedSnapshot({ ...hostedEnvelope, modelDigest: `sha256:${"1".repeat(64)}` }), /modelDigest does not match/)
+    assert.throws(() => createHostedSnapshot({ ...hostedEnvelope, policyDigest: `sha256:${"2".repeat(64)}` }), /policyDigest does not match/)
+    const tamperedManifest = structuredClone(hostedSnapshot.manifest)
+    tamperedManifest.revision++
+    assert.throws(() => validateHostedSnapshotManifest(tamperedManifest, hostedSnapshot.checkpoint), /snapshotId/)
+    const forgedHostedDigestManifest = structuredClone(hostedSnapshot.manifest)
+    forgedHostedDigestManifest.sourcePolicyDigest = `sha256:${"2".repeat(64)}`
+    forgedHostedDigestManifest.snapshotId = digest(Object.fromEntries(Object.entries(forgedHostedDigestManifest).filter(([key]) => key != "snapshotId")))
+    assert.throws(() => validateHostedSnapshotManifest(forgedHostedDigestManifest, hostedSnapshot.checkpoint), /hosted digests do not match/)
+
+    const hostedTrain = trainResult("hosted", 13, high, hostedSnapshot.checkpoint)
+    const hostedCandidate = materializePolicyOnlyCandidate(hostedTrain, hostedSnapshot.checkpoint)
+    const promotionRequest = buildPolicyPromotionRequest(hostedSnapshot.manifest, hostedCandidate, hostedSnapshot.checkpoint)
+    validatePolicyPromotionRequest(promotionRequest)
+    assert.deepEqual(Object.keys(promotionRequest).sort(), ["expectedChampionGeneration", "expectedContributionEpoch", "expectedPolicyDigest", "expectedPromotionBaseDigest", "policy", "promotionId", "protocolVersion", "sourceRevision"].sort())
+    assert.deepEqual(promotionRequest.policy, hostedCandidate.model.policy)
+    assert.deepEqual(promotionRequest.policy.strategy, hostedCandidate.model.policy.strategy)
+    assert.deepEqual(promotionRequest.policy.decision, hostedCandidate.model.policy.decision)
+    assert.equal(promotionRequest.promotionId, hostedCandidate.checkpointId)
+    assert.equal(Object.prototype.hasOwnProperty.call(promotionRequest, "model"), false)
+    const incompletePromotion = structuredClone(promotionRequest)
+    delete incompletePromotion.policy.decision
+    assert.throws(() => validatePolicyPromotionRequest(incompletePromotion), /keys must be exactly/)
+
+    const promotionResponse = {
+        ok: true,
+        protocolVersion: 1,
+        promotionId: promotionRequest.promotionId,
+        duplicate: false,
+        revision: 20,
+        modelDigest: `sha256:${"4".repeat(64)}`,
+        contributionEpoch: 3,
+        championGeneration: 1,
+        promotedPolicyDigest: hostedDigest(promotionRequest.policy),
+        candidatePolicyPreserved: true,
+    }
+    validateHostedPromotionResponse(promotionResponse, promotionRequest)
+    assert.throws(() => validateHostedPromotionResponse({ ...promotionResponse, promotedPolicyDigest: `sha256:${"5".repeat(64)}` }, promotionRequest), /submitted policy bundle/)
+    assert.throws(() => validateHostedPromotionResponse({ ...promotionResponse, contributionEpoch: 4 }, promotionRequest), /changed the contribution epoch/)
+    assert.throws(() => validateHostedPromotionResponse({ ...promotionResponse, revision: promotionRequest.sourceRevision }, promotionRequest), /integer >= 15/)
+
+    const hostedEvaluation = evaluationResult("hosted-eval", 44, gateOutcomes, hostedCandidate, hostedSnapshot.checkpoint)
+    const hostedAggregate = aggregateEvaluationResults([hostedEvaluation], 0.58, 64)
+    const reconciledModel = hostedCandidate.model
+    const reconciledEnvelope = {
+        ...hostedEnvelope,
+        revision: 20,
+        modelDigest: hostedDigest(reconciledModel),
+        policyDigest: hostedDigest(reconciledModel.policy),
+        championPolicyDigest: hostedDigest(reconciledModel.championPolicy),
+        promotionBaseDigest: `sha256:${"8".repeat(64)}`,
+        model: reconciledModel,
+    }
+    const reconciliation = createHostedReconciliation({
+        envelope: reconciledEnvelope,
+        manifest: hostedSnapshot.manifest,
+        baseline: hostedSnapshot.checkpoint,
+        candidate: hostedCandidate,
+        evaluation: hostedAggregate,
+        minimumScore: 0.58,
+        minimumGames: 64,
+    })
+    assert.equal(reconciliation.receipt.duplicate, true)
+    assert.equal(reconciliation.receipt.promotionId, hostedCandidate.checkpointId)
+    assert.equal(reconciliation.receipt.promotedPolicyDigest, hostedDigest(hostedCandidate.model.championPolicy))
+    assert.throws(() => createHostedReconciliation({
+        envelope: hostedEnvelope,
+        manifest: hostedSnapshot.manifest,
+        baseline: hostedSnapshot.checkpoint,
+        candidate: hostedCandidate,
+        evaluation: hostedAggregate,
+        minimumScore: 0.58,
+        minimumGames: 64,
+    }), /does not match the evaluated candidate/)
+
+    const incompatibleEvaluation = structuredClone(evaluationA)
+    incompatibleEvaluation.baselineCheckpointId = `sha256:${"f".repeat(64)}`
+    incompatibleEvaluation.resultId = digest(Object.fromEntries(Object.entries(incompatibleEvaluation).filter(([key]) => key != "resultId")))
+    assert.throws(() => aggregateEvaluationResults([evaluationA, incompatibleEvaluation], 0.5, 8), /not compatible/)
+    const tamperedAggregate = structuredClone(aggregate)
+    tamperedAggregate.byRole.probe.wins++
+    assert.throws(() => validateEvaluationAggregate(tamperedAggregate), /outcomes do not add up|does not match/)
+    const forgedDecision = structuredClone(aggregate)
+    forgedDecision.passed = false
+    forgedDecision.aggregateId = digest(Object.fromEntries(Object.entries(forgedDecision).filter(([key]) => key != "aggregateId")))
+    assert.throws(() => validateEvaluationAggregate(forgedDecision), /passed is inconsistent/)
+    const stalePromotion = structuredClone(aggregate)
+    stalePromotion.baselineCheckpointId = otherBase.checkpointId
+    stalePromotion.baselineModelDigest = otherBase.modelDigest
+    stalePromotion.aggregateId = digest(Object.fromEntries(Object.entries(stalePromotion).filter(([key]) => key != "aggregateId")))
+    validateEvaluationAggregate(stalePromotion)
+    assert.throws(() => validatePromotionBundle(materialized, stalePromotion, base, 0.56, 8), /current baseline/)
+
+    console.log("Distributed AI unit tests passed: schema-9 bundles, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
+}
+
+main().catch(error => {
+    console.error(error.stack || error.message)
+    process.exitCode = 1
 })
-assert.equal(reconciliation.receipt.duplicate, true)
-assert.equal(reconciliation.receipt.promotionId, hostedCandidate.checkpointId)
-assert.equal(reconciliation.receipt.promotedPolicyDigest, reconciledEnvelope.championPolicyDigest)
-assert.throws(() => createHostedReconciliation({
-    envelope: hostedEnvelope,
-    manifest: hostedSnapshot.manifest,
-    baseline: hostedSnapshot.checkpoint,
-    candidate: hostedCandidate,
-    evaluation: hostedAggregate,
-    minimumScore: 0.56,
-    minimumGames: 8,
-}), /does not match the evaluated candidate/)
-assert.equal(aggregateEvaluationResults([evaluationA], 0.57, 8).passed, false)
-
-const shortEvaluation = evaluationResult("eval-short", 32, ["win", "win"])
-const unbalanced = aggregateEvaluationResults([shortEvaluation], 0, 2)
-validateEvaluationAggregate(unbalanced)
-assert.equal(unbalanced.byRole.probe.games, 0)
-assert.equal(unbalanced.coverage.balanced, false)
-assert.equal(unbalanced.passed, false)
-
-const incompatibleEvaluation = structuredClone(evaluationA)
-incompatibleEvaluation.baselineCheckpointId = `sha256:${"f".repeat(64)}`
-incompatibleEvaluation.resultId = digest(Object.fromEntries(Object.entries(incompatibleEvaluation).filter(([key]) => key != "resultId")))
-assert.throws(() => aggregateEvaluationResults([evaluationA, incompatibleEvaluation], 0.5, 8), /not compatible/)
-
-const wrongRole = structuredClone(evaluationA)
-wrongRole.matches[0].candidateRole = "probe"
-wrongRole.resultId = digest(Object.fromEntries(Object.entries(wrongRole).filter(([key]) => key != "resultId")))
-assert.throws(() => validateEvaluationResult(wrongRole), /fairness schedule/)
-
-const tamperedAggregate = structuredClone(aggregate)
-tamperedAggregate.byRole.probe.wins++
-assert.throws(() => validateEvaluationAggregate(tamperedAggregate), /outcomes do not add up|does not match/)
-const forgedDecision = structuredClone(aggregate)
-forgedDecision.passed = false
-forgedDecision.aggregateId = digest(Object.fromEntries(Object.entries(forgedDecision).filter(([key]) => key != "aggregateId")))
-assert.throws(() => validateEvaluationAggregate(forgedDecision), /passed is inconsistent/)
-const stalePromotion = structuredClone(aggregate)
-stalePromotion.baselineCheckpointId = otherBase.checkpointId
-stalePromotion.baselineModelDigest = otherBase.modelDigest
-stalePromotion.aggregateId = digest(Object.fromEntries(Object.entries(stalePromotion).filter(([key]) => key != "aggregateId")))
-validateEvaluationAggregate(stalePromotion)
-assert.throws(() => validatePromotionBundle(materialized, stalePromotion, base, 0.56, 8), /current baseline/)
-
-console.log("Distributed AI unit tests passed: policy-only materialization, strict identities, fairness coverage, and aggregate validation are deterministic.")

@@ -12,7 +12,7 @@ const {
     validatePromotionBundle,
 } = require("./common")
 
-const usage = "Usage: node tools/distributed-ai/verify-promotion.js --candidate candidate.json --evaluation evaluation.json --baseline champion.json [--minimum-score 0.56] [--minimum-games 32]"
+const usage = "Usage: node tools/distributed-ai/verify-promotion.js --candidate candidate.json --evaluation evaluation.json --baseline champion.json [--minimum-score 0.58] [--minimum-games 64]"
 
 function main() {
     const args = parseArgs(process.argv.slice(2), ["candidate", "evaluation", "baseline", "minimum-score", "minimum-games"])
@@ -23,8 +23,8 @@ function main() {
     const baseline = validateCheckpoint(readJson(requiredArg(args, "baseline")), "baseline")
     const candidate = validateCheckpoint(readJson(requiredArg(args, "candidate")), "candidate")
     const evaluation = validateEvaluationAggregate(readJson(requiredArg(args, "evaluation")), "evaluation")
-    const minimumScore = numberArg(args, "minimum-score", 0.56)
-    const minimumGames = args["minimum-games"] == null ? 32 : integerArg(args, "minimum-games", { minimum: 1 })
+    const minimumScore = numberArg(args, "minimum-score", 0.58)
+    const minimumGames = args["minimum-games"] == null ? 64 : integerArg(args, "minimum-games", { minimum: 1 })
     validatePromotionBundle(candidate, evaluation, baseline, minimumScore, minimumGames)
     console.log(`Promotion bundle verified for ${candidate.checkpointId}: ${evaluation.overall.games} games, score ${evaluation.overall.score.toFixed(4)}.`)
 }

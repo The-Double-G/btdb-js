@@ -45,7 +45,7 @@ function main() {
     const report = makeSelectionReport(results, selected, candidate)
     const candidatePath = writeJson(output, candidate)
     const reportPath = writeJson(args.report || defaultReportPath(output), report)
-    console.log(`Selected policy from ${selected.candidate.checkpointId} and materialized ${candidate.checkpointId} from ${results.length} shard(s): ${candidatePath}`)
+    console.log(`Selected policy bundle from ${selected.candidate.checkpointId} and materialized ${candidate.checkpointId} from ${results.length} shard(s): ${candidatePath}`)
     console.log(`Selection report: ${reportPath}`)
 }
 

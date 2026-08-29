@@ -1,4 +1,20 @@
-Current Version: v2.5.3
+Current Version: v2.6.0
+
+v2.6.0 -
+Replaced the small strategy-only policy with a 19,011-parameter schema-9 shared neural controller
+Added a widened strategy network and a dual-encoder scorer for loadouts, strategies, placements, upgrades, sales, eco, rushes, and boosts
+Kept deterministic code only for legal actions, execution, cooldowns, collision and upgrade-path rules, and immediate-lethal safety
+Added per-family cold-start heuristic bootstraps that travel with each policy and fade out after 5,000 samples in that family
+Added bounded decision-sample learning to browser matches, Browser Lab self-play, and the hosted PHP authority
+Added family-balanced traces, selected no-op learning, policy-controlled self-play loadouts, and aggregate server update clipping
+Made browser and hosted schema-8 migration use one canonical deterministic neural initializer
+Added a lock-safe state-preserving migration from schema 8 to schema 9 without resetting aggregate knowledge or the contribution epoch
+Expanded Browser Lab generations to 128 learning and 64 frozen internal evaluation matches with a 58% promotion gate
+Expanded continuous GitHub generations to 3,840 training matches and 320 frozen evaluation matches
+Raised continuous promotion requirements to 58% over at least 160 balanced games
+Made complete strategy-and-decision policy bundles atomic across selection, promotion, reconciliation, and the audit mirror
+Added quarter-hour watchdog recovery, unresolved-promotion detection, and a three-failure circuit breaker for unattended training
+Raised validated model and artifact limits to 8 MiB while retaining 128 KiB public contribution limits
 
 v2.5.3 -
 Unified browser, Browser Lab, and GitHub self-play around one authoritative Hosted Model

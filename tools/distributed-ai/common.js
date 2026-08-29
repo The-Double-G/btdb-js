@@ -15,13 +15,24 @@ const EVALUATION_AGGREGATE_KIND = "btdb-ai-evaluation-aggregate"
 const HOSTED_SNAPSHOT_KIND = "btdb-ai-hosted-snapshot"
 const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
-const GAME_VERSION = "v2.5.3"
-const MODEL_SCHEMA_VERSION = 8
-const MODEL_FAMILY = "bounded-contextual-bandit-v1"
+const POLICY_FORMAT_VERSION = 2
+const GAME_VERSION = "v2.6.0"
+const MODEL_SCHEMA_VERSION = 9
+const MODEL_FAMILY = "shared-neural-controller-v1"
+const MAX_JSON_BYTES = 8 * 1024 * 1024
 const FEATURE_COUNT = 17
-const HIDDEN_SIZE_1 = 12
-const HIDDEN_SIZE_2 = 8
+const STRATEGY_HIDDEN_SIZE_1 = 64
+const STRATEGY_HIDDEN_SIZE_2 = 32
 const STRATEGY_COUNT = 75
+const DECISION_STATE_INPUT_SIZE = 48
+const DECISION_CANDIDATE_INPUT_SIZE = 32
+const DECISION_STATE_HIDDEN_SIZE = 96
+const DECISION_CANDIDATE_HIDDEN_SIZE = 48
+const DECISION_EMBEDDING_SIZE = 48
+const DECISION_FAMILY_COUNT = 8
+const TRAINING_LEARNING_MATCHES = 128
+const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
+const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
 
 function fail(message) {
     throw new Error(message)
@@ -100,14 +111,33 @@ function digest(value) {
     return `sha256:${crypto.createHash("sha256").update(canonicalStringify(value)).digest("hex")}`
 }
 
+function hostedDigest(value) {
+    assertFiniteTree(value)
+    function encode(item) {
+        if(item === null) return "null"
+        if(typeof item == "number") {
+            if(Number.isSafeInteger(item)) return `i:${item}`
+            const bytes = Buffer.allocUnsafe(8)
+            bytes.writeDoubleBE(item)
+            return `f:${bytes.toString("hex")}`
+        }
+        if(typeof item == "boolean") return item ? "true" : "false"
+        if(typeof item == "string") return `s:${Buffer.from(item, "utf8").toString("hex")}`
+        if(Array.isArray(item)) return `[${item.map(encode).join(",")}]`
+        return `{${Object.keys(item).map(key => [encode(key), item[key]]).sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0).map(entry => `${entry[0]}:${encode(entry[1])}`).join(",")}}`
+    }
+    return `sha256:${crypto.createHash("sha256").update(encode(value)).digest("hex")}`
+}
+
 function clone(value) {
     return JSON.parse(JSON.stringify(value))
 }
 
 function validatePolicy(policy, label, strategyCount) {
-    assertExactKeys(policy, ["hiddenSize1", "hiddenSize2", "learningRate", "W1", "b1", "W2", "b2", "W3", "b3"], label)
-    if(policy.hiddenSize1 != HIDDEN_SIZE_1 || policy.hiddenSize2 != HIDDEN_SIZE_2) fail(`${label} has incompatible hidden dimensions`)
-    assertNumber(policy.learningRate, `${label}.learningRate`, Number.MIN_VALUE, 0.2)
+    assertExactKeys(policy, ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"], label)
+    if(policy.formatVersion !== POLICY_FORMAT_VERSION) fail(`${label}.formatVersion must be ${POLICY_FORMAT_VERSION}`)
+    assertNumber(policy.strategyLearningRate, `${label}.strategyLearningRate`, Number.MIN_VALUE, 0.2)
+    assertNumber(policy.decisionLearningRate, `${label}.decisionLearningRate`, Number.MIN_VALUE, 0.1)
     const vector = (value, length, vectorLabel) => {
         if(!Array.isArray(value) || value.length != length) fail(`${vectorLabel} must contain ${length} values`)
         value.forEach((item, index) => assertNumber(item, `${vectorLabel}[${index}]`, -POLICY_LIMIT, POLICY_LIMIT))
@@ -116,29 +146,59 @@ function validatePolicy(policy, label, strategyCount) {
         if(!Array.isArray(value) || value.length != rows) fail(`${matrixLabel} must contain ${rows} rows`)
         value.forEach((row, index) => vector(row, columns, `${matrixLabel}[${index}]`))
     }
-    matrix(policy.W1, HIDDEN_SIZE_1, FEATURE_COUNT, `${label}.W1`)
-    vector(policy.b1, HIDDEN_SIZE_1, `${label}.b1`)
-    matrix(policy.W2, HIDDEN_SIZE_2, HIDDEN_SIZE_1, `${label}.W2`)
-    vector(policy.b2, HIDDEN_SIZE_2, `${label}.b2`)
-    matrix(policy.W3, strategyCount, HIDDEN_SIZE_2, `${label}.W3`)
-    vector(policy.b3, strategyCount, `${label}.b3`)
+
+    const strategy = policy.strategy
+    const strategyLabel = `${label}.strategy`
+    assertExactKeys(strategy, ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"], strategyLabel)
+    if(strategy.hiddenSize1 !== STRATEGY_HIDDEN_SIZE_1 || strategy.hiddenSize2 !== STRATEGY_HIDDEN_SIZE_2) fail(`${strategyLabel} has incompatible hidden dimensions`)
+    matrix(strategy.W1, STRATEGY_HIDDEN_SIZE_1, FEATURE_COUNT, `${strategyLabel}.W1`)
+    vector(strategy.b1, STRATEGY_HIDDEN_SIZE_1, `${strategyLabel}.b1`)
+    matrix(strategy.W2, STRATEGY_HIDDEN_SIZE_2, STRATEGY_HIDDEN_SIZE_1, `${strategyLabel}.W2`)
+    vector(strategy.b2, STRATEGY_HIDDEN_SIZE_2, `${strategyLabel}.b2`)
+    matrix(strategy.W3, strategyCount, STRATEGY_HIDDEN_SIZE_2, `${strategyLabel}.W3`)
+    vector(strategy.b3, strategyCount, `${strategyLabel}.b3`)
+
+    const decision = policy.decision
+    const decisionLabel = `${label}.decision`
+    assertExactKeys(decision, [
+        "stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize",
+        "trainingSamples",
+        "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "familyBias",
+    ], decisionLabel)
+    if(decision.stateInputSize !== DECISION_STATE_INPUT_SIZE
+        || decision.candidateInputSize !== DECISION_CANDIDATE_INPUT_SIZE
+        || decision.stateHiddenSize !== DECISION_STATE_HIDDEN_SIZE
+        || decision.candidateHiddenSize !== DECISION_CANDIDATE_HIDDEN_SIZE
+        || decision.embeddingSize !== DECISION_EMBEDDING_SIZE) fail(`${decisionLabel} has incompatible dimensions`)
+    if(!Array.isArray(decision.trainingSamples) || decision.trainingSamples.length != DECISION_FAMILY_COUNT) fail(`${decisionLabel}.trainingSamples must contain ${DECISION_FAMILY_COUNT} counters`)
+    decision.trainingSamples.forEach((value, index) => assertInteger(value, `${decisionLabel}.trainingSamples[${index}]`))
+    matrix(decision.WState1, DECISION_STATE_HIDDEN_SIZE, DECISION_STATE_INPUT_SIZE, `${decisionLabel}.WState1`)
+    vector(decision.bState1, DECISION_STATE_HIDDEN_SIZE, `${decisionLabel}.bState1`)
+    matrix(decision.WState2, DECISION_EMBEDDING_SIZE, DECISION_STATE_HIDDEN_SIZE, `${decisionLabel}.WState2`)
+    vector(decision.bState2, DECISION_EMBEDDING_SIZE, `${decisionLabel}.bState2`)
+    matrix(decision.WCandidate1, DECISION_CANDIDATE_HIDDEN_SIZE, DECISION_CANDIDATE_INPUT_SIZE, `${decisionLabel}.WCandidate1`)
+    vector(decision.bCandidate1, DECISION_CANDIDATE_HIDDEN_SIZE, `${decisionLabel}.bCandidate1`)
+    matrix(decision.WCandidate2, DECISION_EMBEDDING_SIZE, DECISION_CANDIDATE_HIDDEN_SIZE, `${decisionLabel}.WCandidate2`)
+    vector(decision.bCandidate2, DECISION_EMBEDDING_SIZE, `${decisionLabel}.bCandidate2`)
+    vector(decision.familyBias, DECISION_FAMILY_COUNT, `${decisionLabel}.familyBias`)
 }
 
 const MODEL_KEYS = [
     "version", "modelFamily", "totalGames", "totalSyntheticEpisodes", "totalPolicySamples",
     "totalLoadoutSamples", "totalHumanDemonstrations", "playerProfile", "strategyStats", "loadoutStats",
     "placementStats", "loadoutPlacementStats", "timingStats", "loadoutStrategyStats", "crosspathStats",
-    "loadoutCounterStats", "tacticalStats", "tacticalFamilyStats", "totalTacticalSamples", "candidateGeneration",
+    "loadoutCounterStats", "tacticalStats", "tacticalFamilyStats", "totalTacticalSamples", "totalDecisionSamples", "candidateGeneration",
     "championGeneration", "policy", "championPolicy", "populationPolicies",
 ]
 
 function validateModel(model, expectedSchemaVersion, expectedFamily, label = "model") {
     assertExactKeys(model, MODEL_KEYS, label)
+    if(expectedSchemaVersion !== MODEL_SCHEMA_VERSION || expectedFamily !== MODEL_FAMILY) fail(`${label} must use schema ${MODEL_SCHEMA_VERSION} and family ${MODEL_FAMILY}`)
     assertInteger(model.version, `${label}.version`, 1)
-    if(model.version != expectedSchemaVersion) fail(`${label}.version does not match the checkpoint schema`)
+    if(model.version !== expectedSchemaVersion) fail(`${label}.version does not match the checkpoint schema`)
     assertString(model.modelFamily, `${label}.modelFamily`)
-    if(model.modelFamily != expectedFamily) fail(`${label}.modelFamily does not match the checkpoint family`)
-    for(const key of ["totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations", "totalTacticalSamples", "candidateGeneration", "championGeneration"]) {
+    if(model.modelFamily !== expectedFamily) fail(`${label}.modelFamily does not match the checkpoint family`)
+    for(const key of ["totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations", "totalTacticalSamples", "totalDecisionSamples", "candidateGeneration", "championGeneration"]) {
         assertInteger(model[key], `${label}.${key}`)
     }
     if(model.totalPolicySamples != model.totalGames + model.totalSyntheticEpisodes) fail(`${label}.totalPolicySamples is inconsistent`)
@@ -186,7 +246,7 @@ function validateModel(model, expectedSchemaVersion, expectedFamily, label = "mo
     const strategyCount = model.strategyStats.length
     validatePolicy(model.policy, `${label}.policy`, strategyCount)
     validatePolicy(model.championPolicy, `${label}.championPolicy`, strategyCount)
-    if(!Array.isArray(model.populationPolicies) || model.populationPolicies.length > 4) fail(`${label}.populationPolicies must contain at most four policies`)
+    if(!Array.isArray(model.populationPolicies) || model.populationPolicies.length > 2) fail(`${label}.populationPolicies must contain at most two policy bundles`)
     model.populationPolicies.forEach((policy, index) => validatePolicy(policy, `${label}.populationPolicies[${index}]`, strategyCount))
     assertFiniteTree(model, label)
     return model
@@ -202,7 +262,7 @@ function checkpointIdentity(checkpoint) {
 
 function validateCheckpoint(checkpoint, label = "checkpoint") {
     assertExactKeys(checkpoint, CHECKPOINT_KEYS, label)
-    if(checkpoint.kind != CHECKPOINT_KIND || checkpoint.formatVersion != FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
+    if(checkpoint.kind !== CHECKPOINT_KIND || checkpoint.formatVersion !== FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
     assertString(checkpoint.gameVersion, `${label}.gameVersion`)
     assertInteger(checkpoint.modelSchemaVersion, `${label}.modelSchemaVersion`, 1)
     assertString(checkpoint.modelFamily, `${label}.modelFamily`)
@@ -253,10 +313,10 @@ const HOSTED_SNAPSHOT_KEYS = [
 
 function validateHostedEnvelope(envelope, label = "hosted envelope") {
     assertExactKeys(envelope, HOSTED_ENVELOPE_KEYS, label)
-    if(envelope.ok !== true || envelope.protocolVersion != 1) fail(`${label} has an unsupported protocol response`)
+    if(envelope.ok !== true || envelope.protocolVersion !== 1) fail(`${label} has an unsupported protocol response`)
     assertString(envelope.gameVersion, `${label}.gameVersion`)
     assertInteger(envelope.modelSchema, `${label}.modelSchema`, 1)
-    if(envelope.gameVersion != GAME_VERSION || envelope.modelSchema != MODEL_SCHEMA_VERSION) fail(`${label} is incompatible with this game build`)
+    if(envelope.gameVersion !== GAME_VERSION || envelope.modelSchema !== MODEL_SCHEMA_VERSION) fail(`${label} is incompatible with this game build`)
     assertInteger(envelope.revision, `${label}.revision`)
     assertDigest(envelope.modelDigest, `${label}.modelDigest`)
     assertDigest(envelope.policyDigest, `${label}.policyDigest`)
@@ -268,6 +328,9 @@ function validateHostedEnvelope(envelope, label = "hosted envelope") {
     assertInteger(envelope.contributionRateLimit, `${label}.contributionRateLimit`, 1)
     assertInteger(envelope.contributionEpoch, `${label}.contributionEpoch`, 1)
     validateModel(envelope.model, envelope.modelSchema, MODEL_FAMILY, `${label}.model`)
+    if(envelope.modelDigest != hostedDigest(envelope.model)) fail(`${label}.modelDigest does not match its model`)
+    if(envelope.policyDigest != hostedDigest(envelope.model.policy)) fail(`${label}.policyDigest does not match its policy bundle`)
+    if(envelope.championPolicyDigest != hostedDigest(envelope.model.championPolicy)) fail(`${label}.championPolicyDigest does not match its champion policy bundle`)
     return envelope
 }
 
@@ -279,7 +342,7 @@ function hostedSnapshotIdentity(manifest) {
 
 function validateHostedSnapshotManifest(manifest, checkpoint, label = "hosted snapshot") {
     assertExactKeys(manifest, HOSTED_SNAPSHOT_KEYS, label)
-    if(manifest.kind != HOSTED_SNAPSHOT_KIND || manifest.formatVersion != FORMAT_VERSION || manifest.protocolVersion != 1) fail(`${label} has an unsupported kind, format, or protocol`)
+    if(manifest.kind !== HOSTED_SNAPSHOT_KIND || manifest.formatVersion !== FORMAT_VERSION || manifest.protocolVersion !== 1) fail(`${label} has an unsupported kind, format, or protocol`)
     assertDigest(manifest.snapshotId, `${label}.snapshotId`)
     assertString(manifest.gameVersion, `${label}.gameVersion`)
     assertInteger(manifest.revision, `${label}.revision`)
@@ -291,6 +354,7 @@ function validateHostedSnapshotManifest(manifest, checkpoint, label = "hosted sn
         validateCheckpoint(checkpoint, "hosted baseline")
         if(manifest.gameVersion != checkpoint.gameVersion || manifest.checkpointModelDigest != checkpoint.modelDigest || manifest.checkpointId != checkpoint.checkpointId) fail(`${label} does not identify the supplied checkpoint`)
         if(manifest.championGeneration != checkpoint.model.championGeneration) fail(`${label}.championGeneration does not match the supplied checkpoint`)
+        if(manifest.hostedModelDigest != hostedDigest(checkpoint.model) || manifest.sourcePolicyDigest != hostedDigest(checkpoint.model.policy)) fail(`${label} hosted digests do not match the supplied checkpoint`)
     }
     return manifest
 }
@@ -324,10 +388,28 @@ function createHostedSnapshot(envelope) {
     return { checkpoint, manifest: validateHostedSnapshotManifest(manifest, checkpoint) }
 }
 
+const POLICY_PROMOTION_REQUEST_KEYS = [
+    "protocolVersion", "promotionId", "sourceRevision", "expectedContributionEpoch", "expectedPromotionBaseDigest",
+    "expectedPolicyDigest", "expectedChampionGeneration", "policy",
+]
+
+function validatePolicyPromotionRequest(request, label = "policy promotion request") {
+    assertExactKeys(request, POLICY_PROMOTION_REQUEST_KEYS, label)
+    if(request.protocolVersion !== 1) fail(`${label}.protocolVersion must be 1`)
+    assertDigest(request.promotionId, `${label}.promotionId`)
+    assertInteger(request.sourceRevision, `${label}.sourceRevision`)
+    assertInteger(request.expectedContributionEpoch, `${label}.expectedContributionEpoch`, 1)
+    assertDigest(request.expectedPromotionBaseDigest, `${label}.expectedPromotionBaseDigest`)
+    assertDigest(request.expectedPolicyDigest, `${label}.expectedPolicyDigest`)
+    assertInteger(request.expectedChampionGeneration, `${label}.expectedChampionGeneration`)
+    validatePolicy(request.policy, `${label}.policy`, STRATEGY_COUNT)
+    return request
+}
+
 function buildPolicyPromotionRequest(manifest, candidate, baseline) {
     validateHostedSnapshotManifest(manifest, baseline)
     validatePolicyOnlyCandidate(candidate, baseline)
-    return {
+    return validatePolicyPromotionRequest({
         protocolVersion: 1,
         promotionId: candidate.checkpointId,
         sourceRevision: manifest.revision,
@@ -336,7 +418,7 @@ function buildPolicyPromotionRequest(manifest, candidate, baseline) {
         expectedPolicyDigest: manifest.sourcePolicyDigest,
         expectedChampionGeneration: manifest.championGeneration,
         policy: clone(candidate.model.policy),
-    }
+    })
 }
 
 const HOSTED_PROMOTION_RESPONSE_KEYS = [
@@ -345,10 +427,11 @@ const HOSTED_PROMOTION_RESPONSE_KEYS = [
 ]
 
 function validateHostedPromotionResponse(response, request, label = "hosted promotion response") {
+    validatePolicyPromotionRequest(request)
     assertExactKeys(response, HOSTED_PROMOTION_RESPONSE_KEYS, label)
-    if(response.ok !== true || response.protocolVersion != 1 || response.promotionId != request.promotionId) fail(`${label} does not identify the requested promotion`)
+    if(response.ok !== true || response.protocolVersion !== 1 || response.promotionId != request.promotionId) fail(`${label} does not identify the requested promotion`)
     assertBoolean(response.duplicate, `${label}.duplicate`)
-    assertInteger(response.revision, `${label}.revision`, request.sourceRevision)
+    assertInteger(response.revision, `${label}.revision`, request.sourceRevision + 1)
     assertDigest(response.modelDigest, `${label}.modelDigest`)
     assertInteger(response.contributionEpoch, `${label}.contributionEpoch`, 1)
     assertInteger(response.championGeneration, `${label}.championGeneration`)
@@ -356,6 +439,7 @@ function validateHostedPromotionResponse(response, request, label = "hosted prom
     assertBoolean(response.candidatePolicyPreserved, `${label}.candidatePolicyPreserved`)
     if(response.contributionEpoch != request.expectedContributionEpoch) fail(`${label} changed the contribution epoch`)
     if(response.championGeneration != request.expectedChampionGeneration + 1) fail(`${label} has the wrong champion generation`)
+    if(response.promotedPolicyDigest != hostedDigest(request.policy)) fail(`${label}.promotedPolicyDigest does not match the submitted policy bundle`)
     return response
 }
 
@@ -407,6 +491,14 @@ function validateMatch(match, label) {
     if(match.result != expectedResult) fail(`${label}.result is inconsistent with lives`)
 }
 
+function validateFairnessSchedule(match, index, label) {
+    const scenarioIndex = index % 8
+    const expectedMap = index % 2
+    const expectedSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right"
+    const expectedRole = Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe"
+    if(match.map != expectedMap || match.candidateSide != expectedSide || match.candidateRole != expectedRole) fail(`${label} does not follow the fairness schedule`)
+}
+
 function resultIdentity(result) {
     const identity = {}
     for(const key of Object.keys(result)) if(key != "resultId") identity[key] = result[key]
@@ -440,7 +532,7 @@ function validateMatchesAndMetrics(result, label) {
 
 function validateTrainResult(result, label = "train result") {
     assertExactKeys(result, TRAIN_RESULT_KEYS, label)
-    if(result.kind != TRAIN_RESULT_KIND || result.formatVersion != FORMAT_VERSION || result.mode != "train") fail(`${label} has an unsupported kind, version, or mode`)
+    if(result.kind !== TRAIN_RESULT_KIND || result.formatVersion !== FORMAT_VERSION || result.mode !== "train") fail(`${label} has an unsupported kind, version, or mode`)
     for(const key of ["resultId", "baseCheckpointId", "baseModelDigest"]) assertDigest(result[key], `${label}.${key}`)
     for(const key of ["gameVersion", "shard"]) assertString(result[key], `${label}.${key}`)
     assertInteger(result.modelSchemaVersion, `${label}.modelSchemaVersion`, 1)
@@ -450,6 +542,17 @@ function validateTrainResult(result, label = "train result") {
     if(result.candidate.gameVersion != result.gameVersion || result.candidate.modelSchemaVersion != result.modelSchemaVersion) fail(`${label}.candidate is incompatible with its result`)
     if(result.candidate.provenance.mode != "train" || result.candidate.provenance.seed != result.seed || result.candidate.provenance.shard != result.shard || result.candidate.provenance.matches != result.completedMatches) fail(`${label}.candidate provenance is inconsistent`)
     validateMatchesAndMetrics(result, label)
+    const fullGeneration = result.requestedMatches == TRAINING_MATCHES
+    result.matches.forEach((match, index) => {
+        if(match.evaluation != (fullGeneration && index >= TRAINING_LEARNING_MATCHES)) fail(`${label}.matches[${index}] is in the wrong learning/evaluation phase`)
+        validateFairnessSchedule(match, index, `${label}.matches[${index}]`)
+    })
+    if(fullGeneration) {
+        const internalEvaluation = computeMetrics(result.matches.slice(TRAINING_LEARNING_MATCHES))
+        if(result.metrics.builtInEvaluationScore === null || Math.abs(result.metrics.builtInEvaluationScore - internalEvaluation.score) > 1e-12) fail(`${label}.metrics.builtInEvaluationScore does not match its ${TRAINING_INTERNAL_EVALUATION_MATCHES} frozen matches`)
+    } else if(result.metrics.builtInEvaluationScore !== null) {
+        fail(`${label}.metrics.builtInEvaluationScore must be null for a partial smoke run`)
+    }
     if(result.resultId != digest(resultIdentity(result))) fail(`${label}.resultId does not match its contents`)
     return result
 }
@@ -466,7 +569,7 @@ function retainedPopulationPolicies(model) {
     const previousChampionDigest = digest(model.championPolicy)
     const policies = model.populationPolicies.filter(policy => digest(policy) != previousChampionDigest).map(clone)
     policies.push(clone(model.championPolicy))
-    return policies.slice(-4)
+    return policies.slice(-2)
 }
 
 function materializePolicyOnlyCandidate(result, baseline) {
@@ -509,20 +612,14 @@ function validatePolicyOnlyCandidate(candidate, baseline, label = "candidate") {
 
 function validateEvaluationResult(result, label = "evaluation result") {
     assertExactKeys(result, EVALUATION_RESULT_KEYS, label)
-    if(result.kind != EVALUATION_RESULT_KIND || result.formatVersion != FORMAT_VERSION || result.mode != "evaluate") fail(`${label} has an unsupported kind, version, or mode`)
+    if(result.kind !== EVALUATION_RESULT_KIND || result.formatVersion !== FORMAT_VERSION || result.mode !== "evaluate") fail(`${label} has an unsupported kind, version, or mode`)
     for(const key of ["resultId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest"]) assertDigest(result[key], `${label}.${key}`)
     for(const key of ["gameVersion", "shard"]) assertString(result[key], `${label}.${key}`)
     assertInteger(result.modelSchemaVersion, `${label}.modelSchemaVersion`, 1)
     assertInteger(result.seed, `${label}.seed`)
     validateMatchesAndMetrics(result, label)
     if(result.matches.some(match => match.evaluation !== true)) fail(`${label} contains a match that was not run in frozen evaluation mode`)
-    result.matches.forEach((match, index) => {
-        const scenarioIndex = index % 8
-        const expectedMap = index % 2
-        const expectedSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right"
-        const expectedRole = Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe"
-        if(match.map != expectedMap || match.candidateSide != expectedSide || match.candidateRole != expectedRole) fail(`${label}.matches[${index}] does not follow the fairness schedule`)
-    })
+    result.matches.forEach((match, index) => validateFairnessSchedule(match, index, `${label}.matches[${index}]`))
     if(result.metrics.builtInEvaluationScore !== null) fail(`${label} must not contain a built-in training score`)
     if(result.resultId != digest(resultIdentity(result))) fail(`${label}.resultId does not match its contents`)
     return result
@@ -561,8 +658,8 @@ function selectBestTrainResult(results, baseline) {
         }
     }
     const ranked = validated.slice().sort((a, b) => {
-        const aScore = a.metrics.builtInEvaluationScore == null ? a.metrics.score : a.metrics.builtInEvaluationScore
-        const bScore = b.metrics.builtInEvaluationScore == null ? b.metrics.score : b.metrics.builtInEvaluationScore
+        const aScore = a.metrics.builtInEvaluationScore
+        const bScore = b.metrics.builtInEvaluationScore
         if(aScore != bScore) return bScore - aScore
         if(a.completedMatches != b.completedMatches) return b.completedMatches - a.completedMatches
         if(a.shard != b.shard) return a.shard < b.shard ? -1 : 1
@@ -577,8 +674,8 @@ function makeSelectionReport(results, selected, materialized) {
         resultId: result.resultId,
         shard: result.shard,
         seed: result.seed,
-        scoreSource: result.metrics.builtInEvaluationScore == null ? "candidate-match" : "built-in-evaluation",
-        score: result.metrics.builtInEvaluationScore == null ? result.metrics.score : result.metrics.builtInEvaluationScore,
+        scoreSource: "built-in-evaluation",
+        score: result.metrics.builtInEvaluationScore,
         games: result.completedMatches,
         sourceCheckpointId: result.candidate.checkpointId,
     })).sort((a, b) => a.resultId < b.resultId ? -1 : a.resultId > b.resultId ? 1 : 0)
@@ -590,8 +687,8 @@ function makeSelectionReport(results, selected, materialized) {
         selectedResultId: selected.resultId,
         selectedSourceCheckpointId: selected.candidate.checkpointId,
         materializedCheckpointId: materialized.checkpointId,
-        selectedScoreSource: selected.metrics.builtInEvaluationScore == null ? "candidate-match" : "built-in-evaluation",
-        selectedScore: selected.metrics.builtInEvaluationScore == null ? selected.metrics.score : selected.metrics.builtInEvaluationScore,
+        selectedScoreSource: "built-in-evaluation",
+        selectedScore: selected.metrics.builtInEvaluationScore,
         candidates: summaries,
     }
 }
@@ -640,7 +737,7 @@ function aggregateIdentity(aggregate) {
 
 function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") {
     assertExactKeys(aggregate, EVALUATION_AGGREGATE_KEYS, label)
-    if(aggregate.kind != EVALUATION_AGGREGATE_KIND || aggregate.formatVersion != FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
+    if(aggregate.kind !== EVALUATION_AGGREGATE_KIND || aggregate.formatVersion !== FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
     for(const key of ["aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest"]) assertDigest(aggregate[key], `${label}.${key}`)
     assertString(aggregate.gameVersion, `${label}.gameVersion`)
     assertInteger(aggregate.modelSchemaVersion, `${label}.modelSchemaVersion`, 1)
@@ -673,7 +770,7 @@ function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") 
     return aggregate
 }
 
-function validatePromotionBundle(candidate, evaluation, baseline, minimumScore = 0.56, minimumGames = 32) {
+function validatePromotionBundle(candidate, evaluation, baseline, minimumScore = 0.58, minimumGames = 64) {
     assertNumber(minimumScore, "minimumScore", 0, 1)
     assertInteger(minimumGames, "minimumGames", 1)
     validatePolicyOnlyCandidate(candidate, baseline)
@@ -801,6 +898,13 @@ function numberArg(args, key, defaultValue) {
 }
 
 function readJson(filePath) {
+    let size
+    try {
+        size = fs.statSync(filePath).size
+    } catch(error) {
+        fail(`Unable to read JSON ${filePath}: ${error.message}`)
+    }
+    if(size > MAX_JSON_BYTES) fail(`JSON ${filePath} exceeds the ${MAX_JSON_BYTES}-byte limit`)
     let parsed
     try {
         parsed = JSON.parse(fs.readFileSync(filePath, "utf8"))
@@ -840,9 +944,12 @@ function assertSafeOutputPath(filePath) {
 function writeJson(filePath, value) {
     assertFiniteTree(value)
     const absolute = assertSafeOutputPath(filePath)
+    const encoded = `${JSON.stringify(value, null, 2)}\n`
+    const size = Buffer.byteLength(encoded)
+    if(size > MAX_JSON_BYTES) fail(`JSON ${absolute} exceeds the ${MAX_JSON_BYTES}-byte limit`)
     fs.mkdirSync(path.dirname(absolute), { recursive: true })
     const temporary = `${absolute}.${process.pid}.tmp`
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "w" })
+    fs.writeFileSync(temporary, encoded, { encoding: "utf8", flag: "w" })
     fs.renameSync(temporary, absolute)
     return absolute
 }
@@ -940,9 +1047,16 @@ module.exports = {
     GAME_VERSION,
     HOSTED_PROMOTION_RECEIPT_KIND,
     HOSTED_SNAPSHOT_KIND,
+    MAX_JSON_BYTES,
+    MODEL_FAMILY,
+    MODEL_SCHEMA_VERSION,
+    POLICY_FORMAT_VERSION,
     ROOT,
     SELECTION_REPORT_KIND,
     TRAIN_RESULT_KIND,
+    TRAINING_INTERNAL_EVALUATION_MATCHES,
+    TRAINING_LEARNING_MATCHES,
+    TRAINING_MATCHES,
     aggregateEvaluationResults,
     assertFiniteTree,
     canonicalStringify,
@@ -957,6 +1071,7 @@ module.exports = {
     evaluationMarkdown,
     fail,
     finalizeResult,
+    hostedDigest,
     integerArg,
     jsonFilesRecursively,
     makeSelectionReport,
@@ -975,6 +1090,7 @@ module.exports = {
     validateHostedSnapshotManifest,
     validateModel,
     validatePolicyOnlyCandidate,
+    validatePolicyPromotionRequest,
     validatePromotionBundle,
     validateTrainResult,
     validateTrainResultAgainstBaseline,

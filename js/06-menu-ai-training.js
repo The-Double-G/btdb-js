@@ -1577,59 +1577,10 @@ function chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, exclu
     return chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), excludedStrategyIndex, loadoutKey)
 }
 
-function isAITrainingLoadoutExcluded(excludedLoadoutKeys, loadoutKey) {
-    if(!excludedLoadoutKeys) {
-        return false
-    }
-    if(Array.isArray(excludedLoadoutKeys)) {
-        return excludedLoadoutKeys.indexOf(loadoutKey) != -1
-    }
-    return excludedLoadoutKeys == loadoutKey
-}
-
-function chooseAITrainingBestLoadout(observedLoadoutSummary, excludedLoadoutKeys) {
-    if(ensureAILoadoutLibraryInitialized() == false || aiLoadoutLibrary.length <= 0) {
-        return null
-    }
-    ensureAILearningLoaded()
-    var bestLoadout = null
-    var bestScore = -Infinity
-    for(var i = 0; i < aiLoadoutLibrary.length; i++) {
-        var loadout = aiLoadoutLibrary[i]
-        if(isAITrainingLoadoutExcluded(excludedLoadoutKeys, loadout.key)) {
-            continue
-        }
-        var score = getAILoadoutCounterHeuristicBonus(loadout.summary, observedLoadoutSummary)
-        score += getAILoadoutCounterLearningBonus(loadout.key, observedLoadoutSummary)
-        score += getAILoadoutPerformanceBonus(loadout.key)
-        if(score > bestScore) {
-            bestScore = score
-            bestLoadout = loadout
-        }
-    }
-    return bestLoadout || aiLoadoutLibrary[0]
-}
-
-function chooseAITrainingRandomLoadout(excludedLoadoutKeys) {
-    if(ensureAILoadoutLibraryInitialized() == false || aiLoadoutLibrary.length <= 0) {
-        return null
-    }
-    var candidateLoadouts = []
-    for(var i = 0; i < aiLoadoutLibrary.length; i++) {
-        if(isAITrainingLoadoutExcluded(excludedLoadoutKeys, aiLoadoutLibrary[i].key) == false) {
-            candidateLoadouts.push(aiLoadoutLibrary[i])
-        }
-    }
-    if(candidateLoadouts.length <= 0) {
-        candidateLoadouts = aiLoadoutLibrary
-    }
-    return candidateLoadouts[Math.floor(Math.random() * candidateLoadouts.length)]
-}
-
-function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelection, forcedLoadout) {
+function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelection) {
     ensureAILearningLoaded()
     ensureAILoadoutLibraryInitialized()
-    var chosenLoadout = forcedLoadout || chooseAILoadoutForMatch(observedLoadoutSummary, excludedSelection && excludedSelection.loadoutKey ? excludedSelection.loadoutKey : null)
+    var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, excludedSelection && excludedSelection.loadoutKey ? excludedSelection.loadoutKey : null)
     aiStrategySelection = excludedSelection && excludedSelection.archetypeIndex != null ? chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, excludedSelection.archetypeIndex, chosenLoadout.key) : chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), null, chosenLoadout.key)
     aiStrategySelection.loadoutKey = chosenLoadout.key
     aiStrategySelection.loadoutSummary = chosenLoadout.summary
@@ -1639,10 +1590,24 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
     aiMatchTelemetry = createAIMatchTelemetry(aiStrategySelection.index, aiStrategySelection.features, observedLoadoutSummary)
     aiMatchTelemetry.aiLoadoutKey = chosenLoadout.key
     aiMatchTelemetry.aiLoadoutSummary = chosenLoadout.summary
+    var loadoutDecisionSample = chosenLoadout.decisionSample || scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.loadout, {
+        id: chosenLoadout.key,
+        type: chosenLoadout.summary.towerTypes.join(","),
+        role: chosenLoadout.summary.boostImages.join(","),
+        actionKey: "loadout|" + chosenLoadout.key,
+        heuristic: getAILoadoutCounterHeuristicBonus(chosenLoadout.summary, observedLoadoutSummary),
+        heuristicScale: 0.75,
+        effect: chosenLoadout.summary.eco + chosenLoadout.summary.pressure + chosenLoadout.summary.heavy + chosenLoadout.summary.late,
+        effectScale: 4,
+        count: chosenLoadout.summary.filledTowerSlots + chosenLoadout.summary.filledBoostSlots,
+        countScale: 5,
+    }, null, buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null))
+    recordAIDecisionTraceSample(loadoutDecisionSample, 0)
+    recordAIDecisionTraceSample(aiStrategySelection.decisionSample, 0)
     aiProfile.loadoutPlanReady = true
 }
 
-function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, excludedSelection, forcedLoadout, policyConfig) {
+function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, excludedSelection, policyConfig) {
     var snapshot = captureActiveAIContextSnapshot()
     var chosenSummary = createEmptyLoadoutSummary()
     aiContextsBySide[side] = createAIContext(side, getOpponentSide(side))
@@ -1656,7 +1621,7 @@ function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, exclud
     aiProfile.policySnapshot = policyConfig && policyConfig.policySnapshot ? cloneAIPolicy(policyConfig.policySnapshot) : null
     aiProfile.learningEnabled = !!(policyConfig && policyConfig.learningEnabled)
     aiProfile.explorationEnabled = !!(policyConfig && policyConfig.explorationEnabled)
-    prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelection, forcedLoadout)
+    prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelection)
     aiProfile.loadoutFilled = true
     aiProfile.currentAction = null
     aiTickState.lastLogicAt = gameNow()
@@ -1702,10 +1667,10 @@ function finishAITrainingEvaluation() {
     var games = Math.max(1, aiTrainingState.evaluationGames)
     var score = (aiTrainingState.evaluationWins + aiTrainingState.evaluationTies * 0.5) / games
     aiTrainingState.lastEvaluationScore = score
-    if(score >= 0.56) {
+    if(score >= 0.58) {
         if(isValidAIPolicy(aiLearning.championPolicy)) {
             aiLearning.populationPolicies.push(cloneAIPolicy(aiLearning.championPolicy))
-            if(aiLearning.populationPolicies.length > 4) {
+            if(aiLearning.populationPolicies.length > 2) {
                 aiLearning.populationPolicies.shift()
             }
         }
@@ -1735,7 +1700,7 @@ function finishAITrainingEvaluation() {
 function prepareAITrainingTrueSelfPlayContexts() {
     clearAIContexts()
     ensureAILearningLoaded()
-    aiTrainingState.evaluationActive = aiTrainingState.candidateTrainingMatches >= 64
+    aiTrainingState.evaluationActive = aiTrainingState.candidateTrainingMatches >= 128
     var scenarioIndex = aiTrainingState.trueSelfPlayMatches % 8
     var candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? PLAYER_SIDE.left : PLAYER_SIDE.right
     var opponentSide = getOpponentSide(candidateSide)
@@ -1748,27 +1713,24 @@ function prepareAITrainingTrueSelfPlayContexts() {
         aiTrainingState.opponentPolicyKind = "population"
     }
 
-    var probeLoadout = chooseAITrainingRandomLoadout(null)
-    var probeSummary = probeLoadout ? probeLoadout.summary : null
-    var responderLoadout = chooseAITrainingBestLoadout(probeSummary, probeLoadout ? probeLoadout.key : null)
-    var responderSummary = responderLoadout ? responderLoadout.summary : null
     var candidateResponds = Math.floor(scenarioIndex / 4) % 2 == 0
     aiTrainingState.candidateResponds = candidateResponds
-    var candidateLoadout = candidateResponds ? responderLoadout : probeLoadout
-    var opponentLoadout = candidateResponds ? probeLoadout : responderLoadout
-    var candidateObserved = candidateResponds ? probeSummary : responderSummary
-    var opponentObserved = candidateResponds ? responderSummary : probeSummary
-
-    primeAITrainingTrueSelfPlayContext(candidateSide, candidateObserved, null, candidateLoadout, {
+    var candidatePolicyConfig = {
         policySnapshot: aiTrainingState.evaluationActive ? aiLearning.policy : null,
         learningEnabled: aiTrainingState.evaluationActive == false,
         explorationEnabled: aiTrainingState.evaluationActive == false,
-    })
-    primeAITrainingTrueSelfPlayContext(opponentSide, opponentObserved, null, opponentLoadout, {
+    }
+    var opponentPolicyConfig = {
         policySnapshot: opponentPolicy,
         learningEnabled: false,
         explorationEnabled: false,
-    })
+    }
+    var probeSide = candidateResponds ? opponentSide : candidateSide
+    var responderSide = getOpponentSide(probeSide)
+    var probePolicyConfig = probeSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
+    var responderPolicyConfig = responderSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
+    var probeSummary = primeAITrainingTrueSelfPlayContext(probeSide, null, null, probePolicyConfig)
+    primeAITrainingTrueSelfPlayContext(responderSide, probeSummary, { loadoutKey: probeSummary.signature }, responderPolicyConfig)
     registerAITrainingTrueSelfPlaySelections()
 }
 
@@ -1823,7 +1785,7 @@ function recordAITrainingTrueSelfPlayMatchResult() {
         } else {
             aiTrainingState.evaluationTies++
         }
-        if(aiTrainingState.evaluationGames >= 32) {
+        if(aiTrainingState.evaluationGames >= 64) {
             finishAITrainingEvaluation()
         }
     } else {
@@ -2186,7 +2148,7 @@ function drawAITrainingScreen() {
     var summaryMetricHeight = 42
     var summaryMetrics = trainingMode.id == "selfplay" ? [
         { label: "Matches", value: aiTrainingState.trueSelfPlayMatches.toLocaleString(), color: "#62c5ff" },
-        { label: "Phase", value: aiTrainingState.evaluationActive ? "Eval " + aiTrainingState.evaluationGames + "/32" : "Train " + aiTrainingState.candidateTrainingMatches + "/64", color: "#7fe0a2" },
+        { label: "Phase", value: aiTrainingState.evaluationActive ? "Eval " + aiTrainingState.evaluationGames + "/64" : "Train " + aiTrainingState.candidateTrainingMatches + "/128", color: "#7fe0a2" },
         { label: evaluationDisplay.label, value: Math.round(evaluationDisplay.score * 100) + "%", color: "#f7c76d" },
         { label: "Lab Promotions", value: aiTrainingState.promotions.toLocaleString(), color: "#87f0ad" },
         { label: "Rejected", value: aiTrainingState.rejectedCandidates.toLocaleString(), color: "#ff9f8f" },
@@ -2230,7 +2192,7 @@ function drawAITrainingScreen() {
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
-        "Model: Temporary Lab Copy",
+        "Model: Temporary ~19k Neural Controller",
         "Publishing: " + publishingLabel,
         (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,
@@ -2238,6 +2200,7 @@ function drawAITrainingScreen() {
     if(trainingMode.id == "selfplay") {
         statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
         statusLines.push("Lab champion generation: " + aiLearning.championGeneration.toLocaleString())
+        statusLines.push("Decision samples: " + aiLearning.totalDecisionSamples.toLocaleString())
         statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())
     }
     var statusTextY = middleY + 40

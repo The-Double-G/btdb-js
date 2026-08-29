@@ -1,60 +1,71 @@
-# AI Training v2.5.3
+# AI Training v2.6.0
 
-The AI uses one authoritative Hosted Model with a bounded live candidate policy, a verified champion policy, aggregate records, and trainable tactical residuals. Hosted games use the live candidate when contributions are enabled. Self-play alternates sides and maps, trains a candidate, then evaluates it with learning disabled against the frozen champion or a historical policy.
+The authoritative Hosted Model uses schema 9 and the `shared-neural-controller-v1` family. Each candidate and champion is one atomic 19,011-parameter policy bundle:
 
-Candidates scoring at least 56% are promoted. Candidates below 48% are reset. Intermediate candidates continue training. Tactical samples cover development, farming, eco sends, rush sends, and boost use.
+- A widened `17 -> 64 -> 32 -> 75` strategy network.
+- A shared dual-encoder scorer with 48 state inputs, 32 legal-candidate inputs, and 48-value embeddings.
+- Per-family decision-training counters that travel with the policy and determine its exact bootstrap behavior.
 
-Localhost and file-based sessions remain session-only. On the hosted website, every completed Vs AI or candidate self-play match submits a bounded contribution to the global community model. Completed standard Local matches submit two human demonstration perspectives. Later visitors load that shared model, and normal hosted matches use its live candidate policy.
+The scorer ranks legal candidates across loadout, strategy, placement, upgrade, sale, eco, rush, and boost families. Deterministic code remains for legality, affordability, collision/path rules, cooldowns, execution, and immediate-lethal safety. Existing heuristics provide a cold-start bootstrap that fades independently for each family over its first 5,000 neural decision samples; after that, the network supplies the ranking. Large loadout and placement spaces use deterministic, non-heuristic shortlists after bootstrap rather than permanently excluding candidates by legacy rank.
 
-## Global Community Contributions
+## Match Learning
 
-Public browsers never upload or replace the full model. They submit one immutable match event containing bounded feature vectors, outcome lives, a strategy index, and capped tactical/placement observations. The PHP endpoint applies the event to the latest model while holding the model lock.
+Hosted Vs AI and candidate self-play matches train and run inference from the live candidate unless a frozen evaluation or opponent snapshot is explicit. Strategy learning uses the terminal match result. Selected neural actions, including selected no-ops, record bounded state/candidate vectors and combine local outcome change with a decayed terminal reward. Contribution samples are selected across action families before recent samples fill remaining capacity, so early loadout and strategy choices are not displaced by frequent tactical actions. Parameters and features are finite, bounded, and validated after every update.
 
-Local demonstrations contain only aggregate play-style features, selected loadout signatures, and final lives. They do not include keyboard input, names, identifiers, or replay history. They update player-style averages, loadout results, and opponent-loadout counter records without inventing an AI strategy choice or changing policy/game totals. Practice and boss matches are excluded from collection.
+Completed standard Local matches submit two human demonstration perspectives. Demonstrations contain aggregate play-style features, loadout signatures, and final lives. They do not contain names, input history, or replay history, and they do not invent an AI action or directly update the neural policy.
 
-Contribution requests use short-lived same-origin tokens, unique IDs, per-address rate limits, strict schemas, store and body limits, revision-lag checks, deduplication, and atomic writes. Public events can update only the candidate policy and approved aggregate records. They cannot replace or promote the champion policy, change generations, or upload synthetic models.
+Localhost and file-based sessions remain session-only.
 
-Failed contributions remain in a small `localStorage` queue and retry automatically. The game-over screen reports whether the match is still syncing. The global candidate remains bounded, while the frozen champion provides an administrative rollback and self-play evaluation baseline.
+## Public Contributions
 
-The Browser Lab trains a Temporary Lab Copy so an experiment cannot replace the Hosted Model while it is running. Completed training matches send bounded contributions to the Hosted Model. Trainer credentials do not enable full-copy Lab publication; pause and close retain the temporary copy without replacing hosted state.
+Public browsers never upload a model or gradient. A normal contribution contains outcome data, the chosen strategy, approved aggregate observations, and at most 32 selected neural decision samples. The server derives each sample's terminal component from final lives, replays SGD into only the current candidate under the model lock, and clips the aggregate policy-parameter delta from the complete contribution to an L2 norm of 0.35.
 
-Each match captures the global contribution epoch when it begins. An authenticated knowledge reset advances that epoch atomically, so queued or in-progress events from the previous model are discarded. Active tabs disable contributions while loading the new model before they can submit events for the new epoch.
+Contribution requests require an explicit same-host Origin and use short-lived same-origin tokens, unique IDs, per-address rate limits, strict dimensions and schemas, 128 KiB body limits, revision-lag checks, epoch checks, deduplication, and atomic writes. Public events cannot replace or promote the champion, change generations, reset knowledge, or upload synthetic checkpoints.
+
+Failed contributions remain in a bounded `localStorage` queue and retry automatically. A reset advances the contribution epoch so queued or in-progress events from the previous model are discarded.
+
+## Browser Lab
+
+The Browser Lab trains a Temporary Lab Copy. It cannot replace the Hosted Model, even when trainer credentials exist. Completed learning matches may publish only bounded contributions.
+
+One Lab generation consists of:
+
+- 128 learning matches with exploration enabled for the candidate.
+- 64 internal frozen evaluation matches with learning and exploration disabled.
+- Balanced rotation across both maps, both candidate sides, and probe/responder roles.
+
+The candidate plays the frozen champion or a bounded historical policy. Probe and responder loadouts are selected by their assigned policy rather than forced by the harness. A score of at least 58% promotes inside the temporary Lab copy. A score below 48% resets the temporary candidate to its champion. Intermediate candidates continue learning. The full policy bundle, including both neural networks and per-family training progress, is frozen and evaluated together.
 
 ## Hosted Trainer Key
 
-The trainer key is optional for normal global learning. Generate one only for administrative full-model migration, recovery, or a trusted champion snapshot. Configure only the hash through the server environment variable `AI_TRAINER_KEY_SHA256`, or place the hash in the server-only file `data/ai-trainer-key.sha256`.
+The trainer key is optional for normal learning. Generate one only for administrative full-model recovery, commit, or reset. Configure only its hash through `AI_TRAINER_KEY_SHA256` or `data/ai-trainer-key.sha256`.
 
-Set the plaintext key only for the active browser session:
+Set plaintext only for an active trusted browser session:
 
 ```js
 sessionStorage.setItem("aiTrainerKey", "your-plaintext-trainer-key")
 location.reload()
 ```
 
-Never put the plaintext key in JavaScript, a URL, source control, or the hosted data directory. The endpoint uses revisioned compare-and-swap commits, rejects stale snapshots, validates schema and finite parameters, and writes through an atomic rename.
+Never put plaintext keys in JavaScript, URLs, source control, logs, or hosted data files.
 
-## GitHub Policy Promotion Key
+## GitHub Promotion Key
 
-GitHub self-play uses a separate least-privilege key. Configure its server-side hash as `AI_POLICY_PROMOTION_KEY_SHA256` or `data/ai-policy-promotion-key.sha256`, and store the plaintext value only as `AI_POLICY_PROMOTION_KEY` in the protected `production-ai` GitHub environment.
+Distributed self-play uses a separate least-privilege key. Configure its server hash through `AI_POLICY_PROMOTION_KEY_SHA256` or `data/ai-policy-promotion-key.sha256`, and store plaintext only as `AI_POLICY_PROMOTION_KEY` in the protected `production-ai` GitHub environment.
 
-The `action=promote` route cannot submit a full model or reset knowledge. It compares the source contribution epoch and frozen champion identity, then updates the verified champion and bounded history under the model lock. Current aggregate records are always retained. If hosted contributions changed the live candidate policy during training, that newer candidate is retained rather than overwritten.
+The `action=promote` route accepts only a complete validated policy bundle. It compares the source contribution epoch and frozen champion identity, then updates the champion and bounded history under the model lock. Current aggregates are retained. If public learning changed the live candidate during training, that newer candidate remains live.
 
-## Knowledge Reset
+## Migration And Reset
 
-Always download and retain the current `data/ai-learning-global.json` before resetting. Submit `action=reset` with the trainer key, the current `expectedRevision`, and a fresh schema-8 model created by `createDefaultAILearning()`. The endpoint accepts only a model with zero counters, empty learned stores, zero player features and strategy results, and no population policies.
+The endpoint migrates a valid schema-8 model to schema 9 once under the exclusive lock. Migration expands each strategic policy without changing its initial logits, initializes the decision scorer with the same canonical values used by the browser, preserves aggregate knowledge and generations, retains the contribution epoch, and increments the revision once.
 
-The reset writes the fresh model, increments both the revision and contribution epoch, and clears contribution deduplication and rate-limit guards under the same exclusive lock. Remove `data/ai-trainer-key.sha256` immediately afterward, then verify that `writeEnabled` is false, the knowledge counters are zero, and a new-epoch contribution is accepted.
+A knowledge reset is different and destructive. Always back up `data/ai-learning-global.json` first. Submit `action=reset` with a fresh schema-9 model, trainer key, and exact revision. A reset advances both revision and epoch and clears contribution guards.
 
 ## Validation
 
 ```text
-node tools/validate-balance.js
-node tools/validate-ai.js
-node tools/test-ai-endpoint.js
+npm test
+npm run ai:verify -- training/checkpoints/champion.json
 ```
 
-## Distributed Training
-
-The public GitHub workflow fetches the Hosted Model once per generation and distributes that immutable snapshot to isolated localhost Chromium workers. Every shard uses the same snapshot and a unique seed and cannot access hosted persistence. Selection copies only the winning policy into a clone of the snapshot and discards shard-learned stores and statistics. The exact materialized checkpoint is evaluated in balanced eight-match blocks by map, candidate side, and responder role. After exact-commit CI, a protected publisher applies the verified policy to the Hosted Model; `training/checkpoints/champion.json` records the promotion as an audit mirror.
-
-See `DISTRIBUTED-AI.md` for operation and safety details.
+See `DISTRIBUTED-AI.md` for continuous operation and promotion details.

@@ -80,7 +80,7 @@ assert(!mainLoop.includes("projectiles[i].length"), "Broken projectile merge loo
 assert(!towerSource.includes("this.overclockFactor * (this.cobraBoosted"), "Dartling cooldown modifiers are squared")
 assert(!bloonSource.includes("&& health < 68"), "Freeplay Bloon adjustment uses an undefined health variable")
 assert(projectileSource.includes("this.hitBloons = new Set()"), "Projectile hit history is missing")
-assert((aiSource.match(/towerConfig\.towerType == "farm" && canAIInvestInFarmNow/g) || []).length === 2, "Farm investment guards must cover scoring and placement execution")
+assert(!aiSource.includes("canAIInvestInFarmNow"), "Farm investment heuristics cannot override the neural placement decision")
 assert(aiSource.includes("farm.aiPlacedAt > 0 && farm.aiPlacedRound == visibleRound && players[side].lives > 35"), "New AI farms can be sold in their placement round")
 assert((rounds.match(/else if\(round == 43\)/g) || []).length === 2, "Round 43 must appear exactly once per round mode")
 assert(/maxCounter = 5\s+setTimeout\(function\(\) \{\s+if\(counter < 5\)/.test(rounds), "Mastery round 80 counter mismatch returned")

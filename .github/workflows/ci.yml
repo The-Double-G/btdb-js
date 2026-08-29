@@ -29,7 +29,7 @@ jobs:
 
   headless-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -41,7 +41,7 @@ jobs:
       - run: npm run test:browser
       - name: Initialize checkpoint
         run: npm run ai:init -- --seed 253 --shard ci-init --output "$RUNNER_TEMP/champion.json"
-      - name: Train one deterministic match twice
+      - name: Replay one deterministic learning match twice
         run: |
           mkdir -p "$RUNNER_TEMP/train" "$RUNNER_TEMP/replay"
           npm run ai:worker -- --mode train --checkpoint "$RUNNER_TEMP/champion.json" --seed 1000 --shard ci-train --matches 1 --output "$RUNNER_TEMP/train/result.json"
@@ -50,11 +50,11 @@ jobs:
         run: node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.argv[1]));const b=JSON.parse(fs.readFileSync(process.argv[2]));if(a.resultId!==b.resultId||a.candidate.checkpointId!==b.candidate.checkpointId)throw new Error('Deterministic replay identities differ');" "$RUNNER_TEMP/train/result.json" "$RUNNER_TEMP/replay/result.json"
       - name: Select candidate
         run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train" --baseline "$RUNNER_TEMP/champion.json" --output "$RUNNER_TEMP/candidate.json"
-      - name: Evaluate one frozen match
+      - name: Evaluate one balanced frozen eight-scenario block
         run: |
           mkdir -p "$RUNNER_TEMP/eval"
-          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate.json" --baseline "$RUNNER_TEMP/champion.json" --seed 100000 --shard ci-eval --matches 1 --output "$RUNNER_TEMP/eval/result.json"
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate.json" --baseline "$RUNNER_TEMP/champion.json" --seed 100000 --shard ci-eval --matches 8 --output "$RUNNER_TEMP/eval/result.json"
       - name: Aggregate smoke evaluation
-        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval" --output "$RUNNER_TEMP/evaluation.json" --minimum-score 0 --minimum-games 1
+        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval" --output "$RUNNER_TEMP/evaluation.json" --minimum-score 0 --minimum-games 8
       - run: npm run ai:verify -- "$RUNNER_TEMP/candidate.json"
       - run: npm run ai:verify -- "$RUNNER_TEMP/evaluation.json"

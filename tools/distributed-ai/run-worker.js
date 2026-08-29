@@ -210,7 +210,7 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
         } else {
             const prepareContexts = prepareAITrainingTrueSelfPlayContexts
             prepareAITrainingTrueSelfPlayContexts = function() {
-                aiTrainingState.candidateTrainingMatches = 64
+                aiTrainingState.candidateTrainingMatches = 128
                 const savedChampionPolicy = aiLearning.championPolicy
                 aiLearning.championPolicy = cloneAIPolicy(baselinePolicy)
                 try {
@@ -418,6 +418,7 @@ async function main() {
     }
     const checkpoint = validateCheckpoint(readJson(requiredArg(args, "checkpoint")))
     const matchCount = integerArg(args, "matches", { minimum: 1 })
+    if(mode == "evaluate" && matchCount % 8 != 0) fail("Evaluation workers require a positive multiple of 8 matches for map/side/role balance")
     const maxFramesPerMatch = args["max-frames-per-match"] == null ? DEFAULT_MAX_FRAMES : integerArg(args, "max-frames-per-match", { minimum: 1 })
     let baseline = null
     if(mode == "evaluate") baseline = validateCheckpoint(readJson(requiredArg(args, "baseline")), "baseline")

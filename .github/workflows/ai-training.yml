@@ -10,24 +10,24 @@ on:
         default: "8"
         options: ["2", "4", "8", "16", "20"]
       training_matches:
-        description: Self-play matches per training shard
+        description: Browser Lab matches per shard (128 learning + 64 internal evaluation)
         required: true
-        default: "96"
+        default: "192"
       evaluation_matches:
         description: Frozen matches per evaluation shard
         required: true
-        default: "8"
+        default: "16"
       base_seed:
         description: First deterministic seed; blank allocates a unique seed block
         required: false
       minimum_score:
         description: Required frozen evaluation score
         required: true
-        default: "0.56"
+        default: "0.58"
       minimum_games:
         description: Required total frozen evaluation games
         required: true
-        default: "32"
+        default: "64"
       continuous:
         description: Automatically promote passing candidates and queue the next run
         required: true
@@ -36,6 +36,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  AI_ARTIFACT_MAX_BYTES: 8388608
 
 concurrency:
   group: distributed-ai-training-${{ github.ref }}
@@ -100,12 +103,13 @@ jobs:
               seed = integer("BASE_SEED", 0, 0xffffffff)
           }
 
-          if(training !== 96) throw new Error("TRAINING_MATCHES must be exactly 96")
+          if(training !== 192) throw new Error("TRAINING_MATCHES must be exactly 192 (128 learning plus 64 internal evaluation)")
           if(evaluation % 8 !== 0) throw new Error("EVALUATION_MATCHES must be a positive multiple of 8")
           if(!Number.isFinite(minimumScore) || minimumScore < 0 || minimumScore > 1) throw new Error("MINIMUM_SCORE must be between 0 and 1")
           if(workers * evaluation < minimumGames) throw new Error("Total evaluation games are below MINIMUM_GAMES")
           if(seed + 100000 + workers - 1 > 0xffffffff) throw new Error("BASE_SEED is too large for evaluation shard seeds")
-          if(continuous && (minimumScore < 0.56 || minimumGames < 32)) throw new Error("Continuous promotion requires at least a 0.56 score and 32 games")
+          if(continuous && (workers !== 20 || evaluation !== 16)) throw new Error("Continuous training requires 20 workers and 16 external evaluation matches per worker")
+          if(continuous && (minimumScore < 0.58 || minimumGames < 160)) throw new Error("Continuous promotion requires at least a 0.58 score and 160 balanced games")
           if(continuous && (process.env.BASE_SEED || "") !== "") throw new Error("Continuous training allocates its own seed block; BASE_SEED must be blank")
           if(continuous && (process.env.REF_TYPE !== "branch" || process.env.REF_NAME !== process.env.DEFAULT_BRANCH)) throw new Error("Continuous training must run from the default branch")
 
@@ -121,6 +125,18 @@ jobs:
           }
           for(const [name, value] of Object.entries(outputs)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`)
           NODE
+      - name: Refuse an unresolved promotion transaction
+        if: ${{ steps.config.outputs.continuous == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
+          if [ -n "$retained" ]; then
+            echo "Continuous training is blocked by retained promotion branch(es):" >&2
+            echo "$retained" >&2
+            echo "Reconcile or remove the unresolved transaction before training resumes." >&2
+            exit 1
+          fi
       - name: Fetch canonical hosted model
         env:
           AI_HOSTED_ENDPOINT: ${{ vars.AI_HOSTED_ENDPOINT }}
@@ -145,6 +161,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      max-parallel: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -207,6 +224,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      max-parallel: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # releases/v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -274,6 +292,13 @@ jobs:
       - id: decision
         name: Record evaluation decision
         run: node -e "const fs=require('node:fs');const evaluation=require(process.argv[1]);fs.appendFileSync(process.env.GITHUB_OUTPUT,'promotable='+(evaluation.passed===true)+'\n');" "$RUNNER_TEMP/bundle/evaluation.json"
+      - name: Enforce promotion artifact size limit
+        run: |
+          oversized=$(find "$RUNNER_TEMP/bundle" -type f -size +${AI_ARTIFACT_MAX_BYTES}c -print -quit)
+          if [ -n "$oversized" ]; then
+            echo "Promotion artifact exceeds ${AI_ARTIFACT_MAX_BYTES} bytes: $oversized" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-training-bundle
@@ -286,7 +311,7 @@ jobs:
         run: |
           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
-          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.56 --minimum-games 32
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 160
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for continuous promotion checks
@@ -335,6 +360,11 @@ jobs:
 
           if [ ! -f "$RUNNER_TEMP/bundle/candidate.json" ] || [ -L "$RUNNER_TEMP/bundle/candidate.json" ]; then
             echo "Candidate artifact is not a regular file." >&2
+            exit 1
+          fi
+          candidate_size=$(stat -c%s "$RUNNER_TEMP/bundle/candidate.json")
+          if [ "$candidate_size" -gt "$AI_ARTIFACT_MAX_BYTES" ]; then
+            echo "Candidate artifact exceeds ${AI_ARTIFACT_MAX_BYTES} bytes." >&2
             exit 1
           fi
           actual_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)
@@ -434,12 +464,17 @@ jobs:
             echo "Hosted publication was not built from the checked checkpoint-only commit." >&2
             exit 1
           fi
+          candidate_size=$(stat -c%s "$RUNNER_TEMP/bundle/candidate.json")
+          if [ "$candidate_size" -gt "$AI_ARTIFACT_MAX_BYTES" ]; then
+            echo "Candidate artifact exceeds ${AI_ARTIFACT_MAX_BYTES} bytes." >&2
+            exit 1
+          fi
           actual_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)
           if [ -z "$CANDIDATE_SHA256" ] || [ "$actual_sha256" != "$CANDIDATE_SHA256" ]; then
             echo "Candidate artifact checksum changed before hosted publication." >&2
             exit 1
           fi
-          npm run ai:hosted -- --mode publish --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.56 --minimum-games 32
+          npm run ai:hosted -- --mode publish --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.58 --minimum-games 160
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         continue-on-error: true
         with:
