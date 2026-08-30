@@ -41,6 +41,7 @@ const {
     validateTrainResult,
 } = require("./distributed-ai/common")
 const {
+    HOSTED_REQUEST_TIMEOUT_MS,
     HOSTED_RESPONSE_MAX_BYTES,
     createHostedReconciliation,
     infinityFreeChallengeCookie,
@@ -253,6 +254,7 @@ async function main() {
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
     assert.equal(MAX_JSON_BYTES, 8 * 1024 * 1024)
+    assert.equal(HOSTED_REQUEST_TIMEOUT_MS, 90000)
     assert.equal(HOSTED_RESPONSE_MAX_BYTES, 8 * 1024 * 1024)
     assert.equal(await readResponseBody(fakeResponse([Buffer.from("1234"), Buffer.from("5678")]), 8), "12345678")
     await assert.rejects(readResponseBody(fakeResponse([Buffer.alloc(8), Buffer.alloc(1)]), 8), /exceeds 8 bytes/)
