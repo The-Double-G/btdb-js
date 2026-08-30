@@ -17,22 +17,22 @@ const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
 const POLICY_FORMAT_VERSION = 2
 const GAME_VERSION = "v2.6.0"
-const MODEL_SCHEMA_VERSION = 10
-const MODEL_FAMILY = "shared-recurrent-actor-critic-v2"
+const MODEL_SCHEMA_VERSION = 11
+const MODEL_FAMILY = "semantic-recurrent-actor-critic-v3"
 const MAX_JSON_BYTES = 8 * 1024 * 1024
 const FEATURE_COUNT = 17
 const STRATEGY_HIDDEN_SIZE_1 = 64
 const STRATEGY_HIDDEN_SIZE_2 = 32
 const STRATEGY_COUNT = 75
 const DECISION_STATE_INPUT_SIZE = 72
-const DECISION_CANDIDATE_INPUT_SIZE = 40
+const DECISION_CANDIDATE_INPUT_SIZE = 64
 const DECISION_STATE_HIDDEN_SIZE = 96
 const DECISION_CANDIDATE_HIDDEN_SIZE = 48
 const DECISION_EMBEDDING_SIZE = 48
 const DECISION_MEMORY_SIZE = 16
 const DECISION_SURVIVAL_CLASS_COUNT = 4
 const DECISION_FAMILY_COUNT = 8
-const POLICY_PARAMETER_COUNT = 23752
+const POLICY_PARAMETER_COUNT = 24904
 const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
@@ -298,11 +298,12 @@ function validateCheckpoint(checkpoint, label = "checkpoint") {
     assertDigest(checkpoint.checkpointId, `${label}.checkpointId`)
     if(checkpoint.parentCheckpointId !== null) assertDigest(checkpoint.parentCheckpointId, `${label}.parentCheckpointId`)
     assertExactKeys(checkpoint.provenance, ["mode", "seed", "shard", "matches"], `${label}.provenance`)
-    if(!["initialize", "train"].includes(checkpoint.provenance.mode)) fail(`${label}.provenance.mode is unsupported`)
+    if(!["initialize", "migrate", "train"].includes(checkpoint.provenance.mode)) fail(`${label}.provenance.mode is unsupported`)
     assertInteger(checkpoint.provenance.seed, `${label}.provenance.seed`)
     assertString(checkpoint.provenance.shard, `${label}.provenance.shard`)
     assertInteger(checkpoint.provenance.matches, `${label}.provenance.matches`)
     if(checkpoint.provenance.mode == "initialize" && (checkpoint.parentCheckpointId !== null || checkpoint.provenance.matches != 0)) fail(`${label} has invalid initialize provenance`)
+    if(checkpoint.provenance.mode == "migrate" && (checkpoint.parentCheckpointId === null || checkpoint.provenance.matches != 0)) fail(`${label} has invalid migrate provenance`)
     if(checkpoint.provenance.mode == "train" && checkpoint.parentCheckpointId === null) fail(`${label} train provenance requires a parent checkpoint`)
     validateModel(checkpoint.model, checkpoint.modelSchemaVersion, checkpoint.modelFamily, `${label}.model`)
     if(checkpoint.modelDigest != digest(checkpoint.model)) fail(`${label}.modelDigest does not match its model`)

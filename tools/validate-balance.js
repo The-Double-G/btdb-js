@@ -4,9 +4,10 @@ const vm = require("vm")
 
 const root = path.resolve(__dirname, "..")
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8")
+const sandboxMath = Object.create(Math)
 const context = {
     console,
-    Math,
+    Math: sandboxMath,
     Set,
     Map,
     gameNow: () => 0,
@@ -16,11 +17,27 @@ const context = {
     counter: 0,
     maxCounter: 1,
     bloons: [],
+    projectiles: [],
+    bananas: [],
+    subtowers: [],
+    towers: [],
+    moneyText: [],
+    roundReady: false,
+    p1money: 0,
+    p2money: 0,
+    p1TotalCashGenerated: 0,
+    p2TotalCashGenerated: 0,
+    document: { hidden: false, addEventListener: () => {} },
+    addEventListener: () => {},
+    nativeSetInterval: () => 0,
 }
 context.globalThis = context
 vm.createContext(context)
 vm.runInContext(read("js/00-constants.js") + "\nglobalThis.balancePrices = BASE_TOWER_PRICES; globalThis.balanceBoosts = BOOST_SETTINGS;", context)
 vm.runInContext(read("js/03-tower.js") + "\nglobalThis.BalanceTower = Tower;", context)
+vm.runInContext(read("js/04-support-entities.js") + "\nglobalThis.BalanceProjectile = Projectile;", context)
+vm.runInContext(read("js/09-input.js") + "\nglobalThis.balanceTowerConfig = LOADOUT_TOWER_CONFIG; globalThis.balanceApplyPath1UpgradeEffects = applyPath1UpgradeEffects; globalThis.balanceApplyPath2UpgradeEffects = applyPath2UpgradeEffects; globalThis.balanceApplyPath3UpgradeEffects = applyPath3UpgradeEffects;", context)
+vm.runInContext(read("js/01-ai-capabilities.js") + "\nglobalThis.balanceTowerCapabilities = getAITowerCapabilityFacts; globalThis.balanceBoostCapabilities = getAIBoostCapabilityFacts; globalThis.balanceSendCapabilities = getAISendCapabilityFacts; globalThis.balanceLoadoutCapabilities = getAILoadoutCapabilityFacts; globalThis.balanceCapabilityKeys = AI_CAPABILITY_KEYS;", context)
 
 function assert(condition, message) {
     if(!condition) {
@@ -49,6 +66,47 @@ for(const towerType of towerTypes) {
         }
     }
 }
+
+const runtimeTowerTypes = Object.values(context.balanceTowerConfig).map(config => config.towerType)
+assert(runtimeTowerTypes.length === 16, `Expected runtime placement data for 16 towers, found ${runtimeTowerTypes.length}`)
+for(const towerType of runtimeTowerTypes) {
+    const facts = context.balanceTowerCapabilities(towerType)
+    assert(Object.keys(facts).length === 32, `${towerType} capability facts must have 32 fields`)
+    assert(Object.values(facts).every(Number.isFinite), `${towerType} capability facts must be finite`)
+}
+
+const dartFacts = context.balanceTowerCapabilities("dart")
+const tackFacts = context.balanceTowerCapabilities("tack")
+const iceFacts = context.balanceTowerCapabilities("ice")
+const farmFacts = context.balanceTowerCapabilities("farm")
+const dartlingFacts = context.balanceTowerCapabilities("dartling")
+const cobraFacts = context.balanceTowerCapabilities("cobra")
+assert(dartFacts.range === 125 && dartFacts.directDamage === 1 && dartFacts.pierce === 2 && dartFacts.volleysPerSecond === 1, "Dart capabilities drifted from its runtime attack")
+assert(tackFacts.projectilesPerVolley === 8 && tackFacts.volleysPerSecond === 1, "Tack volley capabilities drifted from its runtime attack")
+assert(iceFacts.range === 70 && iceFacts.effectRadius === 70 && iceFacts.targetSpeedMultiplier === 0.8, "Ice area/slow capabilities drifted from runtime")
+assert(farmFacts.cashDelta === 40 && farmFacts.economyInterval === 7500, "Farm income capabilities drifted from runtime")
+assert(dartlingFacts.range === 50 && dartlingFacts.volleysPerSecond === 5 && dartlingFacts.projectileSpeed === 10, "Dartling capabilities drifted from runtime")
+assert(cobraFacts.directDamage === 2 && cobraFacts.pierce === 1, "Cobra projectile capabilities drifted from runtime")
+
+const slowFacts = context.balanceBoostCapabilities("slowboost.png", 1)
+assert(slowFacts.targetSpeedMultiplier === 0, "Slow Sabotage cannot claim a target-speed effect")
+assert(Math.abs(slowFacts.attackRateMultiplier - 1 / 1.2) < 1e-12, "Slow Sabotage must expose its defense attack-rate penalty")
+const lightningFacts = context.balanceBoostCapabilities("lightningboost.png", 1)
+assert(lightningFacts.secondaryCount === 5 && lightningFacts.secondaryDamage === 1 && lightningFacts.secondaryPierce === 10 && lightningFacts.effectRadius === 45, "Lightning capabilities drifted from runtime")
+const groupedSendFacts = context.balanceSendCapabilities({ count: 4, health: 23, spacing: 150, eco: -2, speedMultiplier: 1.4 }, 3)
+assert(groupedSendFacts.secondaryCount === 12 && groupedSendFacts.sendHealth === 23 && groupedSendFacts.sendSpacing === 150 && groupedSendFacts.ecoDelta === -6 && groupedSendFacts.sendSpeedMultiplier === 1.4, "Grouped send capabilities drifted from runtime")
+const loadoutFacts = context.balanceLoadoutCapabilities(["000farm.png", "000dart.png"], ["bloonboost.png"], 1)
+assert(Object.values(loadoutFacts).every(Number.isFinite) && loadoutFacts.cashDelta > 0 && loadoutFacts.directDamage > 0, "Loadout image capabilities must include their factual tower effects")
+assert(loadoutFacts.sendSpeedMultiplier === 1.4, "Sparse loadout multipliers cannot be diluted by unrelated slots")
+
+const upgradeRangeTower = new context.BalanceTower(0, 0, 30, 125, "dart", 1)
+upgradeRangeTower.path3Upgrades = 1
+context.balanceApplyPath3UpgradeEffects(upgradeRangeTower)
+upgradeRangeTower.path3Upgrades = 2
+context.balanceApplyPath3UpgradeEffects(upgradeRangeTower)
+assert(upgradeRangeTower.range === 195, "Dart path-three range effects drifted from the upgrade runtime")
+assert(context.projectiles.length === 0 && context.bananas.length === 0 && context.subtowers.length === 0, "Capability inspection leaked emitted entities")
+assert(context.p1money === 0 && context.p2money === 0, "Capability inspection leaked economy state")
 
 const targetTower = new context.BalanceTower(0, 0, 30, 100, "dart", 1)
 context.bloons = [
@@ -82,6 +140,7 @@ assert(!bloonSource.includes("&& health < 68"), "Freeplay Bloon adjustment uses 
 assert(projectileSource.includes("this.hitBloons = new Set()"), "Projectile hit history is missing")
 assert(!aiSource.includes("canAIInvestInFarmNow"), "Farm investment heuristics cannot override the neural placement decision")
 assert(aiSource.includes('tower.towerType == "farm" && tower.aiPlacedAt > 0 && tower.aiPlacedRound == visibleRound'), "New AI farms can be sold in their placement round")
+assert(aiSource.includes('typeof applyPath1UpgradeEffects == "function"') && aiSource.includes('typeof applyPath2UpgradeEffects == "function"') && aiSource.includes('typeof applyPath3UpgradeEffects == "function"'), "Hypothetical upgrades must apply runtime upgrade effects")
 assert((rounds.match(/else if\(round == 43\)/g) || []).length === 2, "Round 43 must appear exactly once per round mode")
 assert(/maxCounter = 5\s+setTimeout\(function\(\) \{\s+if\(counter < 5\)/.test(rounds), "Mastery round 80 counter mismatch returned")
 assert(!rounds.includes("Math.ceil(9200 *"), "Mastery round 67 side asymmetry returned")

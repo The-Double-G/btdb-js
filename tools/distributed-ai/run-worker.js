@@ -29,6 +29,7 @@ const DEFAULT_MAX_FRAMES = 600000
 
 const usage = `Usage:
   node tools/distributed-ai/run-worker.js --mode initialize --seed N --shard ID --output checkpoint.json
+  node tools/distributed-ai/run-worker.js --mode migrate --checkpoint checkpoint.json --seed N --shard ID --output checkpoint.json
   node tools/distributed-ai/run-worker.js --mode train --checkpoint checkpoint.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N]
   node tools/distributed-ai/run-worker.js --mode evaluate --checkpoint candidate.json --baseline baseline.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N]`
 
@@ -152,6 +153,67 @@ async function normalizedModel(page, model) {
         aiLearning = normalizeAILearningData(candidate)
         return JSON.parse(JSON.stringify(aiLearning))
     }, model)
+}
+
+function validateMigrationSource(checkpoint) {
+    if(!checkpoint || checkpoint.kind != "btdb-ai-checkpoint" || checkpoint.formatVersion != FORMAT_VERSION) fail("Migration source has an unsupported kind or format version")
+    if(checkpoint.modelSchemaVersion != 10 || checkpoint.modelFamily != "shared-recurrent-actor-critic-v2") fail("Migration source must use schema 10 and shared-recurrent-actor-critic-v2")
+    if(!checkpoint.model || checkpoint.model.version != checkpoint.modelSchemaVersion || checkpoint.model.modelFamily != checkpoint.modelFamily) fail("Migration source model identity is inconsistent")
+    if(digest(checkpoint.model) != checkpoint.modelDigest) fail("Migration source modelDigest does not match its model")
+    const identity = {}
+    for(const key of ["kind", "formatVersion", "gameVersion", "modelSchemaVersion", "modelFamily", "modelDigest", "parentCheckpointId", "provenance", "model"]) identity[key] = checkpoint[key]
+    if(digest(identity) != checkpoint.checkpointId) fail("Migration source checkpointId does not match its contents")
+    return checkpoint
+}
+
+function assertMigrationRetention(source, migrated) {
+    const modelKeys = [
+        "totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations",
+        "playerProfile", "strategyStats", "loadoutStats", "placementStats", "loadoutPlacementStats", "timingStats",
+        "loadoutStrategyStats", "crosspathStats", "loadoutCounterStats", "tacticalStats", "tacticalFamilyStats",
+        "totalTacticalSamples", "candidateGeneration", "championGeneration",
+    ]
+    for(const key of modelKeys) if(digest(source[key]) != digest(migrated[key])) fail(`Migration did not preserve model.${key}`)
+    if(migrated.totalDecisionSamples != 0) fail("Migration did not reset totalDecisionSamples")
+
+    const retainedDecisionKeys = [
+        "stateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount",
+        "WState1", "bState1", "WState2", "bState2", "WStateToMemory", "WMemoryToMemory", "bMemory",
+        "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival",
+    ]
+    const policyPairs = [[source.policy, migrated.policy], [source.championPolicy, migrated.championPolicy]]
+    for(let index = 0; index < source.populationPolicies.length; index++) policyPairs.push([source.populationPolicies[index], migrated.populationPolicies[index]])
+    for(const [oldPolicy, newPolicy] of policyPairs) {
+        if(digest(oldPolicy.strategy) != digest(newPolicy.strategy)) fail("Migration did not preserve a strategy network")
+        if(oldPolicy.strategyLearningRate != newPolicy.strategyLearningRate || oldPolicy.decisionLearningRate != newPolicy.decisionLearningRate) fail("Migration did not preserve learning rates")
+        for(const key of retainedDecisionKeys) if(digest(oldPolicy.decision[key]) != digest(newPolicy.decision[key])) fail(`Migration did not preserve decision.${key}`)
+        if(newPolicy.decision.trainingSamples.some(value => value != 0) || newPolicy.decision.familyBias.some(value => value != 0)) fail("Migration did not reset decision-family training state")
+    }
+}
+
+async function migrate(source, seed, shard, output) {
+    const runtime = await openRuntime(seed)
+    try {
+        const model = await normalizedModel(runtime.page, source.model)
+        const repeated = await normalizedModel(runtime.page, source.model)
+        if(digest(model) != digest(repeated)) fail("Schema migration is not deterministic")
+        assertMigrationRetention(source.model, model)
+        validateModel(model, model.version, model.modelFamily)
+        const checkpoint = createCheckpoint({
+            gameVersion: runtime.gameVersion,
+            model,
+            parentCheckpointId: source.checkpointId,
+            mode: "migrate",
+            seed,
+            shard,
+            matches: 0,
+        })
+        assertRuntimeClean(runtime)
+        writeJson(output, checkpoint)
+        return { id: checkpoint.checkpointId, output: path.resolve(output) }
+    } finally {
+        await closeRuntime(runtime)
+    }
 }
 
 async function initialize(seed, shard, output) {
@@ -406,7 +468,7 @@ async function main() {
         return
     }
     const mode = requiredArg(args, "mode")
-    if(!["initialize", "train", "evaluate"].includes(mode)) fail("--mode must be initialize, train, or evaluate")
+    if(!["initialize", "migrate", "train", "evaluate"].includes(mode)) fail("--mode must be initialize, migrate, train, or evaluate")
     const seed = integerArg(args, "seed", { maximum: 0xffffffff })
     const shard = requiredArg(args, "shard")
     const output = requiredArg(args, "output")
@@ -414,6 +476,13 @@ async function main() {
         if(args.checkpoint || args.baseline || args.matches || args["max-frames-per-match"]) fail("Initialize accepts only --mode, --seed, --shard, and --output")
         const result = await initialize(seed, shard, output)
         console.log(`Initialized ${result.id} at ${result.output}`)
+        return
+    }
+    if(mode == "migrate") {
+        if(args.baseline || args.matches || args["max-frames-per-match"]) fail("Migrate accepts only --mode, --checkpoint, --seed, --shard, and --output")
+        const source = validateMigrationSource(readJson(requiredArg(args, "checkpoint")))
+        const result = await migrate(source, seed, shard, output)
+        console.log(`Migrated ${result.id} at ${result.output}`)
         return
     }
     const checkpoint = validateCheckpoint(readJson(requiredArg(args, "checkpoint")))
