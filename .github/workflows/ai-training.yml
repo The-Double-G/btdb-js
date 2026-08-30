@@ -554,12 +554,37 @@ jobs:
             echo "Promotion commit contains unexpected files." >&2
             exit 1
           fi
-          pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$PROMOTION_BRANCH" \
-            --title "Promote AI checkpoint from run $RUN_ID" \
-            --body "This checkpoint passed exact-commit CI and hosted publication. Merge only this checkpoint-only promotion commit.")
+          pr_url=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$PROMOTION_BRANCH" \
+            --state open --json url --jq '.[0].url // ""')
+          if [ -z "$pr_url" ]; then
+            pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$PROMOTION_BRANCH" \
+              --title "Promote AI checkpoint from run $RUN_ID" \
+              --body "This checkpoint passed exact-commit CI and hosted publication. Merge only this checkpoint-only promotion commit.")
+          fi
           pr_number="${pr_url##*/}"
           if ! [[ "$pr_number" =~ ^[0-9]+$ ]]; then
             echo "GitHub returned an invalid promotion pull request URL: $pr_url" >&2
+            exit 1
+          fi
+
+          checks_reported=false
+          for _ in $(seq 1 30); do
+            reported=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json statusCheckRollup --jq '.statusCheckRollup | length')
+            if [ "$reported" -gt 0 ]; then
+              checks_reported=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$checks_reported" != "true" ]; then
+            approval_run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$PROMOTION_BRANCH" \
+              --event pull_request --limit 20 --json databaseId,headSha,conclusion \
+              --jq ".[] | select(.headSha == \"$PROMOTION_SHA\" and .conclusion == \"action_required\") | .databaseId" | head -n 1)
+            if [ -n "$approval_run" ]; then
+              echo "Pull request CI run $approval_run requires repository approval before promotion can finish." >&2
+            else
+              echo "Required checks were not reported for promotion pull request $pr_number." >&2
+            fi
             exit 1
           fi
           gh pr checks "$pr_number" --repo "$GITHUB_REPOSITORY" --required --watch --interval 10
