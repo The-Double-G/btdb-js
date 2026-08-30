@@ -28,6 +28,7 @@ const usage = [
 ].join("\n")
 
 const HOSTED_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+const HOSTED_REQUEST_TIMEOUT_MS = 90000
 const infinityFreeCookies = new Map()
 
 function validateEndpointUrl(value) {
@@ -88,7 +89,7 @@ async function sendHostedRequest(url, options, cookie = "") {
     const response = await fetch(url, {
         ...options,
         redirect: "error",
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(HOSTED_REQUEST_TIMEOUT_MS),
         headers,
     })
     return { response, body: await readResponseBody(response) }
@@ -223,6 +224,7 @@ if(require.main === module) main().catch(error => {
 })
 
 module.exports = {
+    HOSTED_REQUEST_TIMEOUT_MS,
     HOSTED_RESPONSE_MAX_BYTES,
     createHostedReconciliation,
     fetchHostedSnapshot,
