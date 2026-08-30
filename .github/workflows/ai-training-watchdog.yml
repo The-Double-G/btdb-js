@@ -5,6 +5,10 @@ on:
     - cron: "17 * * * *"
     - cron: "2,32,47 * * * *"
   workflow_dispatch:
+    inputs:
+      completed_training_run_id:
+        description: Successful continuous run handing off to the next cycle
+        required: false
   workflow_run:
     workflows: [CI, Distributed AI Training]
     types: [completed]
@@ -31,6 +35,7 @@ jobs:
           SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMPLETED_TRAINING_RUN_ID: ${{ inputs.completed_training_run_id }}
         run: |
           current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
 
@@ -52,10 +57,44 @@ jobs:
             'if ((.parents | length) == 1 and (.files | length) == 1 and .files[0].filename == "training/checkpoints/champion.json") then .parents[0].sha else "" end')
           source_run_id=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
             'try (.commit.message | capture("^Promote AI checkpoint from run (?<id>[0-9]+)").id) catch ""')
+          expected_title="Continuous AI training for $current_sha"
+
+          handoff_run_id=""
+          if [ -n "$COMPLETED_TRAINING_RUN_ID" ]; then
+            if ! [[ "$COMPLETED_TRAINING_RUN_ID" =~ ^[0-9]+$ ]]; then
+              echo "Continuous handoff run ID is invalid." >&2
+              exit 1
+            fi
+            handoff_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_TRAINING_RUN_ID")
+            handoff_sha=$(jq -r '.head_sha' <<<"$handoff_run")
+            if ! jq -e --arg branch "$DEFAULT_BRANCH" --arg title "Continuous AI training for $handoff_sha" \
+              '.path == ".github/workflows/ai-training.yml" and .event == "workflow_dispatch" and .head_branch == $branch and .display_title == $title' \
+              <<<"$handoff_run" >/dev/null; then
+              echo "Continuous handoff does not identify the exact current training run." >&2
+              exit 1
+            fi
+            if [ "$handoff_sha" != "$current_sha" ] && \
+              { [ -z "$checkpoint_parent" ] || [ "$handoff_sha" != "$checkpoint_parent" ] || [ "$COMPLETED_TRAINING_RUN_ID" != "$source_run_id" ]; }; then
+              echo "Continuous handoff run is stale relative to the current default branch." >&2
+              exit 1
+            fi
+            handoff_status=$(jq -r '.status' <<<"$handoff_run")
+            if [ "$handoff_status" != "completed" ]; then
+              active_handoff_jobs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_TRAINING_RUN_ID/jobs" \
+                -f per_page=100 --jq '[.jobs[] | select(.status != "completed" and .name == "handoff-continuous-training")] | length')
+              other_active_jobs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_TRAINING_RUN_ID/jobs" \
+                -f per_page=100 --jq '[.jobs[] | select(.status != "completed" and .name != "handoff-continuous-training")] | length')
+              if [ "$active_handoff_jobs" -ne 1 ] || [ "$other_active_jobs" -ne 0 ]; then
+                echo "Continuous handoff run still has unfinished training or promotion work." >&2
+                exit 1
+              fi
+            fi
+            handoff_run_id="$COMPLETED_TRAINING_RUN_ID"
+          fi
 
           active=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
-            -f branch="$DEFAULT_BRANCH" -f per_page=100 --jq \
-            '[.workflow_runs[] | select(.status != "completed") | select(.display_title == "Distributed AI Training" or (.display_title | startswith("Continuous AI training for ")))]')
+            -f branch="$DEFAULT_BRANCH" -f per_page=100 | jq --arg handoff "$handoff_run_id" \
+            '[.workflow_runs[] | select(.status != "completed") | select(.display_title == "Distributed AI Training" or (.display_title | startswith("Continuous AI training for "))) | select($handoff == "" or (.id | tostring) != $handoff)]')
 
           retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
           stale_retained=""
@@ -86,7 +125,6 @@ jobs:
             fi
           fi
 
-          expected_title="Continuous AI training for $current_sha"
           keep_id=$(jq -r --arg sha "$current_sha" --arg title "$expected_title" \
             '[.[] | select(.head_sha == $sha and .display_title == $title) | .id] | sort | first // empty' <<<"$active")
           cancel_ids=$(jq -r --arg sha "$current_sha" --arg title "$expected_title" --arg keep "$keep_id" \

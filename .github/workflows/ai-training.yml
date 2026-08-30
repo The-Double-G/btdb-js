@@ -602,3 +602,19 @@ jobs:
           elif [ -n "$PROMOTION_BRANCH" ]; then
             echo "Retaining $PROMOTION_BRANCH for hosted/audit reconciliation." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  handoff-continuous-training:
+    needs: [prepare, train, select, evaluate, report, promote, publish-hosted, finalize-promotion]
+    if: ${{ always() && inputs.continuous && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && vars.AI_CONTINUOUS_TRAINING_ENABLED == 'true' && vars.AI_HOSTED_PROMOTION_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Hand off to the exact-SHA watchdog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh workflow run ai-training-watchdog.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+            -f completed_training_run_id="$GITHUB_RUN_ID"
