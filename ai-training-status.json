@@ -1,0 +1,88 @@
+{
+  "kind": "btdb-ai-training-status",
+  "formatVersion": 1,
+  "repository": "The-Double-G/btdb-js",
+  "branch": "main",
+  "publishedAt": "2026-08-31T04:57:19.798Z",
+  "current": {
+    "runId": 33326074285,
+    "runNumber": 14,
+    "runAttempt": 1,
+    "state": "completed",
+    "conclusion": "failure",
+    "headSha": "5d4578e7a478828a7541149870c14a1e99ea49ad",
+    "url": "https://github.com/The-Double-G/btdb-js/actions/runs/33326074285",
+    "createdAt": "2026-08-30T17:44:05.000Z",
+    "startedAt": "2026-08-30T17:44:05.000Z",
+    "updatedAt": "2026-08-30T19:22:20.000Z",
+    "phase": "completed",
+    "projection": {
+      "jobs": {
+        "total": 47,
+        "queued": 0,
+        "inProgress": 0,
+        "completed": 47,
+        "succeeded": 45,
+        "failed": 1,
+        "cancelled": 0,
+        "skipped": 1
+      },
+      "workers": {
+        "training": {
+          "total": 20,
+          "queued": 0,
+          "inProgress": 0,
+          "succeeded": 20,
+          "failed": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "evaluation": {
+          "total": 20,
+          "queued": 0,
+          "inProgress": 0,
+          "succeeded": 20,
+          "failed": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      }
+    }
+  },
+  "latestEvaluation": {
+    "runId": 33326074285,
+    "runNumber": 14,
+    "runAttempt": 1,
+    "aggregateId": "sha256:d389dde3e1dd2b2951a0ef07e07daf7efe6e60a29555140b32d2a04360fe8997",
+    "candidateCheckpointId": "sha256:959488854e43e23c798aabffd1bc71dc0cb8c05306b99469721c17da0627fb13",
+    "baselineCheckpointId": "sha256:0ac0a32e2afb6272acf7b711762f0df668827dab2b52e44620a457f1802ba213",
+    "passed": true,
+    "games": 320,
+    "wins": 224,
+    "losses": 92,
+    "ties": 4,
+    "score": 0.70625,
+    "minimumScore": 0.58,
+    "minimumGames": 160,
+    "minimumBucketScore": 0.48,
+    "worstBucketScore": 0.621875,
+    "survivalRate": 0.7,
+    "minimumSurvivalRate": 0.5,
+    "severeCollapseRate": 0.153125,
+    "maximumSevereCollapseRate": 0.27
+  },
+  "latestPromotion": {
+    "runId": 33326074285,
+    "runNumber": 14,
+    "runAttempt": 1,
+    "snapshotId": "sha256:797c2406e7c39e4aadc71eb5a3bca6d23b3ef6915edaf0a918777e06fc34cd60",
+    "promotionId": "sha256:959488854e43e23c798aabffd1bc71dc0cb8c05306b99469721c17da0627fb13",
+    "duplicate": false,
+    "revision": 33,
+    "modelDigest": "sha256:f06a5fd1654d19b308f3d7cf1d993a293f818febb98f73d2571ae46c4d36e5f0",
+    "contributionEpoch": 3,
+    "championGeneration": 4,
+    "promotedPolicyDigest": "sha256:27877eeb6bcfce006b9d9af22c89f24d115aae2b7fa0089d267f217666f115a4",
+    "candidatePolicyPreserved": false
+  }
+}
