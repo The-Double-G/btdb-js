@@ -2,7 +2,7 @@
 
 ## Hosted Community Learning
 
-The hosted game may submit bounded completed-match contributions when community learning is enabled. These records can include aggregate play-style features, selected loadout signatures, final lives, strategy choices, capped tactical or placement observations, and at most 12 normalized neural decision samples. A decision sample contains bounded state, chosen-candidate, rejected-candidate, and recurrent-memory input vectors, an action-family index, and a factual local outcome; it is not a screen recording or replay.
+The hosted game may submit bounded completed-match contributions when community learning is enabled. These records can include aggregate play-style features, selected loadout signatures, final lives, strategy choices, capped tactical or placement observations, and at most 12 normalized neural decision samples. A decision sample contains bounded state, chosen-candidate, recurrent-memory input, successor-state, and successor-memory vectors plus an action-family index, simulation timestamps, factual interval outcome, and terminal flag; it is not a screen recording or replay.
 
 The game does not intentionally include player names, email addresses, raw keyboard history, or full replay history in a contribution. The server requires an explicit same-host Origin and uses short-lived same-origin tokens, contribution identifiers, deduplication, and per-address rate limits. Rate-limit state can include hashed network-address values and must be treated as private runtime data.
 

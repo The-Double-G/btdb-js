@@ -70,7 +70,7 @@ function policy(value = 0) {
         },
         decision: {
             stateInputSize: 72,
-            candidateInputSize: 40,
+            candidateInputSize: 64,
             stateHiddenSize: 96,
             candidateHiddenSize: 48,
             embeddingSize: 48,
@@ -81,7 +81,7 @@ function policy(value = 0) {
             bState1: vector(96),
             WState2: matrix(48, 96, value),
             bState2: vector(48),
-            WCandidate1: matrix(48, 40, value),
+            WCandidate1: matrix(48, 64, value),
             bCandidate1: vector(48),
             WCandidate2: matrix(48, 48, value),
             bCandidate2: vector(48),
@@ -247,9 +247,9 @@ function fakeResponse(chunks, contentLength = null) {
 }
 
 async function main() {
-    assert.equal(MODEL_SCHEMA_VERSION, 10)
-    assert.equal(MODEL_FAMILY, "shared-recurrent-actor-critic-v2")
-    assert.equal(POLICY_PARAMETER_COUNT, 23752)
+    assert.equal(MODEL_SCHEMA_VERSION, 11)
+    assert.equal(MODEL_FAMILY, "semantic-recurrent-actor-critic-v3")
+    assert.equal(POLICY_PARAMETER_COUNT, 24904)
     assert.equal(TRAINING_MATCHES, 192)
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
@@ -291,11 +291,15 @@ async function main() {
     assert.deepEqual(Object.keys(exactPolicy).sort(), ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"].sort())
     assert.deepEqual(Object.keys(exactPolicy.strategy).sort(), ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"].sort())
     assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"].sort())
-    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 18045 })
+    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 19197 })
 
     const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
     validateCheckpoint(base)
     assert.equal(base.model.totalDecisionSamples, 0)
+    const migrated = createCheckpoint({ gameVersion: "v-test", model: model(), parentCheckpointId: base.checkpointId, mode: "migrate", seed: 2, shard: "schema-migration", matches: 0 })
+    validateCheckpoint(migrated)
+    assert.throws(() => createCheckpoint({ gameVersion: "v-test", model: model(), mode: "migrate", seed: 2, shard: "missing-parent", matches: 0 }), /invalid migrate provenance/)
+    assert.throws(() => createCheckpoint({ gameVersion: "v-test", model: model(), parentCheckpointId: base.checkpointId, mode: "migrate", seed: 2, shard: "played-matches", matches: 1 }), /invalid migrate provenance/)
     const extraModelField = model()
     extraModelField.unexpected = 0
     assert.throws(() => validateModel(extraModelField, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /keys must be exactly/)
@@ -319,7 +323,7 @@ async function main() {
     assert.throws(() => validateModel(coercibleDimensionsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /incompatible hidden dimensions/)
     const oldSchemaModel = model()
     oldSchemaModel.version = 8
-    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 10/)
+    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 11/)
 
     assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
     const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
@@ -592,7 +596,7 @@ async function main() {
     validateEvaluationAggregate(stalePromotion)
     assert.throws(() => validatePromotionBundle(materialized, stalePromotion, base, 0.56, 8), /current baseline/)
 
-    console.log("Distributed AI unit tests passed: schema-10 bundles, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
+    console.log("Distributed AI unit tests passed: schema-11 bundles, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
 }
 
 main().catch(error => {

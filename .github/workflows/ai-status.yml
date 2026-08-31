@@ -1,6 +1,14 @@
 name: Publish AI Training Status
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      training_run_id:
+        description: Exact Distributed AI Training run to reconcile; blank reconciles the newest completed and current runs
+        required: false
+        type: string
   workflow_run:
     workflows: ["Distributed AI Training"]
     types: [requested, in_progress, completed]
@@ -16,7 +24,7 @@ concurrency:
 
 jobs:
   publish:
-    if: ${{ github.event.workflow_run.name == 'Distributed AI Training' && github.event.workflow_run.path == '.github/workflows/ai-training.yml' && github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository }}
+    if: ${{ github.event.repository.default_branch == 'main' && ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/ai-training.yml' && github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -27,4 +35,5 @@ jobs:
       - name: Publish validated trainer status
         env:
           GH_TOKEN: ${{ github.token }}
+          TRAINING_RUN_ID: ${{ inputs.training_run_id }}
         run: node tools/distributed-ai/training-status.js

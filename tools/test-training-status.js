@@ -9,12 +9,18 @@ const {
     validateHostedPromotionReceipt,
 } = require("./distributed-ai/common")
 const {
+    GitHubApi,
+    STATUS_BRANCH,
     STATUS_MAX_BYTES,
+    STATUS_PATH,
     artifactJsonFromZip,
     encodeStatus,
     projectJobs,
     publishTrainingStatus,
+    reconcileTrainingStatus,
+    sourceStateForStatus,
     validateSourceEvent,
+    validateSourceRun,
     validateStatus,
 } = require("./distributed-ai/training-status")
 
@@ -55,6 +61,24 @@ function workflowEvent({ action, runId, runNumber, runAttempt = 1, conclusion = 
             updated_at: timestamp,
         },
     }
+}
+
+function workflowIdentity(overrides = {}) {
+    return {
+        id: 55,
+        name: "Distributed AI Training",
+        path: ".github/workflows/ai-training.yml",
+        ...overrides,
+    }
+}
+
+function restRun({ status, runId, runNumber, runAttempt = 1, conclusion = null, minute = 0, overrides = {} }) {
+    const action = status == "completed" ? "completed" : status == "in_progress" ? "in_progress" : "requested"
+    const run = workflowEvent({ action, runId, runNumber, runAttempt, conclusion, minute }).workflow_run
+    run.name = `Continuous AI training for ${run.head_sha}`
+    run.status = status
+    run.conclusion = status == "completed" ? conclusion || "success" : null
+    return { ...run, ...overrides }
 }
 
 function evaluation(runNumber) {
@@ -183,6 +207,83 @@ class FakeApi {
     }
 }
 
+class ReconcileApi extends FakeApi {
+    constructor(runs) {
+        super()
+        this.workflow = workflowIdentity()
+        this.runs = new Map(runs.map(run => [run.id, structuredClone(run)]))
+        this.jobsByRun = new Map()
+        this.artifactsByRun = new Map()
+        this.writeOrder = []
+    }
+
+    async getTrainingWorkflow() {
+        return structuredClone(this.workflow)
+    }
+
+    async getTrainingRun(runId) {
+        const run = this.runs.get(runId)
+        if(run === undefined) throw new Error("missing training run")
+        return structuredClone(run)
+    }
+
+    async listTrainingRuns(status = null) {
+        return [...this.runs.values()]
+            .filter(run => status === null || run.status == status)
+            .sort((left, right) => right.run_number - left.run_number || right.run_attempt - left.run_attempt)
+            .map(run => run.id)
+    }
+
+    async writeStatus(status) {
+        this.writeOrder.push(status.current.runNumber)
+        await super.writeStatus(status)
+    }
+
+    async listJobs(source) {
+        return structuredClone(this.jobsByRun.get(source.runId) || [])
+    }
+
+    async listArtifacts(source) {
+        return structuredClone(this.artifactsByRun.get(source.runId) || [])
+    }
+
+    setRunEvidence(source, aggregate, promotion) {
+        const artifacts = [artifact(source.runId * 10, "ai-training-bundle", source)]
+        this.files.set(`${source.runId * 10}:evaluation.json`, aggregate)
+        if(promotion !== undefined) {
+            artifacts.push(artifact(source.runId * 10 + 1, "ai-hosted-promotion-receipt", source))
+            this.files.set(`${source.runId * 10 + 1}:hosted-promotion-receipt.json`, promotion)
+        }
+        this.artifactsByRun.set(source.runId, artifacts)
+    }
+}
+
+function jsonResponse(status, value) {
+    const bytes = Buffer.from(JSON.stringify(value))
+    return {
+        status,
+        ok: status >= 200 && status < 300,
+        headers: { get(name) { return name.toLowerCase() == "content-length" ? String(bytes.length) : null } },
+        body: null,
+        async arrayBuffer() {
+            return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+        },
+    }
+}
+
+function queuedFetch(responses, requests) {
+    return async (url, options) => {
+        requests.push({
+            url,
+            method: options.method,
+            body: options.body === undefined ? null : JSON.parse(options.body),
+        })
+        const response = responses.shift()
+        if(response === undefined) throw new Error(`Unexpected request: ${options.method} ${url}`)
+        return jsonResponse(response.status, response.value)
+    }
+}
+
 const CRC_TABLE = Array.from({ length: 256 }, (_, value) => {
     let crc = value
     for(let bit = 0; bit < 8; bit++) crc = crc & 1 ? 0xedb88320 ^ crc >>> 1 : crc >>> 1
@@ -234,6 +335,25 @@ async function publish(api, payload, instant) {
 }
 
 async function main() {
+    const identity = workflowIdentity()
+    const dynamicQueued = restRun({ status: "queued", runId: 90, runNumber: 9 })
+    assert.equal(validateSourceRun(dynamicQueued, identity, REPOSITORY, REPOSITORY_ID).state, "requested")
+    for(const [status, state] of [["queued", "requested"], ["requested", "requested"], ["pending", "requested"], ["waiting", "requested"], ["in_progress", "in_progress"], ["completed", "completed"]]) {
+        assert.equal(sourceStateForStatus(status), state)
+        const mapped = validateSourceRun(restRun({ status, runId: 91, runNumber: 9 }), identity, REPOSITORY, REPOSITORY_ID)
+        assert.equal(mapped.state, state)
+    }
+    assert.throws(() => sourceStateForStatus("stale_status"), /unsupported status/)
+    assert.throws(() => validateSourceRun(dynamicQueued, workflowIdentity({ id: 56 }), REPOSITORY, REPOSITORY_ID), /trusted workflow identity/)
+    assert.throws(() => validateSourceRun(dynamicQueued, workflowIdentity({ path: ".github/workflows/other.yml" }), REPOSITORY, REPOSITORY_ID), /trusted training workflow/)
+    assert.throws(() => validateSourceRun({ ...dynamicQueued, head_branch: "feature" }, identity, REPOSITORY, REPOSITORY_ID), /head_branch/)
+    assert.throws(() => validateSourceRun({ ...dynamicQueued, head_repository: { id: REPOSITORY_ID + 1, full_name: REPOSITORY } }, identity, REPOSITORY, REPOSITORY_ID), /did not originate/)
+    assert.throws(() => validateSourceRun({ ...dynamicQueued, repository: { id: REPOSITORY_ID, full_name: "other/repository" } }, identity, REPOSITORY, REPOSITORY_ID), /repository identity/)
+
+    const dynamicWebhook = workflowEvent({ action: "requested", runId: 92, runNumber: 9 })
+    dynamicWebhook.workflow_run.name = `Continuous AI training for ${dynamicWebhook.workflow_run.head_sha}`
+    assert.equal(validateSourceEvent(dynamicWebhook, REPOSITORY).runId, 92)
+
     const api = new FakeApi()
     const requested = workflowEvent({ action: "requested", runId: 100, runNumber: 10, minute: 2 })
     let result = await publish(api, requested, "2026-08-29T01:00:00Z")
@@ -368,6 +488,83 @@ async function main() {
     assert.equal(api.status.latestEvaluation.runNumber, 17)
     assert.equal(api.status.latestPromotion.runNumber, 17)
 
+    const completedRest = restRun({ status: "completed", runId: 500, runNumber: 50, minute: 50 })
+    const activeRest = restRun({ status: "in_progress", runId: 501, runNumber: 51, minute: 51 })
+    const completedRestSource = validateSourceRun(completedRest, identity, REPOSITORY, REPOSITORY_ID)
+    const activeRestSource = validateSourceRun(activeRest, identity, REPOSITORY, REPOSITORY_ID)
+    const reconcileApi = new ReconcileApi([activeRest, completedRest])
+    const aggregate50 = evaluation(50)
+    reconcileApi.setRunEvidence(completedRestSource, aggregate50, receipt(aggregate50, 50))
+    reconcileApi.jobsByRun.set(activeRestSource.runId, [
+        job(activeRestSource, "prepare", "completed", "success"),
+        job(activeRestSource, "train (0)", "in_progress"),
+    ])
+    const reconcilePayload = { repository: { id: REPOSITORY_ID, full_name: REPOSITORY, default_branch: "main" } }
+    let reconciliation = await reconcileTrainingStatus({
+        payload: reconcilePayload,
+        eventName: "schedule",
+        trustedRef: "refs/heads/main",
+        expectedRepository: REPOSITORY,
+        api: reconcileApi,
+        now: () => new Date("2026-08-29T02:00:00Z"),
+        logger,
+    })
+    assert.equal(reconciliation.changed, true)
+    assert.deepEqual(reconcileApi.writeOrder, [50, 51])
+    assert.equal(reconcileApi.status.current.runNumber, 51)
+    assert.equal(reconcileApi.status.current.state, "in_progress")
+    assert.equal(reconcileApi.status.latestEvaluation.runNumber, 50)
+    assert.equal(reconcileApi.status.latestPromotion.runNumber, 50)
+
+    reconciliation = await reconcileTrainingStatus({
+        payload: reconcilePayload,
+        eventName: "workflow_dispatch",
+        trustedRef: "refs/heads/main",
+        expectedRepository: REPOSITORY,
+        api: reconcileApi,
+        now: () => new Date("2026-08-29T02:05:00Z"),
+        logger,
+    })
+    assert.equal(reconciliation.changed, false)
+    assert.equal(reconcileApi.writes, 2)
+    reconciliation = await reconcileTrainingStatus({
+        payload: reconcilePayload,
+        eventName: "workflow_dispatch",
+        trainingRunId: "501",
+        trustedRef: "refs/heads/main",
+        expectedRepository: REPOSITORY,
+        api: reconcileApi,
+        logger,
+    })
+    assert.equal(reconciliation.results.length, 1)
+    const reconcileWebhook = workflowEvent({ action: "in_progress", runId: 501, runNumber: 51, minute: 51 })
+    reconcileWebhook.workflow_run.name = `Continuous AI training for ${reconcileWebhook.workflow_run.head_sha}`
+    reconciliation = await reconcileTrainingStatus({
+        payload: reconcileWebhook,
+        eventName: "workflow_run",
+        trustedRef: "refs/heads/main",
+        expectedRepository: REPOSITORY,
+        api: reconcileApi,
+        logger,
+    })
+    assert.equal(reconciliation.results.length, 1)
+    assert.equal(reconciliation.status.current.runNumber, 51)
+    await assert.rejects(reconcileTrainingStatus({
+        payload: reconcilePayload,
+        eventName: "workflow_dispatch",
+        trainingRunId: "501x",
+        trustedRef: "refs/heads/main",
+        expectedRepository: REPOSITORY,
+        api: reconcileApi,
+    }), /positive decimal integer/)
+    await assert.rejects(reconcileTrainingStatus({
+        payload: reconcilePayload,
+        eventName: "schedule",
+        trustedRef: "refs/heads/feature",
+        expectedRepository: REPOSITORY,
+        api: reconcileApi,
+    }), /must run from refs\/heads\/main/)
+
     const wrongPath = workflowEvent({ action: "requested", runId: 200, runNumber: 20 })
     wrongPath.workflow_run.path = ".github/workflows/not-training.yml"
     assert.throws(() => validateSourceEvent(wrongPath, REPOSITORY), /trusted training workflow/)
@@ -390,6 +587,56 @@ async function main() {
     const projectedSource = sourceFor(workflowEvent({ action: "in_progress", runId: 400, runNumber: 40 }))
     const unavailableProjection = projectJobs(null, projectedSource)
     assert.deepEqual(unavailableProjection, { phase: "running", projection: null })
+    const handoffProjection = projectJobs([job(projectedSource, "handoff-continuous-training", "in_progress")], projectedSource)
+    assert.equal(handoffProjection.phase, "continuing")
+
+    const statusBranchRef = { ref: `refs/heads/${STATUS_BRANCH}`, object: { type: "commit", sha: headSha(901) } }
+    const mainBranchRef = { ref: "refs/heads/main", object: { type: "commit", sha: headSha(900) } }
+    const bootstrapRequests = []
+    const bootstrapResponses = [
+        { status: 404, value: { message: "Not Found" } },
+        { status: 200, value: mainBranchRef },
+        { status: 201, value: statusBranchRef },
+        { status: 201, value: { content: { path: STATUS_PATH } } },
+    ]
+    const bootstrapApi = new GitHubApi(REPOSITORY, "test-token", queuedFetch(bootstrapResponses, bootstrapRequests))
+    await bootstrapApi.writeStatus(reconcileApi.status, null)
+    assert.equal(bootstrapResponses.length, 0)
+    assert.deepEqual(bootstrapRequests.map(request => `${request.method} ${new URL(request.url).pathname}`), [
+        `GET /repos/${REPOSITORY}/git/ref/heads/${STATUS_BRANCH}`,
+        `GET /repos/${REPOSITORY}/git/ref/heads/main`,
+        `POST /repos/${REPOSITORY}/git/refs`,
+        `PUT /repos/${REPOSITORY}/contents/${STATUS_PATH}`,
+    ])
+    assert.deepEqual(bootstrapRequests[2].body, { ref: `refs/heads/${STATUS_BRANCH}`, sha: mainBranchRef.object.sha })
+    assert.equal(bootstrapRequests[3].body.branch, STATUS_BRANCH)
+    assert.equal(Object.hasOwn(bootstrapRequests[3].body, "sha"), false)
+    assert.equal(bootstrapRequests.some(request => request.method == "PUT" && request.body.branch == "main"), false)
+
+    const raceRequests = []
+    const raceResponses = [
+        { status: 404, value: { message: "Not Found" } },
+        { status: 200, value: mainBranchRef },
+        { status: 422, value: { message: "Reference already exists" } },
+        { status: 200, value: statusBranchRef },
+        { status: 201, value: { content: { path: STATUS_PATH } } },
+    ]
+    const raceApi = new GitHubApi(REPOSITORY, "test-token", queuedFetch(raceResponses, raceRequests))
+    await raceApi.writeStatus(reconcileApi.status, null)
+    assert.equal(raceResponses.length, 0)
+    assert.equal(raceRequests[3].method, "GET")
+    assert.match(raceRequests[3].url, /\/git\/ref\/heads\/ai-status$/)
+    assert.equal(raceRequests.at(-1).body.branch, STATUS_BRANCH)
+
+    const missingRaceResponses = [
+        { status: 404, value: { message: "Not Found" } },
+        { status: 200, value: mainBranchRef },
+        { status: 422, value: { message: "Invalid reference" } },
+        { status: 404, value: { message: "Not Found" } },
+    ]
+    const missingRaceApi = new GitHubApi(REPOSITORY, "test-token", queuedFetch(missingRaceResponses, []))
+    await assert.rejects(missingRaceApi.writeStatus(reconcileApi.status, null), error => error instanceof Error && error.status == 422)
+    assert.equal(missingRaceResponses.length, 0)
 
     const zippedReceipt = storedZip("nested/hosted-promotion-receipt.json", receipt15)
     assert.deepEqual(artifactJsonFromZip(zippedReceipt, "hosted-promotion-receipt.json"), receipt15)
@@ -397,7 +644,7 @@ async function main() {
     corrupted[35] ^= 1
     assert.throws(() => artifactJsonFromZip(corrupted, "hosted-promotion-receipt.json"), /integrity|JSON|filename changed/)
 
-    console.log("Training status unit tests passed: lifecycle, stale attempts, strict schemas, missing artifacts, job projection, and promotion receipts are safe.")
+    console.log("Training status unit tests passed: webhook and REST lifecycle, reconciliation, fixed branch bootstrap, stale attempts, schemas, projections, and artifacts are safe.")
 }
 
 main().catch(error => {

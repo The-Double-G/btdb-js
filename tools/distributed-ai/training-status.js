@@ -196,24 +196,75 @@ function encodeStatus(status) {
     return encoded
 }
 
-function validateSourceEvent(payload, expectedRepository) {
+function validateEventRepository(payload, expectedRepository) {
     assertObject(payload, "event")
     assertRepository(expectedRepository, "expected repository")
-    if(!STATES.includes(payload.action)) fail("event.action is not a supported workflow_run lifecycle action")
     assertObject(payload.repository, "event.repository")
     if(payload.repository.full_name !== expectedRepository) fail("event.repository does not match GITHUB_REPOSITORY")
     assertInteger(payload.repository.id, "event.repository.id", 1)
     if(payload.repository.default_branch !== SOURCE_BRANCH) fail(`event.repository.default_branch must be ${SOURCE_BRANCH}`)
+    return payload.repository.id
+}
+
+function sourceStateForStatus(status) {
+    if(["queued", "requested", "pending", "waiting"].includes(status)) return "requested"
+    if(status == "in_progress") return "in_progress"
+    if(status == "completed") return "completed"
+    fail("training run has an unsupported status")
+}
+
+function validateSourceRun(run, workflow, expectedRepository, expectedRepositoryId) {
+    assertRepository(expectedRepository, "expected repository")
+    assertInteger(expectedRepositoryId, "expected repository ID", 1)
+    assertObject(workflow, "training workflow")
+    assertInteger(workflow.id, "training workflow.id", 1)
+    if(workflow.name !== SOURCE_WORKFLOW_NAME || workflow.path !== SOURCE_WORKFLOW_PATH) fail("GitHub API did not return the trusted training workflow")
+    assertObject(run, "training run")
+    assertInteger(run.workflow_id, "training run.workflow_id", 1)
+    if(run.workflow_id !== workflow.id || run.path !== SOURCE_WORKFLOW_PATH) fail("training run does not use the trusted workflow identity")
+    if(run.event !== "workflow_dispatch") fail("training run has an unsupported trigger")
+    if(run.head_branch !== SOURCE_BRANCH) fail(`training run.head_branch must be ${SOURCE_BRANCH}`)
+    assertObject(run.head_repository, "training run.head_repository")
+    if(run.head_repository.id !== expectedRepositoryId || run.head_repository.full_name !== expectedRepository) fail("training run did not originate in this repository")
+    assertObject(run.repository, "training run.repository")
+    if(run.repository.id !== expectedRepositoryId || run.repository.full_name !== expectedRepository) fail("training run repository identity is inconsistent")
+    assertInteger(run.id, "training run.id", 1)
+    assertInteger(run.run_number, "training run.run_number", 1)
+    assertInteger(run.run_attempt, "training run.run_attempt", 1)
+    assertHeadSha(run.head_sha, "training run.head_sha")
+    const state = sourceStateForStatus(run.status)
+    if(state == "completed") {
+        if(!CONCLUSIONS.includes(run.conclusion)) fail("completed training run has an unsupported conclusion")
+    } else if(run.conclusion !== null) {
+        fail("incomplete training run must not have a conclusion")
+    }
+    return {
+        repository: expectedRepository,
+        runId: run.id,
+        runNumber: run.run_number,
+        runAttempt: run.run_attempt,
+        state,
+        conclusion: state == "completed" ? run.conclusion : null,
+        headSha: run.head_sha,
+        createdAt: normalizeTimestamp(run.created_at, "training run.created_at"),
+        startedAt: normalizeTimestamp(run.run_started_at, "training run.run_started_at", true),
+        updatedAt: normalizeTimestamp(run.updated_at, "training run.updated_at"),
+    }
+}
+
+function validateSourceEvent(payload, expectedRepository) {
+    const repositoryId = validateEventRepository(payload, expectedRepository)
+    if(!STATES.includes(payload.action)) fail("event.action is not a supported workflow_run lifecycle action")
     assertObject(payload.workflow_run, "event.workflow_run")
     const run = payload.workflow_run
-    if(run.name !== SOURCE_WORKFLOW_NAME || run.path !== SOURCE_WORKFLOW_PATH) fail("workflow_run is not the trusted training workflow")
+    if(run.path !== SOURCE_WORKFLOW_PATH) fail("workflow_run is not the trusted training workflow")
     if(run.event !== "workflow_dispatch") fail("workflow_run has an unsupported trigger")
     if(run.head_branch !== SOURCE_BRANCH) fail(`workflow_run.head_branch must be ${SOURCE_BRANCH}`)
     assertObject(run.head_repository, "event.workflow_run.head_repository")
-    if(run.head_repository.id !== payload.repository.id || run.head_repository.full_name !== expectedRepository) fail("workflow_run did not originate in this repository")
+    if(run.head_repository.id !== repositoryId || run.head_repository.full_name !== expectedRepository) fail("workflow_run did not originate in this repository")
     if(run.repository != null) {
         assertObject(run.repository, "event.workflow_run.repository")
-        if(run.repository.id !== payload.repository.id || run.repository.full_name !== expectedRepository) fail("workflow_run repository identity is inconsistent")
+        if(run.repository.id !== repositoryId || run.repository.full_name !== expectedRepository) fail("workflow_run repository identity is inconsistent")
     }
     assertInteger(run.workflow_id, "event.workflow_run.workflow_id", 1)
     assertInteger(run.id, "event.workflow_run.id", 1)
@@ -302,7 +353,7 @@ function jobKind(name) {
     if(/^report(?:\s|\(|$)/.test(normalized)) return "report"
     if(/^promote(?:\s|\(|$)/.test(normalized) || /^publish-hosted(?:\s|\(|$)/.test(normalized)) return "promote"
     if(/^finalize-promotion(?:\s|\(|$)/.test(normalized)) return "finalize"
-    if(/^continue(?:\s|\(|$)/.test(normalized)) return "continue"
+    if(/^continue(?:\s|\(|$)/.test(normalized) || /^handoff-continuous-training(?:\s|\(|$)/.test(normalized)) return "continue"
     return "unknown"
 }
 
@@ -641,6 +692,15 @@ function artifactJsonFromZip(archive, fileName) {
     return parseJsonBytes(decoded, fileName)
 }
 
+function validateBranchRef(response, branch, label) {
+    assertObject(response, label)
+    if(response.ref !== `refs/heads/${branch}`) fail(`${label} does not identify refs/heads/${branch}`)
+    assertObject(response.object, `${label}.object`)
+    if(response.object.type !== "commit") fail(`${label}.object must identify a commit`)
+    assertHeadSha(response.object.sha, `${label}.object.sha`)
+    return response.object.sha
+}
+
 class GitHubApi {
     constructor(repository, token, fetchImplementation = global.fetch) {
         assertRepository(repository, "repository")
@@ -680,6 +740,55 @@ class GitHubApi {
         return bytes === null ? null : parseJsonBytes(bytes, "GitHub API response")
     }
 
+    async getTrainingWorkflow() {
+        return this.requestJson("/actions/workflows/ai-training.yml")
+    }
+
+    async getTrainingRun(runId) {
+        assertInteger(runId, "training run ID", 1)
+        return this.requestJson(`/actions/runs/${runId}`)
+    }
+
+    async listTrainingRuns(status = null) {
+        if(status !== null && status !== "completed") fail("training run list status is unsupported")
+        const suffix = status === null ? "" : `&status=${status}`
+        const response = await this.requestJson(`/actions/workflows/ai-training.yml/runs?branch=${SOURCE_BRANCH}&event=workflow_dispatch&per_page=100${suffix}`)
+        assertObject(response, "training runs API response")
+        assertInteger(response.total_count, "training runs API response.total_count")
+        if(!Array.isArray(response.workflow_runs) || response.workflow_runs.length > 100) fail("training runs API response is malformed")
+        const runs = response.workflow_runs.map((run, index) => {
+            const label = `training runs API response.workflow_runs[${index}]`
+            assertObject(run, label)
+            assertInteger(run.id, `${label}.id`, 1)
+            assertInteger(run.run_number, `${label}.run_number`, 1)
+            assertInteger(run.run_attempt, `${label}.run_attempt`, 1)
+            return { id: run.id, runNumber: run.run_number, runAttempt: run.run_attempt }
+        })
+        runs.sort((left, right) => right.runNumber - left.runNumber || right.runAttempt - left.runAttempt || right.id - left.id)
+        return runs.map(run => run.id)
+    }
+
+    async readBranchRef(branch, notFoundIsNull = false) {
+        const response = await this.requestJson(`/git/ref/heads/${branch}`, { notFoundIsNull })
+        if(response === null) return null
+        return { response, sha: validateBranchRef(response, branch, `${branch} branch ref`) }
+    }
+
+    async ensureStatusBranch() {
+        if(await this.readBranchRef(STATUS_BRANCH, true) !== null) return
+        const source = await this.readBranchRef(SOURCE_BRANCH)
+        try {
+            const created = await this.requestJson("/git/refs", {
+                method: "POST",
+                body: { ref: `refs/heads/${STATUS_BRANCH}`, sha: source.sha },
+            })
+            validateBranchRef(created, STATUS_BRANCH, "created status branch ref")
+        } catch(error) {
+            if(!(error instanceof ApiError) || error.status != 422) throw error
+            if(await this.readBranchRef(STATUS_BRANCH, true) === null) throw error
+        }
+    }
+
     async readStatus() {
         const response = await this.requestJson(`/contents/${STATUS_PATH}?ref=${STATUS_BRANCH}`, { notFoundIsNull: true, maximum: 128 * 1024 })
         if(response === null) return null
@@ -700,6 +809,7 @@ class GitHubApi {
 
     async writeStatus(status, sha) {
         const encoded = encodeStatus(status)
+        if(sha == null) await this.ensureStatusBranch()
         const body = {
             message: `Publish AI training status for run ${status.current.runId} attempt ${status.current.runAttempt}`,
             content: Buffer.from(encoded).toString("base64"),
@@ -749,8 +859,7 @@ class GitHubApi {
     }
 }
 
-async function publishTrainingStatus({ payload, expectedRepository, api, now = () => new Date(), logger = console }) {
-    const source = validateSourceEvent(payload, expectedRepository)
+async function publishSourceStatus({ source, api, now = () => new Date(), logger = console }) {
     let jobs
     let evidence
     for(let attempt = 0; attempt < 3; attempt++) {
@@ -773,6 +882,61 @@ async function publishTrainingStatus({ payload, expectedRepository, api, now = (
     fail("Unable to publish training status")
 }
 
+async function publishTrainingStatus({ payload, expectedRepository, api, now = () => new Date(), logger = console }) {
+    const source = validateSourceEvent(payload, expectedRepository)
+    return publishSourceStatus({ source, api, now, logger })
+}
+
+function parseTrainingRunId(value) {
+    if(value == null || value === "") return null
+    if(typeof value != "string" || !/^[1-9][0-9]*$/.test(value)) fail("training_run_id must be a positive decimal integer")
+    const runId = Number(value)
+    assertInteger(runId, "training_run_id", 1)
+    return runId
+}
+
+async function reconcileTrainingStatus({
+    payload,
+    eventName,
+    trainingRunId = "",
+    trustedRef,
+    expectedRepository,
+    api,
+    now = () => new Date(),
+    logger = console,
+}) {
+    const repositoryId = validateEventRepository(payload, expectedRepository)
+    const requestedRunId = parseTrainingRunId(trainingRunId)
+    let runIds
+    if(eventName == "workflow_run") {
+        if(requestedRunId !== null) fail("workflow_run reconciliation cannot override the source run ID")
+        runIds = [validateSourceEvent(payload, expectedRepository).runId]
+    } else if(eventName == "workflow_dispatch" || eventName == "schedule") {
+        if(trustedRef !== `refs/heads/${SOURCE_BRANCH}`) fail(`reconciliation must run from refs/heads/${SOURCE_BRANCH}`)
+        if(requestedRunId !== null) {
+            runIds = [requestedRunId]
+        } else {
+            const completed = await api.listTrainingRuns("completed")
+            const overall = await api.listTrainingRuns()
+            runIds = [completed[0], overall[0]].filter(runId => runId !== undefined)
+        }
+    } else {
+        fail("workflow event cannot publish training status")
+    }
+    runIds = [...new Set(runIds)]
+    if(runIds.length == 0) return { changed: false, reason: "no-runs", status: null, results: [] }
+    const workflow = await api.getTrainingWorkflow()
+    const results = []
+    for(const runId of runIds) {
+        const run = await api.getTrainingRun(runId)
+        const source = validateSourceRun(run, workflow, expectedRepository, repositoryId)
+        results.push(await publishSourceStatus({ source, api, now, logger }))
+    }
+    const changed = results.some(result => result.changed)
+    const last = results.at(-1)
+    return { changed, reason: changed ? "published" : last.reason, status: last.status, results }
+}
+
 function readEvent(filePath) {
     const stat = fs.statSync(filePath)
     if(!stat.isFile() || stat.size > EVENT_MAX_BYTES) fail(`Workflow event must be a regular file no larger than ${EVENT_MAX_BYTES} bytes`)
@@ -783,10 +947,21 @@ async function main() {
     const eventPath = process.env.GITHUB_EVENT_PATH
     const repository = process.env.GITHUB_REPOSITORY
     const token = process.env.GH_TOKEN
+    const eventName = process.env.GITHUB_EVENT_NAME
+    const trustedRef = process.env.GITHUB_REF
     assertString(eventPath, "GITHUB_EVENT_PATH", 4096)
+    assertString(eventName, "GITHUB_EVENT_NAME", 64)
+    assertString(trustedRef, "GITHUB_REF", 256)
     const payload = readEvent(eventPath)
     const api = new GitHubApi(repository, token)
-    const result = await publishTrainingStatus({ payload, expectedRepository: repository, api })
+    const result = await reconcileTrainingStatus({
+        payload,
+        eventName,
+        trainingRunId: process.env.TRAINING_RUN_ID || "",
+        trustedRef,
+        expectedRepository: repository,
+        api,
+    })
     console.log(result.changed ? `Published ${STATUS_PATH} on ${STATUS_BRANCH}.` : `Status publication skipped (${result.reason}).`)
 }
 
@@ -816,7 +991,11 @@ module.exports = {
     projectEvaluation,
     projectJobs,
     projectPromotion,
+    publishSourceStatus,
     publishTrainingStatus,
+    reconcileTrainingStatus,
+    sourceStateForStatus,
     validateSourceEvent,
+    validateSourceRun,
     validateStatus,
 }

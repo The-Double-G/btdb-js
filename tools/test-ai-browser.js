@@ -602,29 +602,28 @@ async function main() {
                 populationSize: migratedModel.populationPolicies.length,
             }
 
-            const schema9Policy = cloneAIPolicy(migratedModel.policy)
-            schema9Policy.decision.stateInputSize = 48
-            schema9Policy.decision.candidateInputSize = 32
-            schema9Policy.decision.WState1 = schema9Policy.decision.WState1.map(row => row.slice(0, 48))
-            schema9Policy.decision.WCandidate1 = schema9Policy.decision.WCandidate1.map(row => row.slice(0, 32))
-            for(const key of ["memorySize", "survivalClassCount", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival"]) delete schema9Policy.decision[key]
-            const schema9State = Array.from({ length: 48 }, (_, index) => (index % 9 - 4) / 4)
-            const schema9Candidate = Array.from({ length: 32 }, (_, index) => (index % 7 - 3) / 3)
-            const schema9StateEmbedding = aiDecisionEncode(schema9State, schema9Policy.decision.WState1, schema9Policy.decision.bState1, schema9Policy.decision.WState2, schema9Policy.decision.bState2).embedding
-            const schema9CandidateEmbedding = aiDecisionEncode(schema9Candidate, schema9Policy.decision.WCandidate1, schema9Policy.decision.bCandidate1, schema9Policy.decision.WCandidate2, schema9Policy.decision.bCandidate2).embedding
-            const schema9Dot = schema9StateEmbedding.reduce((sum, value, index) => sum + value * schema9CandidateEmbedding[index], 0)
-            const schema9StateNorm = Math.sqrt(schema9StateEmbedding.reduce((sum, value) => sum + value * value, 0) + 1e-6)
-            const schema9CandidateNorm = Math.sqrt(schema9CandidateEmbedding.reduce((sum, value) => sum + value * value, 0) + 1e-6)
-            const schema9Score = Math.tanh(schema9Dot / (schema9StateNorm * schema9CandidateNorm) + schema9Policy.decision.familyBias[AI_DECISION_FAMILY.upgrade])
-            const schema10Policy = migrateAIPolicy(schema9Policy)
-            const schema10Forward = aiDecisionForward(schema9State.concat(Array(24).fill(0)), schema9Candidate.concat(Array(8).fill(0)), AI_DECISION_FAMILY.upgrade, Array(AI_DECISION_MEMORY_SIZE).fill(0), schema10Policy)
-            const schema9Migration = {
-                valid: isValidAIPolicy(schema10Policy),
-                scoreDelta: Math.abs(schema10Forward.score - schema9Score),
-                stateColumnsZero: schema10Policy.decision.WState1.every(row => row.slice(48).every(value => value == 0)),
-                candidateColumnsZero: schema10Policy.decision.WCandidate1.every(row => row.slice(32).every(value => value == 0)),
-                memoryProjectionZero: schema10Policy.decision.WMemoryToState.every(row => row.every(value => value == 0)),
-                headsZero: schema10Policy.decision.WValue.every(value => value == 0) && schema10Policy.decision.WSurvival.every(row => row.every(value => value == 0)),
+            const schema10Policy = cloneAIPolicy(migratedModel.policy)
+            schema10Policy.decision.candidateInputSize = 40
+            schema10Policy.decision.WCandidate1 = schema10Policy.decision.WCandidate1.map(row => row.slice(0, 40))
+            schema10Policy.decision.WState1[0][0] = 0.123
+            schema10Policy.decision.WStateToMemory[0][0] = -0.234
+            schema10Policy.decision.WValue[0] = 0.345
+            schema10Policy.decision.WCandidate1[0][0] = -0.456
+            schema10Policy.decision.WCandidate2[0][0] = 0.567
+            schema10Policy.decision.familyBias[AI_DECISION_FAMILY.upgrade] = 0.25
+            schema10Policy.decision.trainingSamples[AI_DECISION_FAMILY.upgrade] = 7
+            const schema11Policy = migrateAIPolicy(schema10Policy)
+            const repeatedSchema11Policy = migrateAIPolicy(schema10Policy)
+            const defaultDecision = createDefaultAIDecisionPolicy()
+            const schema10Migration = {
+                valid: isValidAIPolicy(schema11Policy),
+                deterministic: JSON.stringify(schema11Policy) == JSON.stringify(repeatedSchema11Policy),
+                strategyPreserved: JSON.stringify(schema11Policy.strategy) == JSON.stringify(schema10Policy.strategy),
+                statePreserved: JSON.stringify(schema11Policy.decision.WState1) == JSON.stringify(schema10Policy.decision.WState1),
+                recurrentPreserved: JSON.stringify(schema11Policy.decision.WStateToMemory) == JSON.stringify(schema10Policy.decision.WStateToMemory),
+                valuePreserved: JSON.stringify(schema11Policy.decision.WValue) == JSON.stringify(schema10Policy.decision.WValue),
+                candidateReset: JSON.stringify(schema11Policy.decision.WCandidate1) == JSON.stringify(defaultDecision.WCandidate1) && JSON.stringify(schema11Policy.decision.WCandidate2) == JSON.stringify(defaultDecision.WCandidate2),
+                familyTrainingReset: schema11Policy.decision.trainingSamples.every(value => value == 0) && schema11Policy.decision.familyBias.every((value, index) => value == defaultDecision.familyBias[index]),
             }
 
             const decisionPolicy = cloneAIPolicy(migratedModel.policy)
@@ -661,6 +660,11 @@ async function main() {
                 valueChanged: decisionAfterForward.value != decisionBeforeForward.value,
                 survivalChanged: decisionPolicy.decision.bSurvival.some(value => value != 0),
             }
+            const rejectedVariantA = cloneAIPolicy(migratedModel.policy)
+            const rejectedVariantB = cloneAIPolicy(migratedModel.policy)
+            trainAIDecision({ familyIndex: AI_DECISION_FAMILY.upgrade, stateFeatures: decisionState, chosenCandidateFeatures: decisionCandidate, rejectedCandidateFeatures: rejectedCandidate, memoryIn: decisionMemory }, decisionTarget, 3, rejectedVariantA)
+            trainAIDecision({ familyIndex: AI_DECISION_FAMILY.upgrade, stateFeatures: decisionState, chosenCandidateFeatures: decisionCandidate, rejectedCandidateFeatures: rejectedCandidate.map(value => -value), memoryIn: decisionMemory }, decisionTarget, 3, rejectedVariantB)
+            decisionTraining.rejectedCandidateIgnored = JSON.stringify(rejectedVariantA) == JSON.stringify(rejectedVariantB)
 
             const originalDecisionEncode = aiDecisionEncode
             let decisionEncodeCalls = 0
@@ -683,6 +687,65 @@ async function main() {
             bloons.reverse()
             const relationshipFeaturesLowHeuristic = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, { id: "factual-relation", type: "wizard", x: 100, y: 200, cost: 300, money: 1000, heuristic: -100 }).slice(32)
             const relationshipFeaturesHighHeuristic = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, { id: "factual-relation", type: "wizard", x: 100, y: 200, cost: 300, money: 1000, heuristic: 100 }).slice(32)
+            const candidateFeatureContracts = Array.from({ length: AI_DECISION_FAMILY_COUNT }, (_, familyIndex) => {
+                const metadata = {
+                    id: `candidate-${familyIndex}-a`,
+                    type: "wizard",
+                    cost: 300,
+                    money: 1000,
+                    x: 100,
+                    y: 200,
+                    capabilityFacts: { directDamage: 3, range: 250 },
+                    manualFollow: true,
+                    manualLock: true,
+                }
+                const action = buildAIDecisionCandidateFeatures(aiSide, familyIndex, metadata)
+                const renamed = buildAIDecisionCandidateFeatures(aiSide, familyIndex, { ...metadata, id: `candidate-${familyIndex}-b` })
+                const noop = buildAIDecisionCandidateFeatures(aiSide, familyIndex, { ...metadata, noop: true })
+                return {
+                    bounded: [action, noop].every(vector => vector.length == 64 && vector.every(value => Number.isFinite(value) && value >= -1 && value <= 1)),
+                    familyOneHot: action.slice(0, AI_DECISION_FAMILY_COUNT).every((value, index) => value == (index == familyIndex ? 1 : 0)),
+                    stableIdIndependent: action.every((value, index) => value == renamed[index]),
+                    noopMarked: action[21] == 0 && noop[21] == 1,
+                    manualCapabilities: action[62] == 1 && action[63] == 1,
+                }
+            })
+
+            ensureAILoadoutLibraryInitialized()
+            const originalLoadoutLibrary = aiLoadoutLibrary
+            const originalLoadoutsByKey = aiLoadoutsByKey
+            const originalLoadoutCounterStats = aiLearning.loadoutCounterStats
+            const originalLoadoutScorer = scoreAIDecisionCandidate
+            let loadoutCounterSelection
+            try {
+                const counterCandidates = originalLoadoutLibrary.slice(0, 2)
+                const observedLoadoutSummary = originalLoadoutLibrary[2].summary
+                aiLoadoutLibrary = counterCandidates
+                aiLoadoutsByKey = Object.fromEntries(counterCandidates.map(loadout => [loadout.key, loadout]))
+                aiLearning.loadoutCounterStats = {}
+                scoreAIDecisionCandidate = (side, familyIndex, metadata) => ({
+                    id: metadata.id,
+                    familyIndex,
+                    neuralScore: metadata.id == counterCandidates[0].key ? 0.2 : 0.1,
+                    score: metadata.id == counterCandidates[0].key ? 0.2 : 0.1,
+                })
+                const baselineLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, null)
+                aiLearning.loadoutCounterStats[getAILoadoutSelectionStatKey(observedLoadoutSummary.signature, counterCandidates[0].key)] = { samples: 64, score: -1, mean: -1, m2: 0 }
+                aiLearning.loadoutCounterStats[getAILoadoutSelectionStatKey(observedLoadoutSummary.signature, counterCandidates[1].key)] = { samples: 64, score: 1, mean: 1, m2: 0 }
+                const learnedLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, null)
+                loadoutCounterSelection = {
+                    baselineKey: baselineLoadout.key,
+                    learnedKey: learnedLoadout.key,
+                    baselineExpectedKey: counterCandidates[0].key,
+                    learnedExpectedKey: counterCandidates[1].key,
+                    learnedBonus: learnedLoadout.decisionSample.counterLearningBonus,
+                }
+            } finally {
+                aiLoadoutLibrary = originalLoadoutLibrary
+                aiLoadoutsByKey = originalLoadoutsByKey
+                aiLearning.loadoutCounterStats = originalLoadoutCounterStats
+                scoreAIDecisionCandidate = originalLoadoutScorer
+            }
 
             aiProfile.decisionMemory = Array(AI_DECISION_MEMORY_SIZE).fill(0)
             const memoryState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null)
@@ -699,6 +762,27 @@ async function main() {
                 selectedOutputCommitted: memoryAfterFirstCommit.every((value, index) => value == selectedMemoryCandidate.memoryOut[index]),
                 committedOnce: memoryAfterSecondCommit.every((value, index) => value == memoryAfterFirstCommit[index]),
             }
+
+            const transitionProfile = aiProfile
+            aiProfile = createAIProfileState()
+            const firstTransition = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.strategy, { id: "terminal-first", type: "strategy" })
+            beginAIDecisionTransition(aiSide, "strategy", "terminal-first", null, firstTransition, 0)
+            window.__distributedAI.advance(250)
+            advanceRuntimeClock()
+            const secondTransition = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.upgrade, { id: "terminal-second", type: "wizard" })
+            beginAIDecisionTransition(aiSide, "development", "terminal-second", null, secondTransition, 0)
+            window.__distributedAI.advance(500)
+            advanceRuntimeClock()
+            const terminalSamples = collectAIDecisionSamples(aiSide, 1, null)
+            const terminalSettlement = {
+                count: terminalSamples.length,
+                firstTerminal: terminalSamples[0] && terminalSamples[0].terminal,
+                lastTerminal: terminalSamples[1] && terminalSamples[1].terminal,
+                chronological: terminalSamples.length == 2 && terminalSamples[0].settledAtMs == terminalSamples[1].startedAtMs && terminalSamples[1].settledAtMs >= terminalSamples[1].startedAtMs && JSON.stringify(terminalSamples[0].successorStateFeatures) == JSON.stringify(terminalSamples[1].stateFeatures) && JSON.stringify(terminalSamples[0].successorMemory) == JSON.stringify(terminalSamples[1].memoryIn),
+                pendingCleared: aiProfile.pendingTacticalDecision == null,
+            }
+            aiProfile = transitionProfile
+            aiDecisionStateCache = null
 
             const originalBestTowerUpgradeOption = getBestTowerUpgradeOption
             const originalBestPlacementOption = getBestPlacementOption
@@ -739,13 +823,17 @@ async function main() {
             const unsnapshottedInferenceUsesCandidate = getAIPolicyForDecision() == aiLearning.policy
 
             aiProfile.tacticalTrace = Array.from({ length: 40 }, (_, index) => ({
+                creditVersion: AI_DECISION_CREDIT_VERSION,
                 familyIndex: index % AI_DECISION_FAMILY_COUNT,
                 stateFeatures: Array.from({ length: AI_DECISION_STATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex) % 11 - 5) / 5),
                 chosenCandidateFeatures: Array.from({ length: AI_DECISION_CANDIDATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex) % 9 - 4) / 4),
-                rejectedCandidateFeatures: Array.from({ length: AI_DECISION_CANDIDATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex + 2) % 9 - 4) / 4),
                 memoryIn: Array.from({ length: AI_DECISION_MEMORY_SIZE }, (__, featureIndex) => ((index + featureIndex) % 5 - 2) / 2),
-                localReward: (index % 5 - 2) / 2,
-                recordedAt: gameNow(),
+                startedAtMs: index * 100,
+                settledAtMs: (index + 1) * 100,
+                intervalReward: (index % 5 - 2) / 2,
+                successorStateFeatures: Array.from({ length: AI_DECISION_STATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex + 1) % 11 - 5) / 5),
+                successorMemory: Array.from({ length: AI_DECISION_MEMORY_SIZE }, (__, featureIndex) => ((index + featureIndex + 1) % 5 - 2) / 2),
+                terminal: false,
             }))
             aiProfile.pendingTacticalDecision = null
             aiMatchTelemetry = {
@@ -760,30 +848,36 @@ async function main() {
             const contributionContract = {
                 exists: !!boundedContribution,
                 count: boundedContribution ? boundedContribution.decisionSamples.length : -1,
-                exactKeys: boundedContribution ? boundedContribution.decisionSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["familyIndex", "stateFeatures", "chosenCandidateFeatures", "rejectedCandidateFeatures", "memoryIn", "localReward", "age"])) : false,
-                bounded: boundedContribution ? boundedContribution.decisionSamples.every(sample => sample.stateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.chosenCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.rejectedCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.memoryIn.length == AI_DECISION_MEMORY_SIZE && [sample.stateFeatures, sample.chosenCandidateFeatures, sample.rejectedCandidateFeatures, sample.memoryIn].every(vector => vector.every(value => value >= -1 && value <= 1)) && sample.localReward >= -1 && sample.localReward <= 1 && sample.age >= 0) : false,
-                ageRange: boundedContribution ? [Math.min(...boundedContribution.decisionSamples.map(sample => sample.age)), Math.max(...boundedContribution.decisionSamples.map(sample => sample.age))] : [],
+                exactKeys: boundedContribution ? boundedContribution.decisionSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "successorStateFeatures", "successorMemory", "terminal"])) : false,
+                bounded: boundedContribution ? boundedContribution.decisionSamples.every(sample => sample.stateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.chosenCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.memoryIn.length == AI_DECISION_MEMORY_SIZE && sample.successorStateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.successorMemory.length == AI_DECISION_MEMORY_SIZE && [sample.stateFeatures, sample.chosenCandidateFeatures, sample.memoryIn, sample.successorStateFeatures, sample.successorMemory].every(vector => vector.every(value => value >= -1 && value <= 1)) && sample.intervalReward >= -1 && sample.intervalReward <= 1 && sample.startedAtMs >= 0 && sample.settledAtMs >= sample.startedAtMs && typeof sample.terminal == "boolean") : false,
+                contiguous: boundedContribution ? boundedContribution.decisionSamples.slice(1).every((sample, index) => sample.startedAtMs == boundedContribution.decisionSamples[index].settledAtMs && JSON.stringify(sample.stateFeatures) == JSON.stringify(boundedContribution.decisionSamples[index].successorStateFeatures) && JSON.stringify(sample.memoryIn) == JSON.stringify(boundedContribution.decisionSamples[index].successorMemory)) : false,
+                timeRange: boundedContribution ? [Math.min(...boundedContribution.decisionSamples.map(sample => sample.startedAtMs)), Math.max(...boundedContribution.decisionSamples.map(sample => sample.settledAtMs))] : [],
                 familyCounts: boundedContribution ? Array.from({ length: AI_DECISION_FAMILY_COUNT }, (_, familyIndex) => boundedContribution.decisionSamples.filter(sample => sample.familyIndex == familyIndex).length) : [],
                 hasModel: boundedContribution ? Object.prototype.hasOwnProperty.call(boundedContribution, "model") : true,
                 byteLength: boundedContribution ? new TextEncoder().encode(JSON.stringify(boundedContribution)).byteLength : Infinity,
             }
 
             aiProfile.tacticalTrace = []
+            let syntheticStartedAt = 0
             const makeTraceEntry = familyIndex => ({
+                creditVersion: AI_DECISION_CREDIT_VERSION,
                 familyIndex,
                 stateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
                 chosenCandidateFeatures: Array(AI_DECISION_CANDIDATE_INPUT_SIZE).fill(0),
-                rejectedCandidateFeatures: Array(AI_DECISION_CANDIDATE_INPUT_SIZE).fill(0.1),
                 memoryIn: Array(AI_DECISION_MEMORY_SIZE).fill(0),
-                localReward: 0,
-                recordedAt: gameNow(),
+                startedAtMs: syntheticStartedAt++,
+                settledAtMs: syntheticStartedAt,
+                intervalReward: 0,
+                successorStateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
+                successorMemory: Array(AI_DECISION_MEMORY_SIZE).fill(0),
+                terminal: false,
             })
             for(let familyIndex = 0; familyIndex < 3; familyIndex++) appendAIDecisionTraceEntry(makeTraceEntry(familyIndex))
             for(let traceIndex = 0; traceIndex < 200; traceIndex++) appendAIDecisionTraceEntry(makeTraceEntry(3 + traceIndex % 5))
             const retainedTraceFamilyCounts = Array.from({ length: AI_DECISION_FAMILY_COUNT }, (_, familyIndex) => aiProfile.tacticalTrace.filter(sample => sample.familyIndex == familyIndex).length)
             const retainedContributionSamples = collectAIDecisionSamples(aiSide, 1, AI_MAX_PUBLIC_DECISION_SAMPLES)
             const retainedSampleFamilyCounts = Array.from({ length: AI_DECISION_FAMILY_COUNT }, (_, familyIndex) => retainedContributionSamples.filter(sample => sample.familyIndex == familyIndex).length)
-            const retainedSparseAges = retainedContributionSamples.filter(sample => sample.familyIndex < 3).map(sample => sample.age)
+            const retainedSparseStarts = retainedContributionSamples.filter(sample => sample.familyIndex < 3).map(sample => sample.startedAtMs)
 
             const overviewLabels = getAIStatsOverviewMetrics().map(metric => metric.label)
             window.fetch = originalFetch
@@ -828,11 +922,12 @@ async function main() {
                 migrationDeterministic: JSON.stringify(migratedPolicy) == JSON.stringify(repeatedMigratedPolicy),
                 migrationMaxOutputDelta,
                 migrationRetention,
-                schema9Migration,
+                schema10Migration,
                 normalDelta: { x: normalEnd.x - normalStart.x, y: normalEnd.y - normalStart.y },
                 normalDirectMode,
                 overviewLabels,
                 policyContract,
+                candidateFeatureContracts,
                 factualFeaturesPermutationInvariant: factualFeaturesBefore.every((value, index) => value == factualFeaturesAfter[index]),
                 relationshipFeaturesHeuristicIndependent: relationshipFeaturesLowHeuristic.every((value, index) => value == relationshipFeaturesHighHeuristic[index]),
                 memoryLifecycle,
@@ -872,8 +967,9 @@ async function main() {
                 invalidTrainerStatusSucceeded,
                 localTrainerFetches,
                 localTrainerStatusSucceeded,
+                loadoutCounterSelection,
                 retainedSampleFamilyCounts,
-                retainedSparseAges,
+                retainedSparseStarts,
                 retainedTraceFamilyCounts,
                 trainerFailureIsolation,
                 trainerFetchRequest: {
@@ -884,6 +980,7 @@ async function main() {
                 },
                 trainerMetrics,
                 trainerStatusSucceeded,
+                terminalSettlement,
                 unsnapshottedInferenceUsesCandidate,
                 trainingTarget: { x: canvas.width / 2 + 240, y: 360 },
             }
@@ -973,23 +1070,27 @@ async function main() {
             placementStoreRetained: true,
             populationSize: 2,
         })
-        assert.equal(result.schema9Migration.valid, true)
-        assert.ok(result.schema9Migration.scoreDelta < 1e-12)
-        assert.equal(result.schema9Migration.stateColumnsZero, true)
-        assert.equal(result.schema9Migration.candidateColumnsZero, true)
-        assert.equal(result.schema9Migration.memoryProjectionZero, true)
-        assert.equal(result.schema9Migration.headsZero, true)
+        assert.deepEqual(result.schema10Migration, {
+            valid: true,
+            deterministic: true,
+            strategyPreserved: true,
+            statePreserved: true,
+            recurrentPreserved: true,
+            valuePreserved: true,
+            candidateReset: true,
+            familyTrainingReset: true,
+        })
         assert.deepEqual(result.policyContract, {
-            version: 10,
-            modelFamily: "shared-recurrent-actor-critic-v2",
+            version: 11,
+            modelFamily: "semantic-recurrent-actor-critic-v3",
             formatVersion: 2,
             policyKeys: ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"],
             strategyKeys: ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"],
             decisionKeys: ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"],
             familyIndices: [0, 1, 2, 3, 4, 5, 6, 7],
             strategyDimensions: [64, 17, 32, 64, 75, 32],
-            decisionDimensions: [96, 72, 48, 96, 48, 40, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 8],
-            parameterCount: 23752,
+            decisionDimensions: [96, 72, 48, 96, 48, 64, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 8],
+            parameterCount: 24904,
             valid: true,
         })
         assert.equal(result.decisionTraining.succeeded, true)
@@ -998,20 +1099,42 @@ async function main() {
         assert.ok(result.decisionTraining.after > result.decisionTraining.before)
         assert.equal(result.decisionTraining.valueChanged, true)
         assert.equal(result.decisionTraining.survivalChanged, true)
+        assert.equal(result.decisionTraining.rejectedCandidateIgnored, true)
         assert.equal(result.decisionEncodeCalls, 4)
+        assert.equal(result.candidateFeatureContracts.length, 8)
+        for(const contract of result.candidateFeatureContracts) {
+            assert.deepEqual(contract, {
+                bounded: true,
+                familyOneHot: true,
+                stableIdIndependent: true,
+                noopMarked: true,
+                manualCapabilities: true,
+            })
+        }
+        assert.deepEqual(result.terminalSettlement, {
+            count: 2,
+            firstTerminal: false,
+            lastTerminal: true,
+            chronological: true,
+            pendingCleared: true,
+        })
         assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)
+        assert.equal(result.loadoutCounterSelection.baselineKey, result.loadoutCounterSelection.baselineExpectedKey)
+        assert.equal(result.loadoutCounterSelection.learnedKey, result.loadoutCounterSelection.learnedExpectedKey)
+        assert.ok(result.loadoutCounterSelection.learnedBonus > 0)
         assert.equal(result.retainedTraceFamilyCounts.reduce((sum, count) => sum + count, 0), 128)
         assert.deepEqual(result.retainedTraceFamilyCounts.slice(0, 3), [1, 1, 1])
-        assert.deepEqual(result.retainedSampleFamilyCounts.slice(0, 3), [1, 1, 1])
-        assert.deepEqual(result.retainedSparseAges, [202, 201, 200])
+        assert.deepEqual(result.retainedSampleFamilyCounts.slice(0, 3), [0, 0, 0])
+        assert.deepEqual(result.retainedSparseStarts, [])
         assert.deepEqual(result.contributionContract, {
             exists: true,
             count: 12,
             exactKeys: true,
             bounded: true,
-            ageRange: [0, 15],
-            familyCounts: [2, 2, 2, 2, 1, 1, 1, 1],
+            contiguous: true,
+            timeRange: [2800, 4000],
+            familyCounts: [1, 1, 1, 1, 2, 2, 2, 2],
             hasModel: false,
             byteLength: result.contributionContract.byteLength,
         })

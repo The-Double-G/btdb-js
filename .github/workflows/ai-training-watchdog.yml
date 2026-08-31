@@ -39,6 +39,14 @@ jobs:
         run: |
           current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
 
+          publish_training_status() {
+            local run_id="$1"
+            if ! gh workflow run ai-status.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+              -f training_run_id="$run_id"; then
+              echo "::warning title=AI status dispatch failed::Scheduled reconciliation will retry training run $run_id."
+            fi
+          }
+
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$SOURCE_WORKFLOW" = "CI" ]; then
             if [ "$SOURCE_CONCLUSION" != "success" ] || [ "$SOURCE_SHA" != "$current_sha" ]; then
               echo "Ignoring CI completion that is unsuccessful or no longer current."
@@ -90,6 +98,7 @@ jobs:
               fi
             fi
             handoff_run_id="$COMPLETED_TRAINING_RUN_ID"
+            publish_training_status "$handoff_run_id"
           fi
 
           active=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
@@ -224,3 +233,4 @@ jobs:
             exit 1
           fi
           echo "Dispatched continuous training run $dispatched_id for exact main SHA $current_sha."
+          publish_training_status "$dispatched_id"

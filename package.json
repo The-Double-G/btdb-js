@@ -14,6 +14,7 @@
     "test:distributed": "node tools/test-distributed-ai.js",
     "test:status": "node tools/test-training-status.js",
     "ai:init": "node tools/distributed-ai/run-worker.js --mode initialize",
+    "ai:migrate": "node tools/distributed-ai/run-worker.js --mode migrate",
     "ai:worker": "node tools/distributed-ai/run-worker.js",
     "ai:select": "node tools/distributed-ai/select-candidate.js",
     "ai:evaluate-report": "node tools/distributed-ai/aggregate-evaluation.js",

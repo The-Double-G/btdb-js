@@ -1593,6 +1593,7 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
         effectScale: 4,
         count: chosenLoadout.summary.filledTowerSlots + chosenLoadout.summary.filledBoostSlots,
         countScale: 5,
+        capabilityFacts: getAILoadoutCapabilityFacts(chosenLoadout.towers, chosenLoadout.boosts, 1),
     }, null, buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null))
     recordAIDecisionTraceSample(loadoutDecisionSample, 0)
     aiStrategySelection = excludedSelection && excludedSelection.archetypeIndex != null ? chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, excludedSelection.archetypeIndex, chosenLoadout.key) : chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), null, chosenLoadout.key)
@@ -2193,7 +2194,7 @@ function drawAITrainingScreen() {
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
-        "Model: Temporary ~24k Recurrent Actor-Critic",
+        "Model: Temporary ~25k Semantic Actor-Critic",
         "Publishing: " + publishingLabel,
         (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,

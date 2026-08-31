@@ -2,7 +2,7 @@
 
 A browser tower-defense game with adaptive AI, deterministic self-play, and distributed candidate evaluation.
 
-The current game release is `v2.6.0`. One authoritative Hosted Model combines bounded public match contributions, Browser Lab contributions, and verified GitHub self-play promotions. Its schema-10 policy is a 23,752-parameter recurrent actor-critic that ranks strategy and legal candidates across loadouts, placements, upgrades, sales, sends, and boosts while learning value and final-life survival targets.
+The current game release is `v2.6.0`. One authoritative Hosted Model combines bounded public match contributions, Browser Lab contributions, and verified GitHub self-play promotions. Its schema-11 policy is a 24,904-parameter semantic recurrent actor-critic that ranks strategy and 64-value legal candidates across loadouts, placements, upgrades, sales, sends, and boosts while learning four-step value credit and final-life survival targets.
 
 ## Run Locally
 

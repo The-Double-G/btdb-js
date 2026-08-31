@@ -75,7 +75,7 @@ var AI_ACTION_PRIORITY = {
 var AI_POLICY_HIDDEN_SIZE_1 = 64
 var AI_POLICY_HIDDEN_SIZE_2 = 32
 var AI_DECISION_STATE_INPUT_SIZE = 72
-var AI_DECISION_CANDIDATE_INPUT_SIZE = 40
+var AI_DECISION_CANDIDATE_INPUT_SIZE = 64
 var AI_DECISION_STATE_HIDDEN_SIZE = 96
 var AI_DECISION_CANDIDATE_HIDDEN_SIZE = 48
 var AI_DECISION_EMBEDDING_SIZE = 48
@@ -96,8 +96,11 @@ var AI_DECISION_FAMILY = {
     boost: 7,
 }
 var AI_POLICY_PARAMETER_LIMIT = 4
-var AI_LEARNING_SCHEMA_VERSION = 10
-var AI_MODEL_FAMILY = "shared-recurrent-actor-critic-v2"
+var AI_LEARNING_SCHEMA_VERSION = 11
+var AI_MODEL_FAMILY = "semantic-recurrent-actor-critic-v3"
+var AI_DECISION_CREDIT_VERSION = 2
+var AI_DECISION_TD_STEPS = 4
+var AI_DECISION_DISCOUNT_PER_SECOND = 0.99
 var aiDecisionStateCache = null
 var aiPersistenceState = {
     backend: AI_CROSS_MATCH_LEARNING_ENABLED ? "php backend shared" : "session only",
@@ -1188,7 +1191,10 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
             maxIndex: Math.max(1, candidateLimit - 1),
             count: summary.filledTowerSlots + summary.filledBoostSlots,
             countScale: 5,
+            capabilityFacts: getAILoadoutCapabilityFacts(entry.loadout.towers, entry.loadout.boosts, 0),
         }, null, stateFeatures)
+        entry.decision.counterLearningBonus = getAILoadoutCounterLearningBonus(entry.loadout.key, observedLoadoutSummary)
+        entry.decision.score += entry.decision.counterLearningBonus
         if(!bestEntry || isAIDecisionScoreBetter(entry.decision, bestEntry.decision)) {
             bestEntry = entry
         }
@@ -1592,21 +1598,40 @@ function isValidAISchema9Policy(policy) {
     return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
 }
 
-function migrateAISchema9Decision(oldDecision) {
+function isValidAISchema10Decision(decision) {
+    return decision && decision.stateInputSize == AI_DECISION_STATE_INPUT_SIZE && decision.candidateInputSize == 40 && decision.stateHiddenSize == AI_DECISION_STATE_HIDDEN_SIZE && decision.candidateHiddenSize == AI_DECISION_CANDIDATE_HIDDEN_SIZE && decision.embeddingSize == AI_DECISION_EMBEDDING_SIZE && decision.memorySize == AI_DECISION_MEMORY_SIZE && decision.survivalClassCount == AI_DECISION_SURVIVAL_CLASS_COUNT && isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, 40) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WStateToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WMemoryToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.bMemory, AI_DECISION_MEMORY_SIZE) && isValidAIMatrix(decision.WMemoryToState, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.WValue, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bValue) && Math.abs(decision.bValue) <= AI_POLICY_PARAMETER_LIMIT && isValidAIMatrix(decision.WSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.bSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
+}
+
+function isValidAISchema10Policy(policy) {
+    if(!policy || policy.formatVersion != 2 || !policy.strategy || !isValidAISchema10Decision(policy.decision)) return false
+    var strategy = policy.strategy
+    return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
+}
+
+function migrateAISchema10Decision(oldDecision) {
     var decision = createDefaultAIDecisionPolicy()
-    decision.trainingSamples = oldDecision.trainingSamples.slice(0)
+    decision.WState1 = cloneAIMatrix(oldDecision.WState1)
     decision.bState1 = oldDecision.bState1.slice(0)
     decision.WState2 = cloneAIMatrix(oldDecision.WState2)
     decision.bState2 = oldDecision.bState2.slice(0)
-    decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
-    decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
-    decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
-    decision.familyBias = oldDecision.familyBias.slice(0)
+    decision.WStateToMemory = cloneAIMatrix(oldDecision.WStateToMemory)
+    decision.WMemoryToMemory = cloneAIMatrix(oldDecision.WMemoryToMemory)
+    decision.bMemory = oldDecision.bMemory.slice(0)
+    decision.WMemoryToState = cloneAIMatrix(oldDecision.WMemoryToState)
+    decision.WValue = oldDecision.WValue.slice(0)
+    decision.bValue = oldDecision.bValue
+    decision.WSurvival = cloneAIMatrix(oldDecision.WSurvival)
+    decision.bSurvival = oldDecision.bSurvival.slice(0)
+    return decision
+}
+
+function migrateAISchema9Decision(oldDecision) {
+    var decision = createDefaultAIDecisionPolicy()
+    decision.bState1 = oldDecision.bState1.slice(0)
+    decision.WState2 = cloneAIMatrix(oldDecision.WState2)
+    decision.bState2 = oldDecision.bState2.slice(0)
     for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) {
         decision.WState1[stateRow] = oldDecision.WState1[stateRow].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 48, 0))
-    }
-    for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
-        decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 32, 0))
     }
     return decision
 }
@@ -1625,6 +1650,13 @@ function migrateAIPolicy(candidatePolicy) {
     }
 
     var migrated = createDefaultAIPolicy(outputBias)
+    if(isValidAISchema10Policy(candidatePolicy)) {
+        migrated.strategyLearningRate = candidatePolicy.strategyLearningRate
+        migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
+        migrated.strategy = JSON.parse(JSON.stringify(candidatePolicy.strategy))
+        migrated.decision = migrateAISchema10Decision(candidatePolicy.decision)
+        return migrated
+    }
     if(isValidAISchema9Policy(candidatePolicy)) {
         migrated.strategyLearningRate = candidatePolicy.strategyLearningRate
         migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
@@ -1750,6 +1782,7 @@ function normalizeAILearningData(candidate) {
     } catch(error) {
         return createDefaultAILearning()
     }
+    var resetDecisionTraining = candidate.version != AI_LEARNING_SCHEMA_VERSION || candidate.modelFamily != AI_MODEL_FAMILY
 
     if(!candidate.playerProfile || typeof candidate.playerProfile != "object") {
         candidate.playerProfile = {
@@ -1860,7 +1893,7 @@ function normalizeAILearningData(candidate) {
     candidate.totalLoadoutSamples = Math.max(preservedTotalLoadoutSamples, totalLoadoutSamples)
     candidate.totalHumanDemonstrations = Math.max(0, Math.floor(Number(candidate.totalHumanDemonstrations) || 0))
     candidate.totalTacticalSamples = Math.max(0, Math.floor(Number(candidate.totalTacticalSamples) || 0))
-    candidate.totalDecisionSamples = Math.max(0, Math.floor(Number(candidate.totalDecisionSamples) || 0))
+    candidate.totalDecisionSamples = resetDecisionTraining ? 0 : Math.max(0, Math.floor(Number(candidate.totalDecisionSamples) || 0))
     candidate.candidateGeneration = Math.max(0, Math.floor(Number(candidate.candidateGeneration) || 0))
     candidate.championGeneration = Math.max(0, Math.floor(Number(candidate.championGeneration) || 0))
     candidate.modelFamily = AI_MODEL_FAMILY
@@ -2228,6 +2261,14 @@ function flushAIPublicContributionQueue() {
     }).catch(function(error) {
         var payload = error && error.payload
         var code = payload && payload.error ? payload.error.code : ""
+        if(error && (error.status == 400 || error.status == 422)) {
+            var invalidQueue = getAIPublicContributionQueue().filter(function(item) { return item.contributionId != pending.contributionId })
+            setAIPublicContributionQueue(invalidQueue)
+            markAIPublicContributionStatus(pending.contributionId, "discarded")
+            aiPersistenceState.contributionRetryAt = 0
+            aiPersistenceState.lastError = "Discarded a permanently invalid global AI contribution."
+            return
+        }
         if(code == "contribution_epoch_mismatch" && payload && Number.isFinite(payload.currentContributionEpoch)) {
             aiPersistenceState.contributionToken = ""
             aiPersistenceState.lastError = "Refreshing the global AI after a knowledge reset."
@@ -2622,41 +2663,7 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     if(familyIndex >= 0 && familyIndex < AI_DECISION_FAMILY_COUNT) {
         features[familyIndex] = 1
     }
-    var stableId = getAIStableCandidateId(familyIndex, metadata)
-    var stableHash = getAIStableStringHash(stableId)
-    var typeHash = getAIStableStringHash(metadata.type || "")
-    var roleHash = getAIStableStringHash(metadata.role || "")
-    var actionHash = getAIStableStringHash(metadata.actionKey || stableId)
     var money = Math.max(1, Number(metadata.money) || 1)
-    var values = [
-        clamp((Number(metadata.cost) || 0) / money, 0, 2) - 1,
-        clamp(Math.log1p(Math.max(0, Number(metadata.cost) || 0)) / Math.log(100001), 0, 1),
-        clamp((Number(metadata.x) || 0) / Math.max(1, typeof canvas != "undefined" ? canvas.width : 1366), 0, 1),
-        clamp((Number(metadata.y) || 0) / Math.max(1, typeof canvas != "undefined" ? canvas.height : 768), 0, 1),
-        clamp(Number(metadata.position) || 0, 0, 1),
-        typeHash / 4294967295 * 2 - 1,
-        roleHash / 4294967295 * 2 - 1,
-        actionHash / 4294967295 * 2 - 1,
-        clamp((Number(metadata.index) || 0) / Math.max(1, Number(metadata.maxIndex) || 1), 0, 1),
-        clamp((Number(metadata.count) || 0) / Math.max(1, Number(metadata.countScale) || 16), 0, 1),
-        metadata.cooldownReady === false ? -1 : 1,
-        metadata.affordable === false ? -1 : 1,
-        metadata.legal === false ? -1 : 1,
-        metadata.selected ? 1 : 0,
-        clamp((Number(metadata.tier1) || 0) / 5, 0, 1),
-        clamp((Number(metadata.tier2) || 0) / 5, 0, 1),
-        clamp((Number(metadata.tier3) || 0) / 5, 0, 1),
-        ((stableHash >>> 0) & 65535) / 32767.5 - 1,
-        ((stableHash >>> 16) & 65535) / 32767.5 - 1,
-        ((actionHash >>> 8) & 65535) / 32767.5 - 1,
-        metadata.noop ? 1 : 0,
-        metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1,
-        clamp(Math.log1p(money) / Math.log(100001), 0, 1),
-        0,
-    ]
-    for(var i = 0; i < values.length && AI_DECISION_FAMILY_COUNT + i < features.length; i++) {
-        features[AI_DECISION_FAMILY_COUNT + i] = clampAIDecisionFeature(values[i])
-    }
     var width = Math.max(1, typeof canvas != "undefined" ? canvas.width : 1366)
     var height = Math.max(1, typeof canvas != "undefined" ? canvas.height : 768)
     var candidateX = Number(metadata.x)
@@ -2679,17 +2686,51 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     }
     var candidateCost = Math.max(0, Number(metadata.cost) || 0)
     var availableMoney = Math.max(1, Number(metadata.money) || Number(typeof players != "undefined" && players[side] && players[side].money) || 1)
-    var relationshipFeatures = [
+    var genericFeatures = [
+        clamp(candidateCost / money, 0, 2) - 1,
+        clamp(Math.log1p(candidateCost) / Math.log(100001), 0, 1),
+        clamp((Number(metadata.x) || 0) / width, 0, 1),
+        clamp((Number(metadata.y) || 0) / height, 0, 1),
+        clamp(Number(metadata.position) || 0, 0, 1),
+        clamp((Number(metadata.count) || 0) / Math.max(1, Number(metadata.countScale) || 16), 0, 1),
+        metadata.cooldownReady === false ? -1 : 1,
+        metadata.affordable === false ? -1 : 1,
+        metadata.legal === false ? -1 : 1,
+        metadata.selected ? 1 : 0,
+        clamp((Number(metadata.tier1) || 0) / 5, 0, 1),
+        clamp((Number(metadata.tier2) || 0) / 5, 0, 1),
+        clamp((Number(metadata.tier3) || 0) / 5, 0, 1),
+        metadata.noop ? 1 : 0,
+        metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1,
+        clamp(Math.log1p(money) / Math.log(100001), 0, 1),
         clamp((availableMoney - candidateCost) / availableMoney, -1, 1),
         hasPosition ? (side == PLAYER_SIDE.left ? candidateX < width / 2 : candidateX >= width / 2) ? 1 : -1 : 0,
         hasPosition ? 1 - clamp(nearestOwnDistance, 0, 1) : 0,
         hasPosition ? 1 - clamp(nearestEnemyDistance, 0, 1) : 0,
         clamp(sameTypeCount / 12, 0, 1),
         clamp(((Number(metadata.tier1) || 0) + (Number(metadata.tier2) || 0) + (Number(metadata.tier3) || 0)) / 15, 0, 1),
-        metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1,
-        metadata.noop ? 1 : -1,
+        clamp(Number(metadata.capacityHeadroom) || 0, 0, 1),
+        hasPosition ? 1 : 0,
     ]
-    for(var relationshipIndex = 0; relationshipIndex < relationshipFeatures.length; relationshipIndex++) features[32 + relationshipIndex] = clampAIDecisionFeature(relationshipFeatures[relationshipIndex])
+    for(var genericIndex = 0; genericIndex < genericFeatures.length; genericIndex++) features[AI_DECISION_FAMILY_COUNT + genericIndex] = clampAIDecisionFeature(genericFeatures[genericIndex])
+
+    var semanticFeatures
+    if(Array.isArray(metadata.capabilityVector)) {
+        semanticFeatures = metadata.capabilityVector.slice(0, AI_CAPABILITY_KEYS.length)
+    } else if(metadata.capabilityBefore || metadata.capabilityAfter) {
+        semanticFeatures = getNormalizedAICapabilityDelta(metadata.capabilityBefore, metadata.capabilityAfter)
+    } else {
+        var capabilityFacts = copyAICapabilities(metadata.capabilityFacts)
+        if(metadata.tower) addAICapabilities(capabilityFacts, getAITowerCapabilityFacts(metadata.tower), Number(metadata.capabilityScale) || 1)
+        else if(AI_BASE_TOWER_CAPABILITIES[String(metadata.type || "")]) addAICapabilities(capabilityFacts, getAITowerCapabilityFacts(metadata.type), Number(metadata.capabilityScale) || 1)
+        if(metadata.send) addAICapabilities(capabilityFacts, getAISendCapabilityFacts(metadata.send, metadata.sendGroups), 1)
+        if(metadata.boostType) addAICapabilities(capabilityFacts, getAIBoostCapabilityFacts(metadata.boostType, typeof round == "undefined" ? 0 : round), 1)
+        if(metadata.manualFollow) capabilityFacts.manualFollow = 1
+        if(metadata.manualLock) capabilityFacts.manualLock = 1
+        semanticFeatures = getNormalizedAICapabilityVector(capabilityFacts)
+    }
+    while(semanticFeatures.length < AI_CAPABILITY_KEYS.length) semanticFeatures.push(0)
+    for(var semanticIndex = 0; semanticIndex < AI_CAPABILITY_KEYS.length; semanticIndex++) features[32 + semanticIndex] = clampAIDecisionFeature(semanticFeatures[semanticIndex])
     return features
 }
 
@@ -2859,23 +2900,20 @@ function getAICosineEmbeddingDeltas(forward, outputDelta) {
     return { state: stateDeltas, candidate: candidateDeltas }
 }
 
-function trainAIDecision(sample, terminalReward, survivalClass, policyOverride) {
+function trainAIDecision(sample, target, survivalClass, policyOverride) {
     ensureAILearningLoaded()
     var policy = policyOverride || aiLearning.policy
-    if(!sample || !Array.isArray(sample.stateFeatures) || !Array.isArray(sample.chosenCandidateFeatures) || !Array.isArray(sample.rejectedCandidateFeatures) || !Array.isArray(sample.memoryIn) || !Number.isInteger(sample.familyIndex) || Number.isFinite(terminalReward) == false) {
+    if(!sample || !Array.isArray(sample.stateFeatures) || !Array.isArray(sample.chosenCandidateFeatures) || !Array.isArray(sample.memoryIn) || !Number.isInteger(sample.familyIndex) || Number.isFinite(target) == false) {
         return false
     }
     var familyIndex = sample.familyIndex
     var chosen = aiDecisionForward(sample.stateFeatures, sample.chosenCandidateFeatures, familyIndex, sample.memoryIn, policy)
-    var rejected = aiDecisionForward(sample.stateFeatures, sample.rejectedCandidateFeatures, familyIndex, sample.memoryIn, policy)
-    if(!chosen || !rejected) return false
+    if(!chosen) return false
     var decision = policy.decision
-    var target = clamp(0.7 * (Number(sample.localReward) || 0) + terminalReward * (0.3 * Math.pow(0.985, Math.max(0, Math.floor(Number(sample.age) || 0)))), -1, 1)
+    target = clamp(target, -1, 1)
     var advantage = clamp(target - chosen.value, -1, 1)
-    var pairPrediction = Math.tanh((chosen.actorLogit - rejected.actorLogit) / 2)
-    var actorDelta = clamp((advantage - pairPrediction) * (1 - pairPrediction * pairPrediction) * 0.5, -1, 1)
+    var actorDelta = advantage
     var chosenActorDeltas = getAICosineEmbeddingDeltas(chosen, actorDelta)
-    var rejectedActorDeltas = getAICosineEmbeddingDeltas(rejected, -actorDelta)
     var valueDelta = clamp(target - chosen.value, -1, 1) * (1 - chosen.value * chosen.value)
     var survivalDeltas = aiCreateVector(AI_DECISION_SURVIVAL_CLASS_COUNT, 0)
     var hasSurvivalTarget = Number.isInteger(survivalClass) && survivalClass >= 0 && survivalClass < AI_DECISION_SURVIVAL_CLASS_COUNT
@@ -2894,7 +2932,7 @@ function trainAIDecision(sample, terminalReward, survivalClass, policyOverride) 
         if(hasSurvivalTarget) {
             for(var survivalClassIndex = 0; survivalClassIndex < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalClassIndex++) headActivationDelta += originalSurvivalWeights[survivalClassIndex][stateEmbeddingIndex] * survivalDeltas[survivalClassIndex]
         }
-        var stateDelta = chosenActorDeltas.state[stateEmbeddingIndex] + rejectedActorDeltas.state[stateEmbeddingIndex] + headActivationDelta * (1 - chosen.stateEmbedding[stateEmbeddingIndex] * chosen.stateEmbedding[stateEmbeddingIndex])
+        var stateDelta = chosenActorDeltas.state[stateEmbeddingIndex] + headActivationDelta * (1 - chosen.stateEmbedding[stateEmbeddingIndex] * chosen.stateEmbedding[stateEmbeddingIndex])
         stateEmbeddingDelta.push(clamp(stateDelta, -1, 1))
     }
     var memoryDelta = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
@@ -2925,7 +2963,6 @@ function trainAIDecision(sample, terminalReward, survivalClass, policyOverride) 
         return deltas
     }
     var chosenCandidateHiddenDelta = candidateHiddenDeltas(chosen, chosenActorDeltas.candidate)
-    var rejectedCandidateHiddenDelta = candidateHiddenDeltas(rejected, rejectedActorDeltas.candidate)
     var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500)
     for(var valueWeightIndex = 0; valueWeightIndex < AI_DECISION_EMBEDDING_SIZE; valueWeightIndex++) decision.WValue[valueWeightIndex] = clampAIPolicyParameter(decision.WValue[valueWeightIndex] + learningRate * valueDelta * chosen.stateEmbedding[valueWeightIndex])
     decision.bValue = clampAIPolicyParameter(decision.bValue + learningRate * valueDelta)
@@ -2942,10 +2979,10 @@ function trainAIDecision(sample, terminalReward, survivalClass, policyOverride) 
         }
         decision.bState2[outputIndex] = clampAIPolicyParameter(decision.bState2[outputIndex] + learningRate * baseEmbeddingDelta[outputIndex])
         for(var candidateHiddenWeightIndex = 0; candidateHiddenWeightIndex < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateHiddenWeightIndex++) {
-            var candidateSecondGradient = chosenActorDeltas.candidate[outputIndex] * chosen.candidateHidden[candidateHiddenWeightIndex] + rejectedActorDeltas.candidate[outputIndex] * rejected.candidateHidden[candidateHiddenWeightIndex]
+            var candidateSecondGradient = chosenActorDeltas.candidate[outputIndex] * chosen.candidateHidden[candidateHiddenWeightIndex]
             decision.WCandidate2[outputIndex][candidateHiddenWeightIndex] = clampAIPolicyParameter(decision.WCandidate2[outputIndex][candidateHiddenWeightIndex] + learningRate * candidateSecondGradient)
         }
-        decision.bCandidate2[outputIndex] = clampAIPolicyParameter(decision.bCandidate2[outputIndex] + learningRate * (chosenActorDeltas.candidate[outputIndex] + rejectedActorDeltas.candidate[outputIndex]))
+        decision.bCandidate2[outputIndex] = clampAIPolicyParameter(decision.bCandidate2[outputIndex] + learningRate * chosenActorDeltas.candidate[outputIndex])
     }
     for(var memoryRow = 0; memoryRow < AI_DECISION_MEMORY_SIZE; memoryRow++) {
         for(var memoryStateColumn = 0; memoryStateColumn < AI_DECISION_EMBEDDING_SIZE; memoryStateColumn++) decision.WStateToMemory[memoryRow][memoryStateColumn] = clampAIPolicyParameter(decision.WStateToMemory[memoryRow][memoryStateColumn] + learningRate * memoryDelta[memoryRow] * chosen.baseStateEmbedding[memoryStateColumn])
@@ -2960,10 +2997,10 @@ function trainAIDecision(sample, terminalReward, survivalClass, policyOverride) 
     }
     for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
         for(var candidateCol = 0; candidateCol < AI_DECISION_CANDIDATE_INPUT_SIZE; candidateCol++) {
-            var candidateFirstGradient = chosenCandidateHiddenDelta[candidateRow] * chosen.candidateFeatures[candidateCol] + rejectedCandidateHiddenDelta[candidateRow] * rejected.candidateFeatures[candidateCol]
+            var candidateFirstGradient = chosenCandidateHiddenDelta[candidateRow] * chosen.candidateFeatures[candidateCol]
             decision.WCandidate1[candidateRow][candidateCol] = clampAIPolicyParameter(decision.WCandidate1[candidateRow][candidateCol] + learningRate * candidateFirstGradient)
         }
-        decision.bCandidate1[candidateRow] = clampAIPolicyParameter(decision.bCandidate1[candidateRow] + learningRate * (chosenCandidateHiddenDelta[candidateRow] + rejectedCandidateHiddenDelta[candidateRow]))
+        decision.bCandidate1[candidateRow] = clampAIPolicyParameter(decision.bCandidate1[candidateRow] + learningRate * chosenCandidateHiddenDelta[candidateRow])
     }
     decision.trainingSamples[familyIndex]++
     aiDecisionStateCache = null
@@ -2994,6 +3031,7 @@ function chooseAIStrategyFromFeaturesWithObservation(features, observedLoadoutSu
             actionKey: "strategy|" + strategy.id,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
+            capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof round == "undefined" ? 0 : round),
         }, null, decisionState)
         var adjustedScore = pass.outputs[scoreIndex] + decision.score
         decisionScores.push(decision)
@@ -3055,6 +3093,7 @@ function chooseAIArchetypeFromFeatures(features, excludedStrategyIndex, loadoutK
             actionKey: "strategy|" + strategy.id,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
+            capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof round == "undefined" ? 0 : round),
         }, null, decisionState)
         var adjustedScore = pass.outputs[scoreIndex] + decision.score
         decisionScores.push(decision)
@@ -3343,12 +3382,6 @@ function getAITacticalPotential(side, family, matchup) {
 }
 
 function appendAIDecisionTraceEntry(entry) {
-    for(var i = 0; i < aiProfile.tacticalTrace.length; i++) {
-        if(Number.isInteger(aiProfile.tacticalTrace[i].familyIndex) && Array.isArray(aiProfile.tacticalTrace[i].stateFeatures)) {
-            aiProfile.tacticalTrace[i].age = Math.max(0, Math.floor(Number(aiProfile.tacticalTrace[i].age) || 0)) + 1
-        }
-    }
-    entry.age = 0
     aiProfile.tacticalTrace.push(entry)
     if(aiProfile.tacticalTrace.length > 128) {
         var familyCounts = aiCreateVector(AI_DECISION_FAMILY_COUNT, 0)
@@ -3373,26 +3406,6 @@ function appendAIDecisionTraceEntry(entry) {
     }
 }
 
-function getAIRejectedDecisionCandidate(decisionSample) {
-    var batch = decisionSample && decisionSample.stateFeatures && decisionSample.stateFeatures.aiCandidateBatch
-    var rejected = null
-    if(Array.isArray(batch)) {
-        for(var i = 0; i < batch.length; i++) {
-            if(batch[i] && batch[i] !== decisionSample && batch[i].id != decisionSample.id && isAIDecisionScoreBetter(batch[i], rejected)) rejected = batch[i]
-        }
-    }
-    if(rejected) return rejected
-    var shadowFeatures = buildAIDecisionCandidateFeatures(decisionSample.side, decisionSample.familyIndex, {
-        id: "shadow-continue",
-        type: "continue",
-        actionKey: "continue",
-        affordable: true,
-        legal: true,
-    })
-    if(JSON.stringify(shadowFeatures) == JSON.stringify(decisionSample.candidateFeatures)) return null
-    return { candidateFeatures: shadowFeatures }
-}
-
 function commitAIDecisionMemory(decisionSample) {
     if(!aiProfile || !decisionSample || decisionSample.memoryCommitted) return false
     decisionSample.memoryCommitted = true
@@ -3406,20 +3419,7 @@ function recordAIDecisionTraceSample(decisionSample, localReward) {
     if(!aiProfile || !decisionSample || !Array.isArray(decisionSample.stateFeatures) || !Array.isArray(decisionSample.candidateFeatures)) {
         return false
     }
-    commitAIDecisionMemory(decisionSample)
-    var rejected = getAIRejectedDecisionCandidate(decisionSample)
-    if(!rejected || !Array.isArray(rejected.candidateFeatures) || !Array.isArray(decisionSample.memoryIn)) return false
-    appendAIDecisionTraceEntry({
-        decisionId: decisionSample.id || "",
-        familyIndex: decisionSample.familyIndex,
-        stateFeatures: decisionSample.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
-        chosenCandidateFeatures: decisionSample.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
-        rejectedCandidateFeatures: rejected.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
-        memoryIn: decisionSample.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE),
-        localReward: clamp(Number(localReward) || 0, -1, 1),
-        recordedAt: gameNow(),
-    })
-    return true
+    return beginAIDecisionTransition(decisionSample.side, "", "", null, decisionSample, localReward)
 }
 
 function recordAINoOpDecision(decisionSample) {
@@ -3427,14 +3427,15 @@ function recordAINoOpDecision(decisionSample) {
         return false
     }
     var now = gameNow()
+    if(aiProfile.pendingTacticalDecision && aiProfile.pendingTacticalDecision.decisionId == decisionSample.id && now - aiProfile.pendingTacticalDecision.startedAtMs < 3000) return false
     for(var i = aiProfile.tacticalTrace.length - 1; i >= 0; i--) {
         var previous = aiProfile.tacticalTrace[i]
         if(previous.familyIndex == decisionSample.familyIndex && previous.decisionId == decisionSample.id) {
-            if(now - previous.recordedAt < 3000) return false
+            if(now - previous.startedAtMs < 3000) return false
             break
         }
     }
-    return recordAIDecisionTraceSample(decisionSample, 0)
+    return beginAIDecisionTransition(decisionSample.side, "noop", decisionSample.id || "noop", null, decisionSample, 0)
 }
 
 function getAIFactualDecisionOutcomeSnapshot(side) {
@@ -3456,15 +3457,27 @@ function getAIFactualDecisionLocalReward(before, after) {
     return clamp(lifeOutcome / 30 + popOutcome / 5000, -1, 1)
 }
 
-function settleAITacticalDecision(side, matchup) {
+function settleAITacticalDecision(side, successorDecisionSample, terminal) {
     if(!aiProfile || !aiProfile.pendingTacticalDecision) {
-        return
+        return false
     }
     var decision = aiProfile.pendingTacticalDecision
-    decision.localReward = getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, getAIFactualDecisionOutcomeSnapshot(side))
-    decision.settledAt = gameNow()
+    var settledAt = Math.max(decision.startedAtMs, gameNow())
+    decision.intervalReward = clamp((Number(decision.initialReward) || 0) + getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, getAIFactualDecisionOutcomeSnapshot(side)), -1, 1)
+    decision.settledAtMs = settledAt
+    decision.terminal = terminal === true
+    if(successorDecisionSample && Array.isArray(successorDecisionSample.stateFeatures) && Array.isArray(successorDecisionSample.memoryIn)) {
+        decision.successorStateFeatures = successorDecisionSample.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE)
+        decision.successorMemory = successorDecisionSample.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE)
+    } else {
+        decision.successorStateFeatures = buildAIDecisionStateFeatures(side, decision.familyIndex, getCurrentPlayerMatchupStyle(side)).slice(0, AI_DECISION_STATE_INPUT_SIZE)
+        decision.successorMemory = getAIDecisionMemory().slice(0, AI_DECISION_MEMORY_SIZE)
+    }
+    delete decision.factualOutcomeBefore
+    delete decision.initialReward
     appendAIDecisionTraceEntry(decision)
     aiProfile.pendingTacticalDecision = null
+    return true
 }
 
 function getAIDecisionFamilyForLegacyAction(family, actionKey) {
@@ -3481,100 +3494,101 @@ function recordAITacticalDecision(side, family, actionKey, matchup, decisionSamp
     if(!aiProfile) {
         return
     }
-    settleAITacticalDecision(side, matchup)
     var familyIndex = decisionSample ? decisionSample.familyIndex : getAIDecisionFamilyForLegacyAction(family, actionKey)
     var resolvedDecisionSample = decisionSample || scoreAIDecisionCandidate(side, familyIndex, { id: actionKey, type: family, actionKey: actionKey }, matchup)
+    return beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDecisionSample, 0)
+}
+
+function beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDecisionSample, initialReward) {
+    if(!aiProfile || !resolvedDecisionSample || !Array.isArray(resolvedDecisionSample.stateFeatures) || !Array.isArray(resolvedDecisionSample.candidateFeatures) || !Array.isArray(resolvedDecisionSample.memoryIn)) return false
+    settleAITacticalDecision(side, resolvedDecisionSample, false)
     commitAIDecisionMemory(resolvedDecisionSample)
-    var rejected = getAIRejectedDecisionCandidate(resolvedDecisionSample)
-    if(!rejected) return
     aiProfile.pendingTacticalDecision = {
+        creditVersion: AI_DECISION_CREDIT_VERSION,
+        decisionId: resolvedDecisionSample.id || "",
         family: family,
-        familyIndex: familyIndex,
+        familyIndex: resolvedDecisionSample.familyIndex,
         actionKey: actionKey,
         stateKey: getAITacticalStateKey(side, matchup),
         stateFeatures: resolvedDecisionSample.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
         chosenCandidateFeatures: resolvedDecisionSample.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
-        rejectedCandidateFeatures: rejected.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
         memoryIn: resolvedDecisionSample.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE),
         factualOutcomeBefore: getAIFactualDecisionOutcomeSnapshot(side),
-        localReward: 0,
-        recordedAt: gameNow(),
+        initialReward: clamp(Number(initialReward) || 0, -1, 1),
+        startedAtMs: Math.max(0, gameNow()),
     }
+    return true
 }
 
 function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
     if(!aiProfile) {
         return []
     }
-    settleAITacticalDecision(side, getCurrentPlayerMatchupStyle(side))
+    settleAITacticalDecision(side, null, true)
     var available = []
-    var traceLength = aiProfile.tacticalTrace.length
-    for(var i = 0; i < traceLength; i++) {
+    for(var i = 0; i < aiProfile.tacticalTrace.length; i++) {
         var decision = aiProfile.tacticalTrace[i]
-        if(!Number.isInteger(decision.familyIndex) || decision.familyIndex < 0 || decision.familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(decision.stateFeatures) || decision.stateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.chosenCandidateFeatures) || decision.chosenCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.rejectedCandidateFeatures) || decision.rejectedCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.memoryIn) || decision.memoryIn.length != AI_DECISION_MEMORY_SIZE) {
+        if(decision.creditVersion != AI_DECISION_CREDIT_VERSION || !Number.isInteger(decision.familyIndex) || decision.familyIndex < 0 || decision.familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(decision.stateFeatures) || decision.stateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.chosenCandidateFeatures) || decision.chosenCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.memoryIn) || decision.memoryIn.length != AI_DECISION_MEMORY_SIZE || !Array.isArray(decision.successorStateFeatures) || decision.successorStateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.successorMemory) || decision.successorMemory.length != AI_DECISION_MEMORY_SIZE) {
             continue
         }
-        var storedAge = Number(decision.age)
-        var age = Number.isInteger(storedAge) ? clamp(storedAge, 0, AI_MAX_DECISION_SAMPLE_AGE) : traceLength - i - 1
-        decision.age = age
-        var localReward = clamp(Number(decision.localReward) || 0, -1, 1)
         available.push({
-            traceIndex: i,
+            creditVersion: AI_DECISION_CREDIT_VERSION,
             familyIndex: decision.familyIndex,
             stateFeatures: decision.stateFeatures.slice(0),
             chosenCandidateFeatures: decision.chosenCandidateFeatures.slice(0),
-            rejectedCandidateFeatures: decision.rejectedCandidateFeatures.slice(0),
             memoryIn: decision.memoryIn.slice(0),
-            localReward: localReward,
-            age: age,
+            startedAtMs: Math.max(0, Math.floor(Number(decision.startedAtMs) || 0)),
+            settledAtMs: Math.max(0, Math.floor(Number(decision.settledAtMs) || 0)),
+            intervalReward: clamp(Number(decision.intervalReward) || 0, -1, 1),
+            successorStateFeatures: decision.successorStateFeatures.slice(0),
+            successorMemory: decision.successorMemory.slice(0),
+            terminal: decision.terminal === true,
         })
     }
     var maximum = maximumDecisions == null ? available.length : Math.max(0, Math.floor(maximumDecisions))
-    if(available.length <= maximum) {
-        return available.map(function(sample) {
-            delete sample.traceIndex
-            return sample
-        })
-    }
+    if(maximum <= 0) return []
+    if(available.length <= maximum) return available
+    return available.slice(available.length - maximum)
+}
 
-    var byFamily = aiCreateVector(AI_DECISION_FAMILY_COUNT, null).map(function() { return [] })
-    for(var availableIndex = available.length - 1; availableIndex >= 0; availableIndex--) {
-        byFamily[available[availableIndex].familyIndex].push(available[availableIndex])
-    }
-    var selected = []
-    var selectedIndices = {}
-    var familyOffset = 0
-    while(selected.length < maximum) {
-        var added = false
-        for(var familyIndex = 0; familyIndex < AI_DECISION_FAMILY_COUNT && selected.length < maximum; familyIndex++) {
-            if(byFamily[familyIndex][familyOffset]) {
-                var familySample = byFamily[familyIndex][familyOffset]
-                selected.push(familySample)
-                selectedIndices[familySample.traceIndex] = true
-                added = true
+function getAIDecisionTransitionDiscount(sample) {
+    var durationSeconds = Math.max(0, Number(sample.settledAtMs) - Number(sample.startedAtMs)) / 1000
+    return Math.pow(AI_DECISION_DISCOUNT_PER_SECOND, durationSeconds)
+}
+
+function getAIFourStepDecisionTargets(samples, terminalReward, policy) {
+    var targets = []
+    for(var i = 0; i < samples.length; i++) {
+        var discountedReturn = 0
+        var discount = 1
+        var lastSample = samples[i]
+        var terminalReached = false
+        for(var step = 0; step < AI_DECISION_TD_STEPS && i + step < samples.length; step++) {
+            lastSample = samples[i + step]
+            discountedReturn += discount * clamp(Number(lastSample.intervalReward) || 0, -1, 1)
+            discount *= getAIDecisionTransitionDiscount(lastSample)
+            if(lastSample.terminal) {
+                discountedReturn += discount * terminalReward
+                terminalReached = true
+                break
             }
         }
-        if(added == false) break
-        familyOffset++
-    }
-    for(var recentIndex = available.length - 1; recentIndex >= 0 && selected.length < maximum; recentIndex--) {
-        if(!selectedIndices[available[recentIndex].traceIndex]) {
-            selected.push(available[recentIndex])
+        if(!terminalReached) {
+            var successor = aiDecisionForward(lastSample.successorStateFeatures, lastSample.chosenCandidateFeatures, lastSample.familyIndex, lastSample.successorMemory, policy)
+            if(successor) discountedReturn += discount * successor.value
         }
+        targets.push(clamp(discountedReturn, -1, 1))
     }
-    selected.sort(function(a, b) { return a.traceIndex - b.traceIndex })
-    return selected.map(function(sample) {
-        delete sample.traceIndex
-        return sample
-    })
+    return targets
 }
 
 function trainAIDecisionsFromMatch(side, terminalReward) {
     var samples = collectAIDecisionSamples(side, terminalReward, AI_MAX_PUBLIC_DECISION_SAMPLES)
     var ownLives = players[side].lives == Infinity ? 150 : Math.max(0, Number(players[side].lives) || 0)
     var survivalClass = ownLives <= 0 ? 0 : ownLives <= 50 ? 1 : ownLives < 150 ? 2 : 3
+    var targets = getAIFourStepDecisionTargets(samples, terminalReward, aiLearning.policy)
     for(var i = 0; i < samples.length; i++) {
-        trainAIDecision(samples[i], terminalReward, survivalClass, aiLearning.policy)
+        trainAIDecision(samples[i], targets[i], survivalClass, aiLearning.policy)
     }
     return samples.length
 }
@@ -3583,7 +3597,6 @@ function collectAITacticalLearningObservations(side, terminalReward, maximumDeci
     if(!aiProfile) {
         return []
     }
-    settleAITacticalDecision(side, getCurrentPlayerMatchupStyle(side))
     var observations = []
     var startIndex = maximumDecisions == null ? 0 : Math.max(0, aiProfile.tacticalTrace.length - Math.max(0, maximumDecisions))
     for(var i = startIndex; i < aiProfile.tacticalTrace.length; i++) {
@@ -3591,8 +3604,8 @@ function collectAITacticalLearningObservations(side, terminalReward, maximumDeci
         if(!decision.stateKey || !decision.family || !decision.actionKey) {
             continue
         }
-        var terminalWeight = 0.3 * Math.pow(0.985, aiProfile.tacticalTrace.length - i - 1)
-        var target = clamp(decision.localReward * 0.7 + terminalReward * terminalWeight, -1, 1)
+        var terminalWeight = 0.3 * Math.pow(AI_DECISION_DISCOUNT_PER_SECOND, Math.max(0, gameNow() - Number(decision.settledAtMs || 0)) / 1000)
+        var target = clamp((Number(decision.intervalReward) || 0) * 0.7 + terminalReward * terminalWeight, -1, 1)
         observations.push(createAIPublicLearningObservation("tacticalStats", decision.stateKey + "|" + decision.family + "|" + decision.actionKey, target))
         observations.push(createAIPublicLearningObservation("tacticalFamilyStats", decision.family + "|" + decision.actionKey, target))
     }
@@ -3978,6 +3991,7 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
     if(selfPlayActive && typeof shouldAITrainingPublishContributions == "function" && shouldAITrainingPublishContributions() == false) {
         return null
     }
+    settleAITacticalDecision(aiSide, null, true)
     var observations = []
     function addObservation(store, key, value) {
         if(observations.length < AI_MAX_CONTRIBUTION_OBSERVATIONS) {
@@ -4007,13 +4021,17 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
 
     var decisionSamples = collectAIDecisionSamples(aiSide, reward, AI_MAX_PUBLIC_DECISION_SAMPLES).map(function(sample) {
         return {
+            creditVersion: sample.creditVersion,
             familyIndex: sample.familyIndex,
             stateFeatures: sample.stateFeatures,
             chosenCandidateFeatures: sample.chosenCandidateFeatures,
-            rejectedCandidateFeatures: sample.rejectedCandidateFeatures,
             memoryIn: sample.memoryIn,
-            localReward: sample.localReward,
-            age: sample.age,
+            startedAtMs: sample.startedAtMs,
+            settledAtMs: sample.settledAtMs,
+            intervalReward: sample.intervalReward,
+            successorStateFeatures: sample.successorStateFeatures,
+            successorMemory: sample.successorMemory,
+            terminal: sample.terminal,
         }
     })
     var contribution = {
@@ -5971,14 +5989,16 @@ function getTowerHeuristicDps(tower) {
 }
 
 function cloneTowerUpgradeState(tower) {
-    return {
-        towerType: tower.towerType,
-        path1Upgrades: tower.path1Upgrades,
-        path2Upgrades: tower.path2Upgrades,
-        path3Upgrades: tower.path3Upgrades,
-        playerSide: tower.playerSide,
-        towerID: tower.towerID,
+    var clone = Object.create(Object.getPrototypeOf(tower))
+    var keys = Object.keys(tower)
+    for(var i = 0; i < keys.length; i++) {
+        var value = tower[keys[i]]
+        if(Array.isArray(value)) clone[keys[i]] = value.slice()
+        else if(value instanceof Set) clone[keys[i]] = new Set(value)
+        else if(value instanceof Map) clone[keys[i]] = new Map(value)
+        else clone[keys[i]] = value
     }
+    return clone
 }
 
 function getBloonRemainingTimeSec(bloon) {
@@ -6977,6 +6997,7 @@ function runAIAiming(side) {
         actionKey: "aim|follow",
         count: aimTowers.length,
         countScale: 8,
+        manualFollow: true,
     }, matchup, decisionState)
     if(isAIDecisionScoreBetter(followDecision, bestAim.decisionSample)) bestAim = { type: "follow", x: players[side].cursor.x, y: players[side].cursor.y, decisionSample: followDecision }
     for(var bloonIndex = 0; bloonIndex < bloons.length; bloonIndex++) {
@@ -6991,6 +7012,7 @@ function runAIAiming(side) {
             position: clamp((Number(bloon.pathPos) || 0) / 100, 0, 1),
             count: Math.max(0, Number(bloon.health) || 0),
             countScale: 1000,
+            manualLock: true,
         }, matchup, decisionState)
         if(isAIDecisionScoreBetter(lockDecision, bestAim.decisionSample)) bestAim = { type: "lock", x: bloon.x, y: bloon.y, decisionSample: lockDecision }
     }
@@ -7030,6 +7052,7 @@ function aiSelectEcoSend(side, matchup) {
             index: localIndex,
             maxIndex: endIndex - startIndex,
             count: bloon.count,
+            send: bloon,
             selected: localIndex == currentLocalIndex,
         }, matchup, decisionState)
         if(isAIDecisionScoreBetter(decision, bestDecision)) {
@@ -7097,6 +7120,8 @@ function getBestRushPlan(side, matchup) {
                 maxIndex: endIndex - startIndex,
                 count: groups,
                 countScale: 6,
+                send: candidate,
+                sendGroups: groups,
             }, matchup, decisionState)
             if(isAIDecisionScoreBetter(decision, bestPlan.decisionSample)) {
                 bestPlan = { index: i, groups: groups, noop: false, decisionSample: decision }
@@ -7790,6 +7815,9 @@ function getBestAIEconomyUtilityOption(side, matchup) {
             tier3: tower.path3Upgrades,
             count: Math.max(0, Number(tower.towerVar) || 0),
             countScale: 6000,
+            tower: tower,
+            capabilityScale: -1,
+            capabilityFacts: { cashDelta: sellValue },
         }, matchup, decisionState)
         considerUtilityOption({ type: "sell", tower: tower, score: decision.score, decisionSample: decision })
         if(tower.towerType == "farm" && tower.path2Upgrades >= 3 && tower.towerVar > 0) {
@@ -7806,6 +7834,7 @@ function getBestAIEconomyUtilityOption(side, matchup) {
                 tier3: tower.path3Upgrades,
                 count: tower.towerVar,
                 countScale: 6000,
+                capabilityFacts: { cashDelta: tower.towerVar },
             }, matchup, decisionState)
             considerUtilityOption({ type: "collectFarm", tower: tower, score: collectDecision.score, decisionSample: collectDecision })
         }
@@ -7823,6 +7852,7 @@ function getBestAIEconomyUtilityOption(side, matchup) {
             y: banana.y,
             count: Math.max(0, Number(banana.cashGiven) || 0),
             countScale: 6000,
+            capabilityFacts: { cashDelta: banana.cashGiven, effectDuration: Math.max(0, banana.lifespan - gameNow()) },
         }, matchup, decisionState)
         considerUtilityOption({ type: "collectBanana", banana: banana, score: bananaDecision.score, decisionSample: bananaDecision })
     }
@@ -8189,6 +8219,9 @@ function getPreferredGoalPath(tower, matchup) {
 function getHypotheticalTowerAfterUpgrade(tower, pathNumber) {
     var clone = cloneTowerUpgradeState(tower)
     clone["path" + pathNumber + "Upgrades"]++
+    if(pathNumber == 1 && typeof applyPath1UpgradeEffects == "function") applyPath1UpgradeEffects(clone)
+    if(pathNumber == 2 && typeof applyPath2UpgradeEffects == "function") applyPath2UpgradeEffects(clone)
+    if(pathNumber == 3 && typeof applyPath3UpgradeEffects == "function") applyPath3UpgradeEffects(clone)
     return clone
 }
 
@@ -8414,6 +8447,8 @@ function getBestTowerUpgradeOption(side, matchup, defenseMath) {
                 tier1: hypotheticalTower.path1Upgrades,
                 tier2: hypotheticalTower.path2Upgrades,
                 tier3: hypotheticalTower.path3Upgrades,
+                capabilityBefore: getAITowerCapabilityFacts(tower),
+                capabilityAfter: getAITowerCapabilityFacts(hypotheticalTower),
             }, matchup, decisionState)
 
             var option = {
@@ -8930,6 +8965,7 @@ function runAIBoosts(side) {
             count: getBoostCount(side, slot),
             countScale: BOOST_SETTINGS.charges,
             cooldownReady: true,
+            boostType: candidate.type,
         }, matchup, stateFeatures)
         if(!bestBoost || isAIDecisionScoreBetter(candidate.decisionSample, bestBoost.decisionSample)) {
             bestBoost = candidate
@@ -8959,7 +8995,6 @@ function isAIPaidActionPending() {
 function runAIGameplayDecisionCycle(side) {
     handleAIRoundStartBoosts(side)
     updateAIMatchTelemetry()
-    settleAITacticalDecision(side, getCurrentPlayerMatchupStyle(side))
     runAIDefense(side)
     if(isAIPaidActionPending()) {
         players[side].autoEco = false
