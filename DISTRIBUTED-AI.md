@@ -4,7 +4,7 @@
 
 Every generation starts from one immutable snapshot of the authoritative Hosted Model:
 
-1. Prepare fetches and validates the schema-10 model and credential-free source manifest.
+1. Prepare fetches and validates the schema-11 model and credential-free source manifest.
 2. Deterministic Chromium workers train independent complete policy bundles from that exact snapshot.
 3. The selector validates every unique shard against the same baseline and computes a deterministic policy average. A shard's normalized weight is proportional to `exp((built-in evaluation score - maximum shard score) * 8)`.
 4. Materialization clones the hosted baseline and changes only the aggregated policy bundle, generations, and bounded two-policy history. Neural tensors are score-weighted averages, while each per-family training counter is the baseline count plus the sum of every shard's learned increment. Shard statistics and stores are discarded.
@@ -55,7 +55,7 @@ The matching server-side SHA-256 hash must be installed before hosted promotion 
 
 The hosted client recognizes InfinityFree's fixed AES browser challenge, derives its short-lived `__test` cookie locally, and retries the original same-origin request once. Other HTML responses and malformed challenges remain hard failures.
 
-A healthy continuous run dispatches its successor before finishing. The watchdog checks four times per hour and starts training only when no default-branch generation is active. It refuses to start when an `ai-promotion/*` branch indicates an unresolved hosted/audit transaction. A circuit breaker opens after three consecutive failed training runs instead of retrying forever.
+A healthy continuous run dispatches its successor before finishing. The watchdog checks four times per hour and starts training only when no default-branch generation is active. It refuses to start when an `ai-promotion/*` branch indicates an unresolved hosted/audit transaction. If GitHub holds a bot-created promotion PR for contributor approval, the trusted finalizer approves only the exact CI run whose workflow, bot actor, PR, base branch, promotion branch, and commit SHA match that transaction. A circuit breaker opens after three consecutive failed training runs instead of retrying forever.
 
 Either enable variable is an immediate kill switch for automatic promotion, successor dispatch, and watchdog restarts. An already-running read-only generation may finish its report.
 
@@ -80,7 +80,7 @@ Continuous promotion requires:
 - Every map, side, and role score to meet the derived bucket floor, `minimum_score - 0.10`.
 - Candidate survival to meet `minimum_score - 0.08` and severe collapses to stay at or below `1 - minimum_score - 0.15`. Survival means candidate lives remain above zero; a severe collapse means candidate lives reach zero while the opponent retains at least 75 lives.
 - Exact baseline, candidate, and evaluation identities.
-- Finite schema-10 policy parameters, the exact 23,752-parameter tensor contract, and size bounds.
+- Finite schema-11 policy parameters, the exact 24,904-parameter tensor contract, and size bounds.
 - Browser, endpoint, distributed, deterministic replay, and exact-commit CI checks.
 - A least-privilege policy-only credential.
 

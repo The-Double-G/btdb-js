@@ -1193,6 +1193,8 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
             countScale: 5,
             capabilityFacts: getAILoadoutCapabilityFacts(entry.loadout.towers, entry.loadout.boosts, 0),
         }, null, stateFeatures)
+        entry.decision.counterLearningBonus = getAILoadoutCounterLearningBonus(entry.loadout.key, observedLoadoutSummary)
+        entry.decision.score += entry.decision.counterLearningBonus
         if(!bestEntry || isAIDecisionScoreBetter(entry.decision, bestEntry.decision)) {
             bestEntry = entry
         }

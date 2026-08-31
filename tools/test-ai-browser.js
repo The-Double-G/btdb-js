@@ -711,6 +711,42 @@ async function main() {
                 }
             })
 
+            ensureAILoadoutLibraryInitialized()
+            const originalLoadoutLibrary = aiLoadoutLibrary
+            const originalLoadoutsByKey = aiLoadoutsByKey
+            const originalLoadoutCounterStats = aiLearning.loadoutCounterStats
+            const originalLoadoutScorer = scoreAIDecisionCandidate
+            let loadoutCounterSelection
+            try {
+                const counterCandidates = originalLoadoutLibrary.slice(0, 2)
+                const observedLoadoutSummary = originalLoadoutLibrary[2].summary
+                aiLoadoutLibrary = counterCandidates
+                aiLoadoutsByKey = Object.fromEntries(counterCandidates.map(loadout => [loadout.key, loadout]))
+                aiLearning.loadoutCounterStats = {}
+                scoreAIDecisionCandidate = (side, familyIndex, metadata) => ({
+                    id: metadata.id,
+                    familyIndex,
+                    neuralScore: metadata.id == counterCandidates[0].key ? 0.2 : 0.1,
+                    score: metadata.id == counterCandidates[0].key ? 0.2 : 0.1,
+                })
+                const baselineLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, null)
+                aiLearning.loadoutCounterStats[getAILoadoutSelectionStatKey(observedLoadoutSummary.signature, counterCandidates[0].key)] = { samples: 64, score: -1, mean: -1, m2: 0 }
+                aiLearning.loadoutCounterStats[getAILoadoutSelectionStatKey(observedLoadoutSummary.signature, counterCandidates[1].key)] = { samples: 64, score: 1, mean: 1, m2: 0 }
+                const learnedLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, null)
+                loadoutCounterSelection = {
+                    baselineKey: baselineLoadout.key,
+                    learnedKey: learnedLoadout.key,
+                    baselineExpectedKey: counterCandidates[0].key,
+                    learnedExpectedKey: counterCandidates[1].key,
+                    learnedBonus: learnedLoadout.decisionSample.counterLearningBonus,
+                }
+            } finally {
+                aiLoadoutLibrary = originalLoadoutLibrary
+                aiLoadoutsByKey = originalLoadoutsByKey
+                aiLearning.loadoutCounterStats = originalLoadoutCounterStats
+                scoreAIDecisionCandidate = originalLoadoutScorer
+            }
+
             aiProfile.decisionMemory = Array(AI_DECISION_MEMORY_SIZE).fill(0)
             const memoryState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null)
             const memoryCandidateA = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.upgrade, { id: "memory-a", type: "wizard" }, null, memoryState)
@@ -931,6 +967,7 @@ async function main() {
                 invalidTrainerStatusSucceeded,
                 localTrainerFetches,
                 localTrainerStatusSucceeded,
+                loadoutCounterSelection,
                 retainedSampleFamilyCounts,
                 retainedSparseStarts,
                 retainedTraceFamilyCounts,
@@ -1083,6 +1120,9 @@ async function main() {
         })
         assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)
+        assert.equal(result.loadoutCounterSelection.baselineKey, result.loadoutCounterSelection.baselineExpectedKey)
+        assert.equal(result.loadoutCounterSelection.learnedKey, result.loadoutCounterSelection.learnedExpectedKey)
+        assert.ok(result.loadoutCounterSelection.learnedBonus > 0)
         assert.equal(result.retainedTraceFamilyCounts.reduce((sum, count) => sum + count, 0), 128)
         assert.deepEqual(result.retainedTraceFamilyCounts.slice(0, 3), [1, 1, 1])
         assert.deepEqual(result.retainedSampleFamilyCounts.slice(0, 3), [0, 0, 0])
