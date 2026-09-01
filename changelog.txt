@@ -4,6 +4,7 @@ v2.6.0 -
 Made Banana Farmer placement free in modern and Classic modes, including every Classic Farmer upgrade tier
 Fixed AI Farmer prerequisites, service-range placement, emergency filtering, scored-position execution, duplicate placement, and zero-value resale churn
 Made distributed workers recover and report up to three discarded self-play attempts per match with a match-count-aware aggregate limit so full unattended generations continue without hiding repeated failures
+Made self-play liveness track bloon path movement so valid frozen-evaluation matches are not discarded while entities are still advancing
 Upgraded the authoritative AI to schema 12 and the 26,440-parameter semantic-intent-spatial recurrent actor-critic v4
 Expanded decision state and candidate inputs to 80 values with normalized strategy intent and perspective-correct placement geometry
 Advanced selected-action learning to credit version 3 while retaining bounded four-step recurrent actor-critic updates
@@ -27,7 +28,7 @@ Expanded continuous GitHub generations to 3,840 training matches and 320 frozen 
 Raised continuous promotion requirements to 58% over at least 160 balanced games, with map/side/role, survival, and severe-collapse gates
 Added deterministic score-weighted policy aggregation across every validated training shard
 Made complete strategy-and-decision policy bundles atomic across aggregation, promotion, reconciliation, and the audit mirror
-Added quarter-hour watchdog recovery, unresolved-promotion detection, and a three-failure circuit breaker for unattended training
+Added five-minute watchdog recovery, unresolved-promotion detection, and an automatic 30-minute cooldown after three failed unattended training runs
 Added a sanitized trainer-status publisher with retained frozen-evaluation and hosted-promotion evidence
 Raised validated model and artifact limits to 8 MiB while retaining 128 KiB public contribution limits
 

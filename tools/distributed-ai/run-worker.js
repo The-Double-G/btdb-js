@@ -408,6 +408,18 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                 completedMatches: aiTrainingState.trueSelfPlayMatches,
                 discarded: !!aiTrainingState.trueSelfPlayDiscardCurrentMatch,
                 stalls: aiTrainingState.trueSelfPlayStallRecoveries,
+                recoveryDiagnostics: aiTrainingState.trueSelfPlayDiscardCurrentMatch ? {
+                    progressKey: getAITrainingTrueSelfPlayProgressKey(),
+                    gameStarted: !!gameStarted,
+                    round,
+                    map: mapNumber,
+                    candidateSide: aiTrainingState.candidateSide == PLAYER_SIDE.left ? "left" : "right",
+                    candidateRole: aiTrainingState.candidateResponds ? "responder" : "probe",
+                    leftLives: p1lives,
+                    rightLives: p2lives,
+                    leftTowers: p1Towers.slice(0),
+                    rightTowers: p2Towers.slice(0),
+                } : null,
                 lastMatch: window.__daiLastMatch,
                 builtInEvaluationScore: window.__daiLastBuiltInEvaluationScore,
                 finiteModel: finiteTree(aiLearning, new Set()),
@@ -421,7 +433,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
         if(recovered > 0) {
             recoveriesThisMatch += recovered
             observedStalls = state.stalls
-            console.warn(`Recovered discarded match ${expectedMatches} (${recoveriesThisMatch}/${MAX_STALL_RECOVERIES_PER_MATCH})`)
+            console.warn(`Recovered discarded match ${expectedMatches} (${recoveriesThisMatch}/${MAX_STALL_RECOVERIES_PER_MATCH}): ${JSON.stringify(state.recoveryDiagnostics)}`)
             if(recoveriesThisMatch > MAX_STALL_RECOVERIES_PER_MATCH) fail(`Stall recovery limit exceeded during match ${expectedMatches}`)
             if(observedStalls > maxRecoveredStalls(requestedMatches)) fail(`Stall recovery limit exceeded for the worker result`)
         }

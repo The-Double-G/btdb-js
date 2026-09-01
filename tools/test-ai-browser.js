@@ -1174,6 +1174,17 @@ async function main() {
                 players[PLAYER_SIDE.left].selectedBloon = originalCaptureEnvironment.leftSelectedBloon
             }
 
+            const originalProgressBloons = bloons
+            let progressKeyTracksBloonMovement = false
+            try {
+                bloons = [{ pathPos: 10 }]
+                const progressKeyBeforeMovement = getAITrainingTrueSelfPlayProgressKey()
+                bloons[0].pathPos = 10.25
+                progressKeyTracksBloonMovement = getAITrainingTrueSelfPlayProgressKey() != progressKeyBeforeMovement
+            } finally {
+                bloons = originalProgressBloons
+            }
+
             return {
                 aimActionCompleted: initialAimActionCompleted,
                 aimTarget: { x: aimX, y: aimY },
@@ -1213,6 +1224,7 @@ async function main() {
                 normalDirectMode,
                 overviewLabels,
                 policyContract,
+                progressKeyTracksBloonMovement,
                 candidateFeatureContracts,
                 placementFeatureContract,
                 farmerPriceContract,
@@ -1303,6 +1315,7 @@ async function main() {
         assert.equal(result.lastEvaluation.label, "Last Eval")
         assert.equal(result.lastEvaluation.score, 0.58)
         assert.equal(result.legacyContributionQueueRemoved, true)
+        assert.equal(result.progressKeyTracksBloonMovement, true)
         assert.equal(result.sameEpochRefreshSucceeded, true)
         assert.deepEqual(result.sameEpochRefresh, { games: 7, generation: 4, revision: 4 })
         assert.equal(result.resetEpochRefreshSucceeded, true)

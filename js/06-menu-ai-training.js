@@ -973,6 +973,13 @@ function resetAITrainingTrueSelfPlayProgressWatchdog() {
 }
 
 function getAITrainingTrueSelfPlayProgressKey() {
+    var bloonPathProgress = 0
+    for(var i = 0; i < bloons.length; i++) {
+        var pathProgress = Number(bloons[i].pathPos)
+        if(Number.isFinite(pathProgress)) {
+            bloonPathProgress += pathProgress
+        }
+    }
     return [
         gameStarted ? 1 : 0,
         round,
@@ -988,6 +995,7 @@ function getAITrainingTrueSelfPlayProgressKey() {
         p1BloonQueue.length,
         p2BloonQueue.length,
         Math.floor((p1TotalPopCount + p2TotalPopCount) / 25),
+        Math.floor(bloonPathProgress * 10),
         Math.floor((timeRoundEnded || 0) / 500),
     ].join("|")
 }

@@ -2,8 +2,7 @@ name: Continuous AI Training Watchdog
 
 on:
   schedule:
-    - cron: "17 * * * *"
-    - cron: "2,32,47 * * * *"
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
     inputs:
       completed_training_run_id:
@@ -210,11 +209,30 @@ jobs:
           fi
 
           recent=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
-            -f head_sha="$current_sha" -f status=completed -f per_page=100 --jq \
-            "[.workflow_runs[] | select(.display_title == \"$expected_title\") | .conclusion][0:3]")
-          if node -e 'const values=JSON.parse(process.argv[1]);const failed=new Set(["failure","timed_out","startup_failure","action_required"]);process.exit(values.length>=3&&values.every(value=>failed.has(value))?0:1)' "$recent"; then
-            echo "Circuit breaker open: the last 3 continuous training runs for $current_sha failed. Investigate before retrying." >&2
-            exit 1
+            -f head_sha="$current_sha" -f status=completed -f per_page=100 | jq --arg title "$expected_title" \
+            '[.workflow_runs[] | select(.display_title == $title) | {id, conclusion, created_at, updated_at}] | sort_by(.created_at, .id) | reverse | .[0:3]')
+          cooldown=$(node -e '
+            const runs=JSON.parse(process.argv[1]);
+            const failed=new Set(["failure","timed_out","startup_failure","action_required"]);
+            const limited=runs.length>=3&&runs.every(run=>failed.has(run.conclusion));
+            let retryAt=null;
+            let waitSeconds=0;
+            if(limited){
+              const completed=runs.map(run=>Date.parse(run.updated_at));
+              if(completed.some(value=>!Number.isFinite(value))) throw new Error("Recent training run has an invalid updated_at timestamp");
+              const retryAtMs=Math.max(...completed)+30*60*1000;
+              retryAt=new Date(retryAtMs).toISOString();
+              waitSeconds=Math.max(0,Math.ceil((retryAtMs-Date.now())/1000));
+            }
+            process.stdout.write(JSON.stringify({limited,retryAt,waitSeconds}));
+          ' "$recent")
+          if jq -e '.limited and .waitSeconds > 0' <<<"$cooldown" >/dev/null; then
+            retry_at=$(jq -r '.retryAt' <<<"$cooldown")
+            echo "Failure cooldown active: the last 3 continuous training runs for $current_sha failed. Scheduled reconciliation will retry after $retry_at."
+            exit 0
+          fi
+          if jq -e '.limited' <<<"$cooldown" >/dev/null; then
+            echo "Failure cooldown elapsed; retrying continuous training for $current_sha."
           fi
 
           before_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
