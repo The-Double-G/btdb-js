@@ -39,8 +39,11 @@ var AI_IS_LOCAL_RUNTIME = typeof window != "undefined" && (window.location.proto
 var AI_CROSS_MATCH_LEARNING_ENABLED = !AI_IS_LOCAL_RUNTIME
 var AI_LEARNING_ENDPOINT = "ai-learning.php?protocol=1"
 var AI_TRAINING_STATUS_ENDPOINT = "https://raw.githubusercontent.com/The-Double-G/btdb-js/ai-status/ai-training-status.json"
+var AI_TRAINING_JOBS_ENDPOINT = "https://api.github.com/repos/The-Double-G/btdb-js/actions/runs/"
 var AI_TRAINING_STATUS_MAX_BYTES = 32768
-var AI_TRAINING_STATUS_REFRESH_INTERVAL = 60000
+var AI_TRAINING_JOBS_MAX_BYTES = 1048576
+var AI_TRAINING_STATUS_REFRESH_INTERVAL = 120000
+var AI_TOWER_MINIMUM_HOLD_ROUNDS = 4
 var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV2"
 var AI_MAX_PENDING_CONTRIBUTIONS = 8
 var AI_MAX_CONTRIBUTION_OBSERVATIONS = 320
@@ -131,6 +134,10 @@ var aiTrainerStatusState = {
     loadInFlight: false,
     lastLoadedAt: 0,
     lastError: "",
+    liveRunId: 0,
+    liveRunAttempt: 0,
+    liveUpdatedAt: 0,
+    liveError: "",
 }
 var aiTrainerStatusRefreshPromise = null
 var aiTowerDpsCache = {}
@@ -4724,6 +4731,125 @@ function normalizeAITrainerStatus(value) {
     }
 }
 
+function getAITrainerLiveJobsURL(current) {
+    return AI_TRAINING_JOBS_ENDPOINT + current.runId + "/attempts/" + current.runAttempt + "/jobs?per_page=100"
+}
+
+function getAITrainerJobKind(name) {
+    var normalized = name.toLowerCase()
+    if(/^prepare(?:\s|\(|$)/.test(normalized)) return "prepare"
+    if(/^train(?:\s|\(|$)/.test(normalized)) return "train"
+    if(/^select(?:\s|\(|$)/.test(normalized)) return "select"
+    if(/^evaluate(?:\s|\(|$)/.test(normalized)) return "evaluate"
+    if(/^report(?:\s|\(|$)/.test(normalized)) return "report"
+    if(/^promote(?:\s|\(|$)/.test(normalized) || /^publish-hosted(?:\s|\(|$)/.test(normalized)) return "promote"
+    if(/^finalize-promotion(?:\s|\(|$)/.test(normalized)) return "finalize"
+    if(/^continue(?:\s|\(|$)/.test(normalized) || /^handoff-continuous-training(?:\s|\(|$)/.test(normalized)) return "continue"
+    return "unknown"
+}
+
+function createAITrainerJobCounts(includeCompleted) {
+    var counts = { total: 0, queued: 0, inProgress: 0, succeeded: 0, failed: 0, cancelled: 0, skipped: 0 }
+    if(includeCompleted) counts.completed = 0
+    return counts
+}
+
+function addAITrainerJobCount(counts, job, includeCompleted) {
+    counts.total++
+    if(job.status == "in_progress") counts.inProgress++
+    else if(job.status == "completed" && includeCompleted) counts.completed++
+    else if(job.status != "completed") counts.queued++
+    if(job.conclusion == "success") counts.succeeded++
+    else if(["failure", "timed_out", "action_required", "stale", "startup_failure"].includes(job.conclusion)) counts.failed++
+    else if(job.conclusion == "cancelled") counts.cancelled++
+    else if(job.conclusion == "skipped") counts.skipped++
+}
+
+function projectAITrainerLiveJobs(value, current) {
+    if(!value || typeof value != "object" || Array.isArray(value)
+        || isAITrainerStatusInteger(value.total_count, 0) == false
+        || !Array.isArray(value.jobs)
+        || value.total_count != value.jobs.length
+        || value.jobs.length > 100) {
+        throw new Error("Live trainer jobs response is invalid")
+    }
+    var conclusions = [null, "success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure"]
+    var statuses = ["queued", "in_progress", "completed", "waiting", "pending", "requested"]
+    var jobs = []
+    for(var i = 0; i < value.jobs.length; i++) {
+        var job = value.jobs[i]
+        if(!job || typeof job != "object" || Array.isArray(job)
+            || typeof job.name != "string" || job.name.length == 0 || job.name.length > 256
+            || statuses.includes(job.status) == false
+            || conclusions.includes(job.conclusion) == false
+            || job.status != "completed" && job.conclusion !== null
+            || job.run_id !== current.runId
+            || job.run_attempt !== current.runAttempt) {
+            throw new Error("Live trainer job does not match the published run")
+        }
+        jobs.push({ name: job.name, status: job.status, conclusion: job.conclusion })
+    }
+
+    var jobCounts = createAITrainerJobCounts(true)
+    var training = createAITrainerJobCounts(false)
+    var evaluation = createAITrainerJobCounts(false)
+    for(var jobIndex = 0; jobIndex < jobs.length; jobIndex++) {
+        var currentJob = jobs[jobIndex]
+        var kind = getAITrainerJobKind(currentJob.name)
+        addAITrainerJobCount(jobCounts, currentJob, true)
+        if(kind == "train") addAITrainerJobCount(training, currentJob, false)
+        if(kind == "evaluate") addAITrainerJobCount(evaluation, currentJob, false)
+    }
+
+    var phase = current.state == "requested" ? "queued" : "running"
+    if(current.state == "requested" && jobs.length == 0) {
+        phase = "queued"
+    } else {
+        var ranks = { unknown: 0, prepare: 1, train: 2, select: 3, evaluate: 4, report: 5, promote: 6, finalize: 7, continue: 8 }
+        var phases = { unknown: "running", prepare: "preparing", train: "training", select: "selecting", evaluate: "evaluating", report: "reporting", promote: "promoting", finalize: "finalizing", continue: "continuing" }
+        var candidates = jobs.filter(function(job) { return job.status == "in_progress" })
+        var preferHigherRank = true
+        if(candidates.length == 0) {
+            candidates = jobs.filter(function(job) { return job.status != "completed" })
+            preferHigherRank = false
+        }
+        if(candidates.length == 0) candidates = jobs.filter(function(job) { return job.status == "completed" })
+        if(candidates.length > 0) {
+            var selected = candidates[0]
+            for(var candidateIndex = 1; candidateIndex < candidates.length; candidateIndex++) {
+                var selectedRank = ranks[getAITrainerJobKind(selected.name)]
+                var candidateRank = ranks[getAITrainerJobKind(candidates[candidateIndex].name)]
+                if(preferHigherRank ? candidateRank > selectedRank : candidateRank < selectedRank) selected = candidates[candidateIndex]
+            }
+            phase = phases[getAITrainerJobKind(selected.name)]
+        }
+    }
+    var projection = { jobs: jobCounts, workers: { training: training, evaluation: evaluation } }
+    if(normalizeAITrainerStatusProjection(projection) == null) {
+        throw new Error("Live trainer jobs projection is invalid")
+    }
+    return { phase: phase, projection: projection }
+}
+
+async function fetchAITrainerJSON(url, maximumBytes, controller) {
+    var response = await fetch(url, {
+        cache: "no-store",
+        credentials: "omit",
+        mode: "cors",
+        referrerPolicy: "no-referrer",
+        signal: controller ? controller.signal : undefined,
+    })
+    if(!response.ok) {
+        throw new Error("Trainer status returned HTTP " + response.status)
+    }
+    var body = await response.text()
+    var size = typeof TextEncoder == "function" ? new TextEncoder().encode(body).byteLength : body.length
+    if(size > maximumBytes) {
+        throw new Error("Trainer status response is too large")
+    }
+    return JSON.parse(body)
+}
+
 async function refreshAITrainerStatus(force) {
     if(AI_IS_LOCAL_RUNTIME) {
         return false
@@ -4739,27 +4865,27 @@ async function refreshAITrainerStatus(force) {
     var timeout = controller ? setTimeout(function() { controller.abort() }, 8000) : null
     aiTrainerStatusRefreshPromise = (async function() {
         try {
-            var response = await fetch(AI_TRAINING_STATUS_ENDPOINT + "?t=" + Date.now(), {
-                cache: "no-store",
-                credentials: "omit",
-                mode: "cors",
-                referrerPolicy: "no-referrer",
-                signal: controller ? controller.signal : undefined,
-            })
-            if(!response.ok) {
-                throw new Error("Trainer status returned HTTP " + response.status)
-            }
-            var body = await response.text()
-            var size = typeof TextEncoder == "function" ? new TextEncoder().encode(body).byteLength : body.length
-            if(size > AI_TRAINING_STATUS_MAX_BYTES) {
-                throw new Error("Trainer status response is too large")
-            }
-            var normalized = normalizeAITrainerStatus(JSON.parse(body))
+            var normalized = normalizeAITrainerStatus(await fetchAITrainerJSON(AI_TRAINING_STATUS_ENDPOINT + "?t=" + nativeDateNow(), AI_TRAINING_STATUS_MAX_BYTES, controller))
             if(!normalized) {
                 throw new Error("Trainer status response is invalid")
             }
             if(aiTrainerStatusState.status && compareAITrainerStatusRuns(normalized.current, aiTrainerStatusState.status.current) < 0) {
                 throw new Error("Trainer status response is stale")
+            }
+            aiTrainerStatusState.liveRunId = 0
+            aiTrainerStatusState.liveRunAttempt = 0
+            aiTrainerStatusState.liveUpdatedAt = 0
+            aiTrainerStatusState.liveError = ""
+            if(normalized.current.state != "completed") {
+                try {
+                    var liveProjection = projectAITrainerLiveJobs(await fetchAITrainerJSON(getAITrainerLiveJobsURL(normalized.current), AI_TRAINING_JOBS_MAX_BYTES, controller), normalized.current)
+                    normalized.current = Object.assign({}, normalized.current, liveProjection)
+                    aiTrainerStatusState.liveRunId = normalized.current.runId
+                    aiTrainerStatusState.liveRunAttempt = normalized.current.runAttempt
+                    aiTrainerStatusState.liveUpdatedAt = realNow()
+                } catch(liveError) {
+                    aiTrainerStatusState.liveError = liveError && liveError.message ? liveError.message : "Live trainer progress unavailable"
+                }
             }
             aiTrainerStatusState.status = normalized
             aiTrainerStatusState.lastLoadedAt = realNow()
@@ -4779,6 +4905,26 @@ async function refreshAITrainerStatus(force) {
     return aiTrainerStatusRefreshPromise
 }
 
+function formatAITrainerStatusAge(timestamp) {
+    var ageSeconds = Math.max(0, Math.floor((realNow() - timestamp) / 1000))
+    if(ageSeconds < 60) return "now"
+    if(ageSeconds < 3600) return Math.floor(ageSeconds / 60) + "m"
+    if(ageSeconds < 86400) return Math.floor(ageSeconds / 3600) + "h"
+    return Math.floor(ageSeconds / 86400) + "d"
+}
+
+function getAITrainerProgressMetric(status) {
+    var current = status.current
+    var publishedAge = formatAITrainerStatusAge(Date.parse(status.publishedAt))
+    if(aiTrainerStatusState.loadInFlight) return { label: "Progress", value: "Refreshing · " + publishedAge, color: "#f7c76d" }
+    if(aiTrainerStatusState.lastError) return { label: "Progress", value: "Cached · " + publishedAge, color: "#ff9f8f" }
+    if(current.state != "completed" && aiTrainerStatusState.liveRunId == current.runId && aiTrainerStatusState.liveRunAttempt == current.runAttempt && aiTrainerStatusState.liveUpdatedAt > 0) {
+        return { label: "Progress", value: "Live · " + formatAITrainerStatusAge(aiTrainerStatusState.liveUpdatedAt), color: "#7fe0a2" }
+    }
+    if(current.state != "completed" && aiTrainerStatusState.liveError) return { label: "Progress", value: "Fallback · " + publishedAge, color: "#f7c76d" }
+    return { label: "Progress", value: "Published · " + publishedAge, color: "#8f9bb5" }
+}
+
 function getAITrainerStatusMetrics() {
     var status = aiTrainerStatusState.status
     if(!status) {
@@ -4789,6 +4935,7 @@ function getAITrainerStatusMetrics() {
             { label: "Workers", value: "--", color: "#8f9bb5" },
             { label: "Frozen Eval", value: "Pending", color: "#8f9bb5" },
             { label: "Promotion", value: "None", color: "#8f9bb5" },
+            { label: "Progress", value: AI_IS_LOCAL_RUNTIME ? "Offline" : "No data", color: "#8f9bb5" },
         ]
     }
     var current = status.current
@@ -4813,6 +4960,7 @@ function getAITrainerStatusMetrics() {
         { label: "Workers", value: workerValue, color: "#7bd8d4" },
         { label: "Frozen Eval", value: evaluationValue, color: evaluationColor },
         { label: "Promotion", value: promotionValue, color: promotionColor },
+        getAITrainerProgressMetric(status),
     ]
 }
 
@@ -6044,6 +6192,7 @@ function tagAITowerPlacement(tower, role) {
     tower.aiPlacementBucket = getAIPlacementBucket(tower.playerSide, tower.x, tower.y)
     tower.aiPlacedAt = gameNow()
     tower.aiPlacedRound = getCurrentVisibleRound()
+    tower.aiLastInvestmentRound = tower.aiPlacedRound
     tower.aiLoadoutKey = getCurrentAILoadoutKey()
     tower.aiStrategyId = getCurrentAIStrategyId()
     tower.aiCrosspathContexts = tower.aiCrosspathContexts || {}
@@ -6053,7 +6202,11 @@ function tagAITowerPlacement(tower, role) {
 }
 
 function isAITowerSaleProtected(tower) {
-    return !!tower && Number.isFinite(tower.aiPlacedRound) && tower.aiPlacedRound == getCurrentVisibleRound()
+    if(!tower) {
+        return false
+    }
+    var lastInvestmentRound = Number.isFinite(tower.aiLastInvestmentRound) ? tower.aiLastInvestmentRound : tower.aiPlacedRound
+    return Number.isFinite(lastInvestmentRound) && getCurrentVisibleRound() - lastInvestmentRound < AI_TOWER_MINIMUM_HOLD_ROUNDS
 }
 
 function aiPlaceTower(side, slotIndex, x, y, role) {
@@ -6694,6 +6847,7 @@ function aiTryUpgradeTower(side, tower, pathNumber) {
     }
     var upgraded = tower[upgradeProp] > beforeUpgradeCount
     if(upgraded) {
+        tower.aiLastInvestmentRound = getCurrentVisibleRound()
         noteAITowerCrosspathContext(tower, getCurrentPlayerMatchupStyle(side))
     }
     return upgraded
@@ -6722,29 +6876,25 @@ function moveAICursorToward(side, targetX, targetY) {
     var dx = targetX - activeCursor.x
     var dy = targetY - activeCursor.y
 
-    if(Math.abs(dx) <= 15 && Math.abs(dy) <= 15) {
+    if(Math.abs(dx) <= CURSOR_MOVE_STEP && Math.abs(dy) <= CURSOR_MOVE_STEP) {
         activeCursor.x = targetX
         activeCursor.y = targetY
         return true
     }
 
-    if(Math.abs(dx) <= 15) {
+    if(Math.abs(dx) <= CURSOR_MOVE_STEP) {
         activeCursor.x = targetX
     } else {
-        moveCursor(side, dx > 0 ? 15 : -15, 0)
+        moveCursor(side, dx > 0 ? CURSOR_MOVE_STEP : -CURSOR_MOVE_STEP, 0)
     }
 
-    if(Math.abs(dy) <= 15) {
+    if(Math.abs(dy) <= CURSOR_MOVE_STEP) {
         activeCursor.y = targetY
     } else {
-        moveCursor(side, 0, dy > 0 ? 15 : -15)
+        moveCursor(side, 0, dy > 0 ? CURSOR_MOVE_STEP : -CURSOR_MOVE_STEP)
     }
 
     return activeCursor.x == targetX && activeCursor.y == targetY
-}
-
-function isAITrainingDirectAIActionMode() {
-    return typeof isAITrainingTrueSelfPlayActive == "function" && isAITrainingTrueSelfPlayActive()
 }
 
 function isManualAimTower(tower) {
@@ -6833,14 +6983,7 @@ function advanceAIManualAimAction(side) {
         }
 
         if(action.phase == "move-to-tower") {
-            var reachedTower = false
-            if(isAITrainingDirectAIActionMode()) {
-                players[side].cursor.x = tower.x
-                players[side].cursor.y = tower.y
-                reachedTower = true
-            } else {
-                reachedTower = moveAICursorToward(side, tower.x, tower.y)
-            }
+            var reachedTower = moveAICursorToward(side, tower.x, tower.y)
             if(!reachedTower) {
                 return true
             }
@@ -7153,14 +7296,6 @@ function executeAIAction(action) {
         if(!action.tower) {
             return false
         }
-        if(isAITrainingDirectAIActionMode()) {
-            selectTowerAt(action.side, action.tower.x, action.tower.y)
-            var directUpgradeSucceeded = aiTryUpgradeTower(action.side, action.tower, action.pathNumber)
-            if(directUpgradeSucceeded) {
-                recordAITacticalDecision(action.side, action.tower.towerType == "farm" ? "farm" : "development", "upgrade|" + action.tower.towerType + "|" + action.pathNumber, getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
-            }
-            return directUpgradeSucceeded
-        }
         if(action.phase != "upgrade") {
             selectTowerAt(action.side, players[action.side].cursor.x, players[action.side].cursor.y)
             action.phase = "upgrade"
@@ -7284,12 +7419,6 @@ function runAICursor() {
             clearAIAction()
             return
         }
-    }
-    if(isAITrainingDirectAIActionMode()) {
-        players[action.side].cursor.x = action.targetX
-        players[action.side].cursor.y = action.targetY
-        handleAIActionResult(action, executeAIAction(action))
-        return
     }
     var reachedTarget = moveAICursorToward(action.side, action.targetX, action.targetY)
     if(reachedTarget) {
@@ -8133,26 +8262,27 @@ function getBestAIEconomyUtilityOption(side, matchup) {
         var tower = towers[i]
         if(!tower || tower.playerSide != side) continue
         if(tower.towerType == "farmer") continue
-        if(isAITowerSaleProtected(tower)) continue
-        var sellValue = getAITowerSellValueEstimate(tower)
-        var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
-            id: "sell|" + tower.towerType + "|" + tower.towerID,
-            type: tower.towerType,
-            actionKey: "sell|" + tower.towerType,
-            money: players[side].money,
-            position: clamp(Math.log1p(sellValue) / Math.log(100001), 0, 1),
-            x: tower.x,
-            y: tower.y,
-            tier1: tower.path1Upgrades,
-            tier2: tower.path2Upgrades,
-            tier3: tower.path3Upgrades,
-            count: Math.max(0, Number(tower.towerVar) || 0),
-            countScale: 6000,
-            tower: tower,
-            capabilityScale: -1,
-            capabilityFacts: { cashDelta: sellValue },
-        }, matchup, decisionState)
-        considerUtilityOption({ type: "sell", tower: tower, score: decision.score, decisionSample: decision })
+        if(isAITowerSaleProtected(tower) == false) {
+            var sellValue = getAITowerSellValueEstimate(tower)
+            var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
+                id: "sell|" + tower.towerType + "|" + tower.towerID,
+                type: tower.towerType,
+                actionKey: "sell|" + tower.towerType,
+                money: players[side].money,
+                position: clamp(Math.log1p(sellValue) / Math.log(100001), 0, 1),
+                x: tower.x,
+                y: tower.y,
+                tier1: tower.path1Upgrades,
+                tier2: tower.path2Upgrades,
+                tier3: tower.path3Upgrades,
+                count: Math.max(0, Number(tower.towerVar) || 0),
+                countScale: 6000,
+                tower: tower,
+                capabilityScale: -1,
+                capabilityFacts: { cashDelta: sellValue },
+            }, matchup, decisionState)
+            considerUtilityOption({ type: "sell", tower: tower, score: decision.score, decisionSample: decision })
+        }
         if(tower.towerType == "farm" && tower.path2Upgrades >= 3 && tower.towerVar > 0) {
             var collectDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
                 id: "collect|farm|" + tower.towerID,
@@ -9410,3 +9540,6 @@ function handleAIWindowFocus() {
 document.addEventListener("visibilitychange", updateAIPregameObservePauseState)
 addEventListener("blur", updateAIPregameObservePauseState)
 addEventListener("focus", handleAIWindowFocus)
+nativeSetInterval(function() {
+    if(document.hidden == false && frontMenuState == "stats") refreshAITrainerStatus(false)
+}, AI_TRAINING_STATUS_REFRESH_INTERVAL)

@@ -6,7 +6,6 @@ var AI_TRAINING_AUTOSAVE_EPISODES = 10
 var AI_TRAINING_FIXED_FRAME_MS = 1000 / 60
 var AI_TRAINING_BASE_ANIMATION_DELAY_MS = 16
 var AI_TRAINING_BASE_LOGIC_INTERVAL_MS = 250
-var AI_TRAINING_BASE_CURSOR_INTERVAL_MS = 150
 var AI_TRAINING_BASE_INTER_MATCH_DELAY_MS = 180
 var AI_TRAINING_BASE_RUNTIME_TASK_BUDGET = 4000
 var AI_TRAINING_TRUE_SELF_PLAY_SPEEDS = [
@@ -506,16 +505,10 @@ function getAITrainingAnimationDelayMs() {
 }
 
 function getAITrainingLogicIntervalMs() {
-    if(isAITrainingTrueSelfPlayActive()) {
-        return Math.max(1, AI_TRAINING_BASE_LOGIC_INTERVAL_MS / getAITrainingRuntimeClockMultiplier())
-    }
-    return 250
+    return AI_TRAINING_BASE_LOGIC_INTERVAL_MS
 }
 
 function getAITrainingCursorIntervalMs() {
-    if(isAITrainingTrueSelfPlayActive()) {
-        return Math.max(1, AI_TRAINING_BASE_CURSOR_INTERVAL_MS / getAITrainingRuntimeClockMultiplier())
-    }
     return keyMsCooldown
 }
 
@@ -1559,11 +1552,9 @@ function tickAIControllerForSide(side) {
                 break
             }
         }
-        var remainingCursorTicks = catchupLimit
-        while(now >= aiTickState.lastCursorAt + cursorInterval && remainingCursorTicks > 0) {
-            aiTickState.lastCursorAt += cursorInterval
+        if(now >= aiTickState.lastCursorAt + cursorInterval) {
+            aiTickState.lastCursorAt = now
             runAICursor()
-            remainingCursorTicks--
         }
     })
 }

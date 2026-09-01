@@ -17,20 +17,34 @@ async function main() {
             aiTrainingState.trueSelfPlayActive = false
 
             towers.length = 0
+            players[humanSide].cursor.x = 180
+            players[humanSide].cursor.y = 180
+            const humanDirectionCodes = [KEY_CODES.p1Up, KEY_CODES.p1Left, KEY_CODES.p1Down, KEY_CODES.p1Right]
+            const savedHumanDirectionState = humanDirectionCodes.map(keyCode => ({ keyCode, pressed: keyState[keyCode], cooldown: keyCooldowns[keyCode] }))
+            for(const keyCode of humanDirectionCodes) keyState[keyCode] = false
+            keyState[KEY_CODES.p1Right] = true
+            keyCooldowns[KEY_CODES.p1Right] = gameNow() - keyMsCooldown
+            const humanStart = { x: players[humanSide].cursor.x, y: players[humanSide].cursor.y }
+            handleCursorMovementInput()
+            const humanEnd = { x: players[humanSide].cursor.x, y: players[humanSide].cursor.y }
+            for(const savedKey of savedHumanDirectionState) {
+                keyState[savedKey.keyCode] = savedKey.pressed
+                keyCooldowns[savedKey.keyCode] = savedKey.cooldown
+            }
             players[aiSide].cursor.x = canvas.width / 2 + 60
             players[aiSide].cursor.y = 180
             aiProfile.currentAction = {
                 type: "deselectTower",
                 side: aiSide,
                 targetX: canvas.width / 2 + 240,
-                targetY: 360,
+                targetY: 180,
                 priority: AI_ACTION_PRIORITY.low,
                 attempts: 0,
             }
             const normalStart = { x: players[aiSide].cursor.x, y: players[aiSide].cursor.y }
+            const normalCursorInterval = getAITrainingCursorIntervalMs()
             runAICursor()
             const normalEnd = { x: players[aiSide].cursor.x, y: players[aiSide].cursor.y }
-            const normalDirectMode = isAITrainingDirectAIActionMode()
 
             aiTrainingState.trueSelfPlayActive = true
             players[aiSide].cursor.x = normalStart.x
@@ -39,13 +53,55 @@ async function main() {
                 type: "deselectTower",
                 side: aiSide,
                 targetX: canvas.width / 2 + 240,
-                targetY: 360,
+                targetY: 180,
                 priority: AI_ACTION_PRIORITY.low,
                 attempts: 0,
             }
+            const trainingCursorInterval = getAITrainingCursorIntervalMs()
             runAICursor()
             const trainingEnd = { x: players[aiSide].cursor.x, y: players[aiSide].cursor.y }
-            const trainingDirectMode = isAITrainingDirectAIActionMode()
+            const trainingActionPending = aiProfile.currentAction != null
+
+            const baseRunAICursor = runAICursor
+            let overdueCursorTickCount = 0
+            runAICursor = function() {
+                overdueCursorTickCount++
+            }
+            const overdueCursorNow = gameNow()
+            const cursorTestContext = ensureAIContext(aiSide, humanSide)
+            cursorTestContext.aiTickState.lastLogicAt = overdueCursorNow
+            cursorTestContext.aiTickState.lastCursorAt = overdueCursorNow - trainingCursorInterval * 5
+            tickAIControllerForSide(aiSide)
+            const overdueCursorDroppedBacklog = overdueCursorTickCount == 1 && cursorTestContext.aiTickState.lastCursorAt == overdueCursorNow
+            runAICursor = baseRunAICursor
+
+            const savedTrainingSpeedIndex = aiTrainingState.batchOptionIndex
+            const baseRunAIForActiveContext = runAIForActiveContext
+            const logicCadenceBySpeed = []
+            let logicTickCount = 0
+            runAIForActiveContext = function() {
+                logicTickCount++
+            }
+            for(let speedIndex = 0; speedIndex < AI_TRAINING_TRUE_SELF_PLAY_SPEEDS.length; speedIndex++) {
+                aiTrainingState.batchOptionIndex = speedIndex
+                const interval = getAITrainingLogicIntervalMs()
+                cursorTestContext.aiTickState.lastCursorAt = overdueCursorNow
+                cursorTestContext.aiTickState.lastLogicAt = overdueCursorNow - interval + 1
+                logicTickCount = 0
+                tickAIControllerForSide(aiSide)
+                const earlyTicks = logicTickCount
+                cursorTestContext.aiTickState.lastLogicAt = overdueCursorNow - interval
+                logicTickCount = 0
+                tickAIControllerForSide(aiSide)
+                logicCadenceBySpeed.push({
+                    multiplier: getAITrainingRuntimeClockMultiplier(),
+                    interval,
+                    earlyTicks,
+                    dueTicks: logicTickCount,
+                })
+            }
+            runAIForActiveContext = baseRunAIForActiveContext
+            aiTrainingState.batchOptionIndex = savedTrainingSpeedIndex
 
             aiTrainingState.trueSelfPlayActive = false
             aiProfile.currentAction = {
@@ -235,7 +291,7 @@ async function main() {
                     createdAt: "2026-08-29T19:22:05.000Z",
                     startedAt: "2026-08-29T19:22:09.000Z",
                     updatedAt: "2026-08-29T19:30:00.000Z",
-                    phase: "training",
+                    phase: "preparing",
                     projection: {
                         jobs: { total: 21, queued: 0, inProgress: 20, completed: 1, succeeded: 1, failed: 0, cancelled: 0, skipped: 0 },
                         workers: {
@@ -281,15 +337,32 @@ async function main() {
                     candidatePolicyPreserved: false,
                 },
             }
-            let trainerFetchRequest = null
+            const trainerJobs = {
+                total_count: 4,
+                jobs: [
+                    { name: "prepare", status: "completed", conclusion: "success", run_id: trainerStatus.current.runId, run_attempt: trainerStatus.current.runAttempt },
+                    { name: "train (1)", status: "completed", conclusion: "success", run_id: trainerStatus.current.runId, run_attempt: trainerStatus.current.runAttempt },
+                    { name: "train (2)", status: "in_progress", conclusion: null, run_id: trainerStatus.current.runId, run_attempt: trainerStatus.current.runAttempt },
+                    { name: "evaluate (1)", status: "queued", conclusion: null, run_id: trainerStatus.current.runId, run_attempt: trainerStatus.current.runAttempt },
+                ],
+            }
+            let trainerFetchRequests = []
             AI_IS_LOCAL_RUNTIME = false
-            aiTrainerStatusState = { status: null, loadInFlight: false, lastLoadedAt: 0, lastError: "" }
+            aiTrainerStatusState = { status: null, loadInFlight: false, lastLoadedAt: 0, lastError: "", liveRunId: 0, liveRunAttempt: 0, liveUpdatedAt: 0, liveError: "" }
             window.fetch = async (url, options) => {
-                trainerFetchRequest = { url, options }
-                return { ok: true, status: 200, text: async () => JSON.stringify(trainerStatus) }
+                trainerFetchRequests.push({ url, options })
+                const payload = url.startsWith(AI_TRAINING_STATUS_ENDPOINT) ? trainerStatus : trainerJobs
+                return { ok: true, status: 200, text: async () => JSON.stringify(payload) }
             }
             const trainerStatusSucceeded = await refreshAITrainerStatus(true)
             const trainerMetrics = getAITrainerStatusMetrics().map(metric => ({ label: metric.label, value: metric.value }))
+            const successfulTrainerFetchRequests = trainerFetchRequests.slice()
+            window.fetch = async url => url.startsWith(AI_TRAINING_STATUS_ENDPOINT)
+                ? { ok: true, status: 200, text: async () => JSON.stringify(trainerStatus) }
+                : { ok: false, status: 403, text: async () => "{}" }
+            const trainerFallbackSucceeded = await refreshAITrainerStatus(true)
+            const trainerFallbackMetrics = getAITrainerStatusMetrics().map(metric => ({ label: metric.label, value: metric.value }))
+            const trainerFallbackPhase = aiTrainerStatusState.status.current.phase
             const trainerStatusBeforeFailure = JSON.stringify(aiTrainerStatusState.status)
             const modelErrorBeforeTrainerFailure = aiPersistenceState.lastError
             window.fetch = async () => ({ ok: true, status: 200, text: async () => "{}" })
@@ -844,6 +917,83 @@ async function main() {
                 aiDecisionStateCache = null
             }
 
+            const savedSaleProbe = {
+                action: aiProfile.currentAction,
+                gameStarted,
+                money: players[aiSide].money,
+                round,
+                towers: towers.slice(),
+            }
+            let towerSaleProtection
+            try {
+                towers.length = 0
+                gameStarted = false
+                players[aiSide].money = 10000
+                round = 10
+                aiProfile.currentAction = null
+                const recentTower = new Tower(canvas.width / 2 + 120, 240, 25, 150, "dart", aiSide)
+                recentTower.totalCost += getBaseTowerPriceByType("dart")
+                towers.push(recentTower)
+                tagAITowerPlacement(recentTower, "core")
+                const placementRoundBlocked = getBestAIEconomyUtilityOption(aiSide, null) == null
+                    && aiTrySellTower(aiSide, recentTower) == false
+                    && aiRequestSellTower(aiSide, recentTower, AI_ACTION_PRIORITY.normal) == false
+                round = 12
+                const ageOneBlocked = isAITowerSaleProtected(recentTower)
+                round = 16
+                const ageThreeBlocked = isAITowerSaleProtected(recentTower) && getBestAIEconomyUtilityOption(aiSide, null) == null
+                round = 18
+                const ageFourUtility = getBestAIEconomyUtilityOption(aiSide, null)
+                const ageFourCandidateAllowed = ageFourUtility && ageFourUtility.type == "sell" && ageFourUtility.tower == recentTower
+                const ageFourRequestAccepted = aiRequestSellTower(aiSide, recentTower, AI_ACTION_PRIORITY.normal)
+                const queuedSaleAction = aiProfile.currentAction
+                recentTower.aiLastInvestmentRound = getCurrentVisibleRound()
+                const queuedExecutionRechecked = executeAIAction(queuedSaleAction) == false && towers.includes(recentTower)
+                aiProfile.currentAction = null
+
+                const protectedBank = new Tower(canvas.width / 2 + 150, 270, 45, 200, "farm", aiSide)
+                protectedBank.path2Upgrades = 3
+                protectedBank.towerVar = 1200
+                protectedBank.aiLastInvestmentRound = getCurrentVisibleRound()
+                towers.push(protectedBank)
+                const protectedBankUtility = getBestAIEconomyUtilityOption(aiSide, null)
+                const protectedBankCollectionAllowed = protectedBankUtility && protectedBankUtility.type == "collectFarm" && protectedBankUtility.tower == protectedBank
+
+                const oldTower = new Tower(canvas.width / 2 + 180, 300, 25, 150, "dart", aiSide)
+                oldTower.totalCost += getBaseTowerPriceByType("dart")
+                oldTower.aiLastInvestmentRound = getCurrentVisibleRound() - AI_TOWER_MINIMUM_HOLD_ROUNDS
+                towers.push(oldTower)
+                const oldDirectSaleAllowed = aiTrySellTower(aiSide, oldTower) && towers.includes(oldTower) == false
+                const untaggedTower = new Tower(canvas.width / 2 + 240, 360, 25, 150, "dart", aiSide)
+                const untaggedTowerAllowed = isAITowerSaleProtected(untaggedTower) == false
+
+                round = 56
+                recentTower.aiLastInvestmentRound = getCurrentVisibleRound()
+                const endgameOldTower = new Tower(canvas.width / 2 + 300, 420, 25, 150, "dart", aiSide)
+                endgameOldTower.aiLastInvestmentRound = getCurrentVisibleRound() - AI_TOWER_MINIMUM_HOLD_ROUNDS
+                const endgameProtectionScoped = isAITowerSaleProtected(recentTower) && isAITowerSaleProtected(endgameOldTower) == false
+                towerSaleProtection = {
+                    minimumHoldRounds: AI_TOWER_MINIMUM_HOLD_ROUNDS,
+                    placementRoundBlocked,
+                    ageOneBlocked,
+                    ageThreeBlocked,
+                    ageFourCandidateAllowed,
+                    ageFourRequestAccepted,
+                    queuedExecutionRechecked,
+                    protectedBankCollectionAllowed,
+                    oldDirectSaleAllowed,
+                    untaggedTowerAllowed,
+                    endgameProtectionScoped,
+                }
+            } finally {
+                towers.splice(0, towers.length, ...savedSaleProbe.towers)
+                gameStarted = savedSaleProbe.gameStarted
+                players[aiSide].money = savedSaleProbe.money
+                round = savedSaleProbe.round
+                aiProfile.currentAction = savedSaleProbe.action
+                aiDecisionStateCache = null
+            }
+
             ensureAILoadoutLibraryInitialized()
             const originalLoadoutLibrary = aiLoadoutLibrary
             const originalLoadoutsByKey = aiLoadoutsByKey
@@ -1213,6 +1363,7 @@ async function main() {
                 liveEvaluation,
                 localSaveState,
                 lockStartedThroughRunAiming,
+                logicCadenceBySpeed,
                 modeButtonIds,
                 monotonicRefresh,
                 migrationDeterministic: JSON.stringify(migratedPolicy) == JSON.stringify(repeatedMigratedPolicy),
@@ -1220,14 +1371,18 @@ async function main() {
                 migrationRetention,
                 schema11Migration,
                 schema10Migration,
+                normalCursorInterval,
                 normalDelta: { x: normalEnd.x - normalStart.x, y: normalEnd.y - normalStart.y },
-                normalDirectMode,
+                overdueCursorDroppedBacklog,
+                overdueCursorTickCount,
                 overviewLabels,
                 policyContract,
                 progressKeyTracksBloonMovement,
                 candidateFeatureContracts,
                 placementFeatureContract,
                 farmerPriceContract,
+                humanCursorStep: CURSOR_MOVE_STEP,
+                humanDelta: { x: humanEnd.x - humanStart.x, y: humanEnd.y - humanStart.y },
                 factualFeaturesPermutationInvariant: factualFeaturesBefore.every((value, index) => value == factualFeaturesAfter[index]),
                 relationshipFeaturesHeuristicIndependent: relationshipFeaturesLowHeuristic.every((value, index) => value == relationshipFeaturesHighHeuristic[index]),
                 memoryLifecycle,
@@ -1258,7 +1413,9 @@ async function main() {
                 staleActionCleared,
                 staleActionRetried,
                 statsButtonIds,
-                trainingDirectMode,
+                trainingActionPending,
+                trainingCursorInterval,
+                trainingDelta: { x: trainingEnd.x - normalStart.x, y: trainingEnd.y - normalStart.y },
                 trainingEnd,
                 contributionContract,
                 crossFamilyNoOp,
@@ -1272,26 +1429,35 @@ async function main() {
                 retainedSparseStarts,
                 retainedTraceFamilyCounts,
                 trainerFailureIsolation,
-                trainerFetchRequest: {
-                    credentials: trainerFetchRequest.options.credentials,
-                    mode: trainerFetchRequest.options.mode,
-                    referrerPolicy: trainerFetchRequest.options.referrerPolicy,
-                    url: trainerFetchRequest.url,
-                },
+                trainerFetchRequests: successfulTrainerFetchRequests.map(request => ({
+                    credentials: request.options.credentials,
+                    mode: request.options.mode,
+                    referrerPolicy: request.options.referrerPolicy,
+                    url: request.url,
+                })),
+                trainerFallbackMetrics,
+                trainerFallbackPhase,
+                trainerFallbackSucceeded,
                 trainerMetrics,
                 trainerStatusSucceeded,
                 terminalSettlement,
+                towerSaleProtection,
                 unsnapshottedInferenceUsesCandidate,
-                trainingTarget: { x: canvas.width / 2 + 240, y: 360 },
+                trainingTarget: { x: canvas.width / 2 + 240, y: 180 },
             }
         })
 
-        assert.equal(result.normalDirectMode, false)
-        assert.ok(result.normalDelta.x > 0 || result.normalDelta.y > 0)
-        assert.ok(Math.abs(result.normalDelta.x) <= 15)
-        assert.ok(Math.abs(result.normalDelta.y) <= 15)
-        assert.equal(result.trainingDirectMode, true)
-        assert.deepEqual(result.trainingEnd, result.trainingTarget)
+        assert.equal(result.humanCursorStep, 15)
+        assert.deepEqual(result.humanDelta, { x: result.humanCursorStep, y: 0 })
+        assert.equal(result.normalCursorInterval, 150)
+        assert.deepEqual(result.normalDelta, result.humanDelta)
+        assert.equal(result.trainingCursorInterval, result.normalCursorInterval)
+        assert.equal(result.trainingActionPending, true)
+        assert.deepEqual(result.trainingDelta, result.humanDelta)
+        assert.notDeepEqual(result.trainingEnd, result.trainingTarget)
+        assert.equal(result.overdueCursorTickCount, 1)
+        assert.equal(result.overdueCursorDroppedBacklog, true)
+        assert.deepEqual(result.logicCadenceBySpeed, [1, 2, 4, 8, 10].map(multiplier => ({ multiplier, interval: 250, earlyTicks: 0, dueTicks: 1 })))
         assert.equal(result.staleActionRetried, true)
         assert.equal(result.staleActionCleared, true)
         assert.equal(result.lockStartedThroughRunAiming, true)
@@ -1514,21 +1680,42 @@ async function main() {
             byteLength: result.contributionContract.byteLength,
         })
         assert.ok(result.contributionContract.byteLength <= 131072)
+        assert.deepEqual(result.towerSaleProtection, {
+            minimumHoldRounds: 4,
+            placementRoundBlocked: true,
+            ageOneBlocked: true,
+            ageThreeBlocked: true,
+            ageFourCandidateAllowed: true,
+            ageFourRequestAccepted: true,
+            queuedExecutionRechecked: true,
+            protectedBankCollectionAllowed: true,
+            oldDirectSaleAllowed: true,
+            untaggedTowerAllowed: true,
+            endgameProtectionScoped: true,
+        })
         assert.equal(result.trainerStatusSucceeded, true)
+        assert.equal(result.trainerFallbackSucceeded, true)
+        assert.equal(result.trainerFallbackPhase, "preparing")
+        assert.match(result.trainerFallbackMetrics.at(-1).value, /^Fallback · (?:now|\d+[mhd])$/)
         assert.equal(result.invalidTrainerStatusSucceeded, false)
         assert.deepEqual(result.trainerFailureIsolation, { preserved: true, modelErrorUnchanged: true, hasOwnError: true })
         assert.equal(result.localTrainerStatusSucceeded, false)
         assert.equal(result.localTrainerFetches, 0)
-        assert.equal(result.trainerFetchRequest.credentials, "omit")
-        assert.equal(result.trainerFetchRequest.mode, "cors")
-        assert.equal(result.trainerFetchRequest.referrerPolicy, "no-referrer")
-        assert.match(result.trainerFetchRequest.url, /^https:\/\/raw\.githubusercontent\.com\/The-Double-G\/btdb-js\/ai-status\/ai-training-status\.json\?t=\d+$/)
+        assert.equal(result.trainerFetchRequests.length, 2)
+        for(const request of result.trainerFetchRequests) {
+            assert.equal(request.credentials, "omit")
+            assert.equal(request.mode, "cors")
+            assert.equal(request.referrerPolicy, "no-referrer")
+        }
+        assert.match(result.trainerFetchRequests[0].url, /^https:\/\/raw\.githubusercontent\.com\/The-Double-G\/btdb-js\/ai-status\/ai-training-status\.json\?t=\d+$/)
+        assert.equal(result.trainerFetchRequests[1].url, "https://api.github.com/repos/The-Double-G/btdb-js/actions/runs/33270691652/attempts/1/jobs?per_page=100")
         assert.deepEqual(result.trainerMetrics, [
             { label: "GitHub Trainer", value: "Training" },
             { label: "Run", value: "#7 · training" },
-            { label: "Workers", value: "0/20 (20 live)" },
+            { label: "Workers", value: "1/2 (1 live)" },
             { label: "Frozen Eval", value: "61.3% / S63.1% / 320" },
             { label: "Promotion", value: "Champion v5" },
+            { label: "Progress", value: "Live · now" },
         ])
         assert.deepEqual(result.overviewLabels, ["Hosted Champion", "Match Perspectives", "Human Demos", "Decision Samples", "Loadout Samples", "Counter Records"])
         assert.match(result.queuedContributionMessage, /finishes syncing/)

@@ -3,6 +3,7 @@ const CANVAS_SIZE = {
     width: 1366,
     height: 768,
 }
+const CURSOR_MOVE_STEP = 15
 
 const GAME_VERSION = "v2.6.0"
 

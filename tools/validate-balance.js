@@ -145,7 +145,7 @@ assert(!towerSource.includes("this.overclockFactor * (this.cobraBoosted"), "Dart
 assert(!bloonSource.includes("&& health < 68"), "Freeplay Bloon adjustment uses an undefined health variable")
 assert(projectileSource.includes("this.hitBloons = new Set()"), "Projectile hit history is missing")
 assert(!aiSource.includes("canAIInvestInFarmNow"), "Farm investment heuristics cannot override the neural placement decision")
-assert(aiSource.includes("function isAITowerSaleProtected(tower)") && aiSource.includes("tower.aiPlacedRound == getCurrentVisibleRound()"), "New AI towers must not be sold in their placement round")
+assert(aiSource.includes("AI_TOWER_MINIMUM_HOLD_ROUNDS = 4") && aiSource.includes("getCurrentVisibleRound() - lastInvestmentRound < AI_TOWER_MINIMUM_HOLD_ROUNDS"), "Recent AI tower investments must be protected from sellback churn")
 assert(aiSource.includes('typeof applyPath1UpgradeEffects == "function"') && aiSource.includes('typeof applyPath2UpgradeEffects == "function"') && aiSource.includes('typeof applyPath3UpgradeEffects == "function"'), "Hypothetical upgrades must apply runtime upgrade effects")
 assert(classicSource.includes("var baseFarmerPrice = 0"), "Classic Farmer base price must be zero")
 assert((classicSource.match(/this\.path[123]Cost\[[0-4]\] = baseFarmerPrice/g) || []).length === 15, "Every Classic Farmer upgrade must be free")

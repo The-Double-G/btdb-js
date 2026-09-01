@@ -5,6 +5,9 @@ Made Banana Farmer placement free in modern and Classic modes, including every C
 Fixed AI Farmer prerequisites, service-range placement, emergency filtering, scored-position execution, duplicate placement, and zero-value resale churn
 Made distributed workers recover and report up to three discarded self-play attempts per match with a match-count-aware aggregate limit so full unattended generations continue without hiding repeated failures
 Made self-play liveness track bloon path movement so valid frozen-evaluation matches are not discarded while entities are still advancing
+Made accelerated self-play use normal bounded cursor movement, tower selection, manual aiming, input cooldowns, and 250 ms simulation-time decision cadence instead of teleporting or oversampling actions
+Made the Stats trainer panel overlay validated live GitHub job progress on published status, report freshness and fallback, and refresh active views every two minutes
+Stopped the AI from selling towers within four rounds of placement or an upgrade, preventing repeated sellback-loss churn while preserving older strategic sales
 Upgraded the authoritative AI to schema 12 and the 26,440-parameter semantic-intent-spatial recurrent actor-critic v4
 Expanded decision state and candidate inputs to 80 values with normalized strategy intent and perspective-correct placement geometry
 Advanced selected-action learning to credit version 3 while retaining bounded four-step recurrent actor-critic updates

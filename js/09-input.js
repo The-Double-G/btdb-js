@@ -46,35 +46,35 @@ function moveCursor(side, dx, dy) {
 function handleCursorMovementInput() {
     if(isHumanControlledSide(PLAYER_SIDE.left) && keyState[KEY_CODES.p1Up] && isKeyReady(KEY_CODES.p1Up)) {
         markKeyUsed(KEY_CODES.p1Up)
-        moveCursor(PLAYER_SIDE.left, 0, -15)
+        moveCursor(PLAYER_SIDE.left, 0, -CURSOR_MOVE_STEP)
     }
     if(isHumanControlledSide(PLAYER_SIDE.left) && keyState[KEY_CODES.p1Left] && isKeyReady(KEY_CODES.p1Left)) {
         markKeyUsed(KEY_CODES.p1Left)
-        moveCursor(PLAYER_SIDE.left, -15, 0)
+        moveCursor(PLAYER_SIDE.left, -CURSOR_MOVE_STEP, 0)
     }
     if(isHumanControlledSide(PLAYER_SIDE.left) && keyState[KEY_CODES.p1Down] && isKeyReady(KEY_CODES.p1Down)) {
         markKeyUsed(KEY_CODES.p1Down)
-        moveCursor(PLAYER_SIDE.left, 0, 15)
+        moveCursor(PLAYER_SIDE.left, 0, CURSOR_MOVE_STEP)
     }
     if(isHumanControlledSide(PLAYER_SIDE.left) && keyState[KEY_CODES.p1Right] && isKeyReady(KEY_CODES.p1Right)) {
         markKeyUsed(KEY_CODES.p1Right)
-        moveCursor(PLAYER_SIDE.left, 15, 0)
+        moveCursor(PLAYER_SIDE.left, CURSOR_MOVE_STEP, 0)
     }
     if(isHumanControlledSide(PLAYER_SIDE.right) && keyState[KEY_CODES.p2Up] && isKeyReady(KEY_CODES.p2Up)) {
         markKeyUsed(KEY_CODES.p2Up)
-        moveCursor(PLAYER_SIDE.right, 0, -15)
+        moveCursor(PLAYER_SIDE.right, 0, -CURSOR_MOVE_STEP)
     }
     if(isHumanControlledSide(PLAYER_SIDE.right) && keyState[KEY_CODES.p2Left] && isKeyReady(KEY_CODES.p2Left)) {
         markKeyUsed(KEY_CODES.p2Left)
-        moveCursor(PLAYER_SIDE.right, -15, 0)
+        moveCursor(PLAYER_SIDE.right, -CURSOR_MOVE_STEP, 0)
     }
     if(isHumanControlledSide(PLAYER_SIDE.right) && keyState[KEY_CODES.p2Down] && isKeyReady(KEY_CODES.p2Down)) {
         markKeyUsed(KEY_CODES.p2Down)
-        moveCursor(PLAYER_SIDE.right, 0, 15)
+        moveCursor(PLAYER_SIDE.right, 0, CURSOR_MOVE_STEP)
     }
     if(isHumanControlledSide(PLAYER_SIDE.right) && keyState[KEY_CODES.p2Right] && isKeyReady(KEY_CODES.p2Right)) {
         markKeyUsed(KEY_CODES.p2Right)
-        moveCursor(PLAYER_SIDE.right, 15, 0)
+        moveCursor(PLAYER_SIDE.right, CURSOR_MOVE_STEP, 0)
     }
 }
 
