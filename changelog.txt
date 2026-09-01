@@ -11,6 +11,7 @@ Advanced selected-action learning to credit version 3 while retaining bounded fo
 Added an output-preserving schema-11 migration that appends zero-weight input columns, preserves compatible learned state, and resets incompatible spatial stores and untrusted reserved human-prior keys
 Made hosted migration reject persisted model-digest mismatches instead of laundering corrupted state
 Made the continuous watchdog recognize every active default-branch training run regardless of manual or continuous display title
+Made promotion finalizers require CI on the exact squash-merged main commit before continuous-training handoff, with watchdog repair when interruption leaves CI undispatched
 Added bounded chronological Local human tactical events that produce deduplicated tactical priors without uploading neural vectors or training policy tensors
 Limited human tactical priors to records with at least four samples and at most a +/-0.05 candidate-ranking adjustment
 Deferred Browser Lab counterfactual training until deterministic randomness, clocks, stepping, restoration, isolation, and state-hash verification are available

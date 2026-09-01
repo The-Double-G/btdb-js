@@ -619,6 +619,42 @@ jobs:
           gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch \
             --subject "Promote AI checkpoint from run $RUN_ID" \
             --body "Merge the validated checkpoint after required branch-protection checks passed."
+          merged_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          merged_parent=$(gh api "repos/$GITHUB_REPOSITORY/commits/$merged_sha" --jq \
+            'if ((.parents | length) == 1 and (.files | length) == 1 and .files[0].filename == "training/checkpoints/champion.json") then .parents[0].sha else "" end')
+          if [ "$merged_parent" != "$GITHUB_SHA" ]; then
+            echo "Merged promotion commit ancestry or contents changed." >&2
+            exit 1
+          fi
+          echo "merged_sha=$merged_sha" >> "$GITHUB_OUTPUT"
+      - name: Require CI on the exact merged main commit
+        if: ${{ steps.merge.outcome == 'success' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGED_SHA: ${{ steps.merge.outputs.merged_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          if [ -z "$MERGED_SHA" ] || [ "$current_sha" != "$MERGED_SHA" ]; then
+            echo "Default branch changed before merged-commit CI could start." >&2
+            exit 1
+          fi
+          before_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f per_page=100 --jq '[.workflow_runs[].id] | max // 0')
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+          ci_run_id=""
+          for _ in $(seq 1 30); do
+            ci_run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$DEFAULT_BRANCH" \
+              --event workflow_dispatch --limit 100 --json databaseId,headSha \
+              --jq ".[] | select(.databaseId > $before_id and .headSha == \"$MERGED_SHA\") | .databaseId" | head -n 1)
+            if [ -n "$ci_run_id" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$ci_run_id" ]; then
+            echo "Could not locate CI for merged main commit $MERGED_SHA." >&2
+            exit 1
+          fi
+          gh run watch "$ci_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
       - name: Remove temporary promotion branch
         if: ${{ always() }}
         env:

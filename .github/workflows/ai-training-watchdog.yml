@@ -53,18 +53,66 @@ jobs:
             fi
           fi
 
-          ci_success=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f head_sha="$current_sha" -f status=success -f per_page=1 --jq '.total_count')
-          if [ "$ci_success" -lt 1 ]; then
-            echo "Current main SHA $current_sha does not have a successful exact-SHA CI run; not dispatching."
-            exit 0
-          fi
-
           checkpoint_parent=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
             'if ((.parents | length) == 1 and (.files | length) == 1 and .files[0].filename == "training/checkpoints/champion.json") then .parents[0].sha else "" end')
           source_run_id=$(gh api "repos/$GITHUB_REPOSITORY/commits/$current_sha" --jq \
             'try (.commit.message | capture("^Promote AI checkpoint from run (?<id>[0-9]+)").id) catch ""')
           expected_title="Continuous AI training for $current_sha"
+
+          ci_runs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$current_sha" -f per_page=100)
+          ci_success=$(jq '[.workflow_runs[] | select(.conclusion == "success")] | length' <<<"$ci_runs")
+          if [ "$ci_success" -lt 1 ]; then
+            if [ -n "$checkpoint_parent" ] && [ -n "$source_run_id" ]; then
+              source_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$source_run_id")
+              if jq -e --arg branch "$DEFAULT_BRANCH" '
+                .path == ".github/workflows/ai-training.yml" and
+                .event == "workflow_dispatch" and
+                .head_branch == $branch and
+                .status == "completed"
+              ' <<<"$source_run" >/dev/null; then
+                source_sha=$(jq -r '.head_sha' <<<"$source_run")
+                source_ancestry=""
+                if [ "$source_sha" = "$checkpoint_parent" ]; then
+                  source_ancestry="identical"
+                else
+                  source_ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$source_sha...$checkpoint_parent" --jq '.status')
+                fi
+                source_conclusion=$(jq -r '.conclusion' <<<"$source_run")
+                successful_promotion_jobs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$source_run_id/jobs" \
+                  -f per_page=100 --jq '[.jobs[] | select((.name == "report" or .name == "promote" or .name == "publish-hosted") and .conclusion == "success") | .name] | unique | length')
+                if { [ "$source_ancestry" = "identical" ] || [ "$source_ancestry" = "ahead" ]; } && \
+                  { [ "$source_conclusion" = "success" ] || [ "$successful_promotion_jobs" -eq 3 ]; }; then
+                  ci_active=$(jq '[.workflow_runs[] | select(.status != "completed")] | length' <<<"$ci_runs")
+                  if [ "$ci_active" -gt 0 ]; then
+                    echo "Exact-SHA CI for merged checkpoint $current_sha is already active."
+                    exit 0
+                  fi
+                  ci_total=$(jq '.total_count' <<<"$ci_runs")
+                  if [ "$ci_total" -eq 0 ]; then
+                    before_id=$(jq '[.workflow_runs[].id] | max // 0' <<<"$ci_runs")
+                    gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+                    dispatched_ci_id=""
+                    for _ in $(seq 1 30); do
+                      dispatched_ci_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$DEFAULT_BRANCH" \
+                        --event workflow_dispatch --limit 100 --json databaseId,headSha \
+                        --jq ".[] | select(.databaseId > $before_id and .headSha == \"$current_sha\") | .databaseId" | head -n 1)
+                      if [ -n "$dispatched_ci_id" ]; then break; fi
+                      sleep 2
+                    done
+                    if [ -z "$dispatched_ci_id" ]; then
+                      echo "Missing exact-SHA CI dispatch was accepted but its run could not be located." >&2
+                      exit 1
+                    fi
+                    echo "Dispatched missing exact-SHA CI run $dispatched_ci_id for merged checkpoint $current_sha."
+                    exit 0
+                  fi
+                fi
+              fi
+            fi
+            echo "Current main SHA $current_sha does not have a successful exact-SHA CI run; not dispatching training."
+            exit 0
+          fi
 
           handoff_run_id=""
           if [ -n "$COMPLETED_TRAINING_RUN_ID" ]; then
