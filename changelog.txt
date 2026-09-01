@@ -3,7 +3,7 @@ Current Version: v2.6.0
 v2.6.0 -
 Made Banana Farmer placement free in modern and Classic modes, including every Classic Farmer upgrade tier
 Fixed AI Farmer prerequisites, service-range placement, emergency filtering, scored-position execution, duplicate placement, and zero-value resale churn
-Made distributed workers recover and report up to three discarded self-play attempts per result so unattended training continues without hiding repeated failures
+Made distributed workers recover and report up to three discarded self-play attempts per match with a match-count-aware aggregate limit so full unattended generations continue without hiding repeated failures
 Upgraded the authoritative AI to schema 12 and the 26,440-parameter semantic-intent-spatial recurrent actor-critic v4
 Expanded decision state and candidate inputs to 80 values with normalized strategy intent and perspective-correct placement geometry
 Advanced selected-action learning to credit version 3 while retaining bounded four-step recurrent actor-critic updates

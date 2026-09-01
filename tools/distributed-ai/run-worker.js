@@ -20,6 +20,7 @@ const {
     fail,
     finalizeResult,
     integerArg,
+    maxRecoveredStalls,
     parseArgs,
     readJson,
     requiredArg,
@@ -422,7 +423,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
             observedStalls = state.stalls
             console.warn(`Recovered discarded match ${expectedMatches} (${recoveriesThisMatch}/${MAX_STALL_RECOVERIES_PER_MATCH})`)
             if(recoveriesThisMatch > MAX_STALL_RECOVERIES_PER_MATCH) fail(`Stall recovery limit exceeded during match ${expectedMatches}`)
-            if(observedStalls > MAX_RECOVERED_STALLS) fail(`Stall recovery limit exceeded for the worker result`)
+            if(observedStalls > maxRecoveredStalls(requestedMatches)) fail(`Stall recovery limit exceeded for the worker result`)
         }
         if(state.completedMatches < expectedMatches || state.completedMatches > expectedMatches + 1) fail(`Wrong browser match count: expected ${expectedMatches} or ${expectedMatches + 1}, got ${state.completedMatches}`)
         if(state.completedMatches == expectedMatches + 1) {

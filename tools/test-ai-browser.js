@@ -1528,42 +1528,58 @@ async function main() {
             aiTrainingHostedLearning = null
             return cloneAIPolicy(aiLearning.policy)
         })
-        const recoveredExecution = await stepUntilMatches(
-            runtime,
-            "evaluate",
-            { model: { policy: recoveryPolicy } },
-            { model: { championPolicy: recoveryPolicy } },
-            1,
-            10000,
-            async page => page.evaluate(() => {
-                const baseWatchdog = syncAITrainingTrueSelfPlayProgressWatchdog
-                let forcedDiscard = false
-                syncAITrainingTrueSelfPlayProgressWatchdog = function() {
-                    if(!forcedDiscard && isAITrainingTrueSelfPlayActive() && !gameOver) {
-                        forcedDiscard = true
+        const forceRecoveries = async (page, count) => page.evaluate(forcedRecoveries => {
+            const baseWatchdog = window.__daiBaseRecoveryWatchdog || syncAITrainingTrueSelfPlayProgressWatchdog
+            const recoveredMatches = new Set()
+            window.__daiBaseRecoveryWatchdog = baseWatchdog
+            syncAITrainingTrueSelfPlayProgressWatchdog = function() {
+                if(isAITrainingTrueSelfPlayActive() && !gameOver && !aiTrainingState.trueSelfPlayDiscardCurrentMatch) {
+                    const matchIndex = aiTrainingState.trueSelfPlayMatches
+                    if(recoveredMatches.size < forcedRecoveries && !recoveredMatches.has(matchIndex)) {
+                        recoveredMatches.add(matchIndex)
                         aiTrainingState.trueSelfPlayStallRecoveries++
                         aiTrainingState.trueSelfPlayDiscardCurrentMatch = true
                         aiTrainingState.trueSelfPlayLastWinner = "Forced recovery test"
                         gameOver = true
                         return
                     }
-                    if(forcedDiscard && isAITrainingTrueSelfPlayActive() && !gameOver && !aiTrainingState.trueSelfPlayDiscardCurrentMatch) {
-                        syncAITrainingTrueSelfPlayProgressWatchdog = baseWatchdog
-                        p1lives = 150
-                        p2lives = 0
-                        players[PLAYER_SIDE.left].lives = 150
-                        players[PLAYER_SIDE.right].lives = 0
-                        gameOver = true
-                        return
-                    }
-                    return baseWatchdog.apply(this, arguments)
+                    p1lives = 150
+                    p2lives = 0
+                    players[PLAYER_SIDE.left].lives = 150
+                    players[PLAYER_SIDE.right].lives = 0
+                    gameOver = true
+                    return
                 }
-            }),
+                return baseWatchdog.apply(this, arguments)
+            }
+        }, count)
+        const recoveredExecution = await stepUntilMatches(
+            runtime,
+            "evaluate",
+            { model: { policy: recoveryPolicy } },
+            { model: { championPolicy: recoveryPolicy } },
+            32,
+            10000,
+            page => forceRecoveries(page, 4),
         )
-        assert.equal(recoveredExecution.stallRecoveries, 1)
-        assert.equal(recoveredExecution.matches.length, 1)
+        assert.equal(recoveredExecution.stallRecoveries, 4)
+        assert.equal(recoveredExecution.matches.length, 32)
         assert.equal(recoveredExecution.matches[0].index, 0)
         assert.deepEqual(recoveredExecution.model.policy, recoveryPolicy)
+        await assert.rejects(stepUntilMatches(
+            runtime,
+            "evaluate",
+            { model: { policy: recoveryPolicy } },
+            { model: { championPolicy: recoveryPolicy } },
+            32,
+            10000,
+            page => forceRecoveries(page, 5),
+        ), /Stall recovery limit exceeded for the worker result/)
+        await runtime.page.evaluate(() => {
+            stopAITrainingTrueSelfPlay(false)
+            syncAITrainingTrueSelfPlayProgressWatchdog = window.__daiBaseRecoveryWatchdog
+            delete window.__daiBaseRecoveryWatchdog
+        })
 
         await runtime.page.setViewportSize({ width: 390, height: 844 })
         const portraitCanvas = await runtime.page.evaluate(() => {

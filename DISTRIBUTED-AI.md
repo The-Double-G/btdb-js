@@ -106,7 +106,7 @@ npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json
 - Workers replace `Math.random` and `Date.now`, disable timers, and advance fixed 60 Hz frames.
 - Rendering uses a no-op canvas.
 - The local server rejects hidden/runtime data, non-loopback clients, and writes.
-- Workers fail on browser errors, hosted persistence, non-finite models, frame exhaustion, schema mismatch, or more than three recovered stalls/discards across one result. A recovered attempt restarts the same fairness slot, remains visible in `metrics.stalls`, and is not counted as a game outcome.
+- Workers fail on browser errors, hosted persistence, non-finite models, frame exhaustion, schema mismatch, more than three recoveries for one fairness slot, or aggregate recoveries above `max(3, ceil(matches / 8))`. A recovered attempt restarts the same fairness slot, remains visible in `metrics.stalls`, and is not counted as a game outcome.
 - The model and hosted tooling enforce an 8 MiB maximum JSON size; public contributions remain capped at 128 KiB.
 - Policy history is limited to two complete bundles.
 

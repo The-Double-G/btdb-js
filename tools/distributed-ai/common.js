@@ -39,6 +39,10 @@ const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
 
+function maxRecoveredStalls(matches) {
+    return Math.max(MAX_RECOVERED_STALLS, Math.ceil(matches / 8))
+}
+
 function fail(message) {
     throw new Error(message)
 }
@@ -574,7 +578,7 @@ function validateMatchesAndMetrics(result, label) {
     const computed = computeMetrics(result.matches, { builtInEvaluationScore: result.metrics.builtInEvaluationScore })
     for(const key of ["wins", "losses", "ties", "totalFrames"]) if(result.metrics[key] != computed[key]) fail(`${label}.metrics.${key} is inconsistent`)
     for(const key of ["score", "averageRound"]) if(Math.abs(result.metrics[key] - computed[key]) > 1e-12) fail(`${label}.metrics.${key} is inconsistent`)
-    if(result.metrics.discarded != 0 || result.metrics.stalls > MAX_RECOVERED_STALLS || result.metrics.frameBudgetExhausted != 0) fail(`${label} records an unrecoverable failed or discarded run`)
+    if(result.metrics.discarded != 0 || result.metrics.stalls > maxRecoveredStalls(result.requestedMatches) || result.metrics.frameBudgetExhausted != 0) fail(`${label} records an unrecoverable failed or discarded run`)
 }
 
 function validateTrainResult(result, label = "train result") {
@@ -1245,6 +1249,7 @@ module.exports = {
     integerArg,
     jsonFilesRecursively,
     makeSelectionReport,
+    maxRecoveredStalls,
     materializeAggregatedPolicyCandidate,
     materializePolicyOnlyCandidate,
     buildPolicyPromotionRequest,

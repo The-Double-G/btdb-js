@@ -30,6 +30,7 @@ const {
     finalizeResult,
     hostedDigest,
     makeSelectionReport,
+    maxRecoveredStalls,
     materializeAggregatedPolicyCandidate,
     materializePolicyOnlyCandidate,
     selectBestTrainResult,
@@ -301,6 +302,10 @@ async function main() {
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
     assert.equal(MAX_JSON_BYTES, 8 * 1024 * 1024)
+    assert.equal(maxRecoveredStalls(8), 3)
+    assert.equal(maxRecoveredStalls(16), 3)
+    assert.equal(maxRecoveredStalls(25), 4)
+    assert.equal(maxRecoveredStalls(TRAINING_MATCHES), 24)
     assert.equal(HOSTED_REQUEST_TIMEOUT_MS, 90000)
     assert.equal(HOSTED_RESPONSE_MAX_BYTES, 8 * 1024 * 1024)
     assert.equal(await readResponseBody(fakeResponse([Buffer.from("1234"), Buffer.from("5678")]), 8), "12345678")
@@ -433,6 +438,14 @@ async function main() {
     const trainB = trainResult("b", 11, medium, base)
     const trainC = trainResult("c", 12, high, base)
     validateTrainResult(trainA)
+    const recoveredTraining = structuredClone(trainC)
+    recoveredTraining.metrics.stalls = maxRecoveredStalls(TRAINING_MATCHES)
+    finalizeResult(recoveredTraining)
+    validateTrainResult(recoveredTraining)
+    const excessiveTrainingRecovery = structuredClone(recoveredTraining)
+    excessiveTrainingRecovery.metrics.stalls++
+    finalizeResult(excessiveTrainingRecovery)
+    assert.throws(() => validateTrainResult(excessiveTrainingRecovery), /unrecoverable failed or discarded run/)
     assert.equal(trainC.metrics.builtInEvaluationScore, 0.625)
     assert.equal(selectBestTrainResult([trainA, trainB, trainC], base).resultId, trainC.resultId)
 
