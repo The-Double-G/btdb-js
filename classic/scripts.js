@@ -1438,23 +1438,23 @@ class Tower {
             this.path3Name[3] = "Golden Bananas"
             this.path3Name[4] = "Bling-nanas"
             this.path3Name[5] = "Upgrades"
-            this.path1Cost[0] = 250
-            this.path1Cost[1] = 350
-            this.path1Cost[2] = 500
-            this.path1Cost[3] = 2500
-            this.path1Cost[4] = 70000
+            this.path1Cost[0] = baseFarmerPrice
+            this.path1Cost[1] = baseFarmerPrice
+            this.path1Cost[2] = baseFarmerPrice
+            this.path1Cost[3] = baseFarmerPrice
+            this.path1Cost[4] = baseFarmerPrice
             this.path1Cost[5] = "Max"
-            this.path2Cost[0] = 200
-            this.path2Cost[1] = 300
-            this.path2Cost[2] = 1200
-            this.path2Cost[3] = 5000
-            this.path2Cost[4] = 30000
+            this.path2Cost[0] = baseFarmerPrice
+            this.path2Cost[1] = baseFarmerPrice
+            this.path2Cost[2] = baseFarmerPrice
+            this.path2Cost[3] = baseFarmerPrice
+            this.path2Cost[4] = baseFarmerPrice
             this.path2Cost[5] = "Max"
-            this.path3Cost[0] = 100
-            this.path3Cost[1] = 200
-            this.path3Cost[2] = 1500
-            this.path3Cost[3] = 3000
-            this.path3Cost[4] = 20000
+            this.path3Cost[0] = baseFarmerPrice
+            this.path3Cost[1] = baseFarmerPrice
+            this.path3Cost[2] = baseFarmerPrice
+            this.path3Cost[3] = baseFarmerPrice
+            this.path3Cost[4] = baseFarmerPrice
             this.path3Cost[5] = "Max"
         } else if(this.towerType == "dartling") {
             this.path1Name[0] = "Increased Accuracy"
@@ -3767,6 +3767,7 @@ canvas.height = window.innerHeight
 var ctx = canvas.getContext("2d")
 
 var money = 650
+var baseFarmerPrice = 0
 var lives = 150
 var eco = 250
 var p1money = 650
@@ -3835,7 +3836,7 @@ UITowers.push(new DisplayTowers(18*canvas.width/24, canvas.height/4, 30, "000bom
 UITowers.push(new DisplayTowers(19*canvas.width/24, canvas.height/4, 30, "000ice.png", "", 1250))
 UITowers.push(new DisplayTowers(20*canvas.width/24, canvas.height/4, 30, "000super.png", "", 2000))
 UITowers.push(new DisplayTowers(16*canvas.width/24, 3*canvas.height/8, 30, "000farm.png", "", 1250))
-UITowers.push(new DisplayTowers(17*canvas.width/24, 3*canvas.height/8, 30, "000farmer.png", "", 100))
+UITowers.push(new DisplayTowers(17*canvas.width/24, 3*canvas.height/8, 30, "000farmer.png", "", baseFarmerPrice))
 UITowers.push(new DisplayTowers(18*canvas.width/24, 3*canvas.height/8, 30, "000dartling.png", "", 850))
 UITowers.push(new DisplayTowers(19*canvas.width/24, 3*canvas.height/8, 30, "000wizard.png", "", 600))
 UITowers.push(new DisplayTowers(20*canvas.width/24, 3*canvas.height/8, 30, "000cobra.png", "", 400))
@@ -3846,7 +3847,7 @@ UITowers.push(new DisplayTowers(6*canvas.width/24, canvas.height/4, 30, "000bomb
 UITowers.push(new DisplayTowers(7*canvas.width/24, canvas.height/4, 30, "000ice.png", "", 1250))
 UITowers.push(new DisplayTowers(8*canvas.width/24, canvas.height/4, 30, "000super.png", "", 2000))
 UITowers.push(new DisplayTowers(4*canvas.width/24, 3*canvas.height/8, 30, "000farm.png", "", 1250))
-UITowers.push(new DisplayTowers(5*canvas.width/24, 3*canvas.height/8, 30, "000farmer.png", "", 100))
+UITowers.push(new DisplayTowers(5*canvas.width/24, 3*canvas.height/8, 30, "000farmer.png", "", baseFarmerPrice))
 UITowers.push(new DisplayTowers(6*canvas.width/24, 3*canvas.height/8, 30, "000dartling.png", "", 850))
 UITowers.push(new DisplayTowers(7*canvas.width/24, 3*canvas.height/8, 30, "000wizard.png", "", 600))
 UITowers.push(new DisplayTowers(8*canvas.width/24, 3*canvas.height/8, 30, "000cobra.png", "", 400))
@@ -5809,7 +5810,7 @@ function animate() {
             } else if(p1Towers[0] == "000farm.png") {
                 UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4, 30, p1Towers[0], "z", 1250))
             } else if(p1Towers[0] == "000farmer.png") {
-                UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4, 30, p1Towers[0], "z", 100))
+                UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4, 30, p1Towers[0], "z", baseFarmerPrice))
             } else if(p1Towers[0] == "000dartling.png") {
                 UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4, 30, p1Towers[0], "z", 850))
             } else if(p1Towers[0] == "000wizard.png") {
@@ -5830,7 +5831,7 @@ function animate() {
             } else if(p1Towers[1] == "000farm.png") {
                 UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/12, 30, p1Towers[1], "x", 1250))
             } else if(p1Towers[1] == "000farmer.png") {
-                UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/12, 30, p1Towers[1], "x", 100))
+                UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/12, 30, p1Towers[1], "x", baseFarmerPrice))
             } else if(p1Towers[1] == "000dartling.png") {
                 UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/12, 30, p1Towers[1], "x", 850))
             } else if(p1Towers[1] == "000wizard.png") {
@@ -5851,7 +5852,7 @@ function animate() {
             } else if(p1Towers[2] == "000farm.png") {
                 UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/6, 30, p1Towers[2], "c", 1250))
             } else if(p1Towers[2] == "000farmer.png") {
-                UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/6, 30, p1Towers[2], "c", 100))
+                UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/6, 30, p1Towers[2], "c", baseFarmerPrice))
             } else if(p1Towers[2] == "000dartling.png") {
                 UITowers.push(new DisplayTowers(canvas.width/32, canvas.height/4 + canvas.height/6, 30, p1Towers[2], "c", 850))
             } else if(p1Towers[2] == "000wizard.png") {
@@ -5872,7 +5873,7 @@ function animate() {
             } else if(p2Towers[0] == "000farm.png") {
                 UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4, 30, p2Towers[0], "m", 1250))
             } else if(p2Towers[0] == "000farmer.png") {
-                UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4, 30, p2Towers[0], "m", 100))
+                UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4, 30, p2Towers[0], "m", baseFarmerPrice))
             } else if(p2Towers[0] == "000dartling.png") {
                 UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4, 30, p2Towers[0], "m", 850))
             } else if(p2Towers[0] == "000wizard.png") {
@@ -5893,7 +5894,7 @@ function animate() {
             } else if(p2Towers[1] == "000farm.png") {
                 UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/12, 30, p2Towers[1], "comma", 1250))
             } else if(p2Towers[1] == "000farmer.png") {
-                UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/12, 30, p2Towers[1], "comma", 100))
+                UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/12, 30, p2Towers[1], "comma", baseFarmerPrice))
             } else if(p2Towers[1] == "000dartling.png") {
                 UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/12, 30, p2Towers[1], "comma", 850))
             } else if(p2Towers[1] == "000wizard.png") {
@@ -5914,7 +5915,7 @@ function animate() {
             } else if(p2Towers[2] == "000farm.png") {
                 UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/6, 30, p2Towers[2], "period", 1250))
             } else if(p2Towers[2] == "000farmer.png") {
-                UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/6, 30, p2Towers[2], "period", 100))
+                UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/6, 30, p2Towers[2], "period", baseFarmerPrice))
             } else if(p2Towers[2] == "000dartling.png") {
                 UITowers.push(new DisplayTowers(31*canvas.width/32, canvas.height/4 + canvas.height/6, 30, p2Towers[2], "period", 850))
             } else if(p2Towers[2] == "000wizard.png") {
@@ -7586,10 +7587,10 @@ onkeydown = onkeyup = function(e){
                     placeable = false
                 }
             }
-            if(placeable && p1money >= 100) {
+            if(placeable && p1money >= baseFarmerPrice) {
                 towers.push(new Tower(cursor[0].x, cursor[0].y, 30, 250, "farmer", 1))
-                p1money -= 100
-                towers[towers.length - 1].totalCost += 100
+                p1money -= baseFarmerPrice
+                towers[towers.length - 1].totalCost += baseFarmerPrice
             }
         } else if(p1Towers[0] == "000dartling.png" && p1SelectedTower == false) {
             var placeable = true
@@ -7932,10 +7933,10 @@ onkeydown = onkeyup = function(e){
                     placeable = false
                 }
             }
-            if(placeable && p1money >= 100) {
+            if(placeable && p1money >= baseFarmerPrice) {
                 towers.push(new Tower(cursor[0].x, cursor[0].y, 30, 250, "farmer", 1))
-                p1money -= 100
-                towers[towers.length - 1].totalCost += 100
+                p1money -= baseFarmerPrice
+                towers[towers.length - 1].totalCost += baseFarmerPrice
             }
         } else if(p1Towers[1] == "000dartling.png" && p1SelectedTower == false) {
             var placeable = true
@@ -8269,10 +8270,10 @@ onkeydown = onkeyup = function(e){
                     placeable = false
                 }
             }
-            if(placeable && p1money >= 100) {
+            if(placeable && p1money >= baseFarmerPrice) {
                 towers.push(new Tower(cursor[0].x, cursor[0].y, 30, 250, "farmer", 1))
-                p1money -= 100
-                towers[towers.length - 1].totalCost += 100
+                p1money -= baseFarmerPrice
+                towers[towers.length - 1].totalCost += baseFarmerPrice
             }
         } else if(p1Towers[2] == "000dartling.png" && p1SelectedTower == false) {
             var placeable = true
@@ -8633,10 +8634,10 @@ onkeydown = onkeyup = function(e){
                     placeable = false
                 }
             }
-            if(placeable && p2money >= 100) {
+            if(placeable && p2money >= baseFarmerPrice) {
                 towers.push(new Tower(cursor[1].x, cursor[1].y, 30, 250, "farmer", 2))
-                p2money -= 100
-                towers[towers.length - 1].totalCost += 100
+                p2money -= baseFarmerPrice
+                towers[towers.length - 1].totalCost += baseFarmerPrice
             }
         } else if(p2Towers[0] == "000dartling.png" && p2SelectedTower == false) {
             var placeable = true
@@ -8979,10 +8980,10 @@ onkeydown = onkeyup = function(e){
                     placeable = false
                 }
             }
-            if(placeable && p2money >= 100) {
+            if(placeable && p2money >= baseFarmerPrice) {
                 towers.push(new Tower(cursor[1].x, cursor[1].y, 30, 250, "farmer", 2))
-                p2money -= 100
-                towers[towers.length - 1].totalCost += 100
+                p2money -= baseFarmerPrice
+                towers[towers.length - 1].totalCost += baseFarmerPrice
             }
         } else if(p2Towers[1] == "000dartling.png" && p2SelectedTower == false) {
             var placeable = true
@@ -9316,10 +9317,10 @@ onkeydown = onkeyup = function(e){
                     placeable = false
                 }
             }
-            if(placeable && p2money >= 100) {
+            if(placeable && p2money >= baseFarmerPrice) {
                 towers.push(new Tower(cursor[1].x, cursor[1].y, 30, 250, "farmer", 2))
-                p2money -= 100
-                towers[towers.length - 1].totalCost += 100
+                p2money -= baseFarmerPrice
+                towers[towers.length - 1].totalCost += baseFarmerPrice
             }
         } else if(p2Towers[2] == "000dartling.png" && p2SelectedTower == false) {
             var placeable = true

@@ -4,8 +4,13 @@
 const path = require("node:path")
 const { chromium } = require("playwright")
 const {
+    DECISION_CANDIDATE_INPUT_SIZE,
+    DECISION_STATE_INPUT_SIZE,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
+    MODEL_FAMILY,
+    MODEL_SCHEMA_VERSION,
+    MAX_RECOVERED_STALLS,
     ROOT,
     TRAIN_RESULT_KIND,
     computeMetrics,
@@ -26,6 +31,11 @@ const {
 
 const FRAME_MS = 1000 / 60
 const DEFAULT_MAX_FRAMES = 600000
+const MAX_STALL_RECOVERIES_PER_MATCH = MAX_RECOVERED_STALLS
+const SCHEMA_10_FAMILY = "shared-recurrent-actor-critic-v2"
+const SCHEMA_11_FAMILY = "semantic-recurrent-actor-critic-v3"
+const SCHEMA_11_STATE_INPUT_SIZE = 72
+const SCHEMA_11_CANDIDATE_INPUT_SIZE = 64
 
 const usage = `Usage:
   node tools/distributed-ai/run-worker.js --mode initialize --seed N --shard ID --output checkpoint.json
@@ -157,7 +167,8 @@ async function normalizedModel(page, model) {
 
 function validateMigrationSource(checkpoint) {
     if(!checkpoint || checkpoint.kind != "btdb-ai-checkpoint" || checkpoint.formatVersion != FORMAT_VERSION) fail("Migration source has an unsupported kind or format version")
-    if(checkpoint.modelSchemaVersion != 10 || checkpoint.modelFamily != "shared-recurrent-actor-critic-v2") fail("Migration source must use schema 10 and shared-recurrent-actor-critic-v2")
+    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : null
+    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, or schema 11 and ${SCHEMA_11_FAMILY}`)
     if(!checkpoint.model || checkpoint.model.version != checkpoint.modelSchemaVersion || checkpoint.model.modelFamily != checkpoint.modelFamily) fail("Migration source model identity is inconsistent")
     if(digest(checkpoint.model) != checkpoint.modelDigest) fail("Migration source modelDigest does not match its model")
     const identity = {}
@@ -166,19 +177,59 @@ function validateMigrationSource(checkpoint) {
     return checkpoint
 }
 
+function appendZeroColumns(matrix, rows, oldColumns, newColumns, label) {
+    if(!Array.isArray(matrix) || matrix.length != rows) fail(`${label} must contain ${rows} rows`)
+    return matrix.map((row, index) => {
+        if(!Array.isArray(row) || row.length != oldColumns) fail(`${label}[${index}] must contain ${oldColumns} values`)
+        return row.concat(Array(newColumns - oldColumns).fill(0))
+    })
+}
+
+function migrateSchema11Policy(policy, label) {
+    if(!policy || !policy.decision) fail(`${label} is missing its decision network`)
+    const migrated = JSON.parse(JSON.stringify(policy))
+    const decision = migrated.decision
+    if(decision.stateInputSize != SCHEMA_11_STATE_INPUT_SIZE || decision.candidateInputSize != SCHEMA_11_CANDIDATE_INPUT_SIZE) fail(`${label}.decision has incompatible schema 11 input dimensions`)
+    decision.stateInputSize = DECISION_STATE_INPUT_SIZE
+    decision.candidateInputSize = DECISION_CANDIDATE_INPUT_SIZE
+    decision.WState1 = appendZeroColumns(decision.WState1, 96, SCHEMA_11_STATE_INPUT_SIZE, DECISION_STATE_INPUT_SIZE, `${label}.decision.WState1`)
+    decision.WCandidate1 = appendZeroColumns(decision.WCandidate1, 48, SCHEMA_11_CANDIDATE_INPUT_SIZE, DECISION_CANDIDATE_INPUT_SIZE, `${label}.decision.WCandidate1`)
+    return migrated
+}
+
+function migrateSchema11Model(source) {
+    if(!source || source.version != 11 || source.modelFamily != SCHEMA_11_FAMILY) fail(`Migration requires schema 11 and ${SCHEMA_11_FAMILY}`)
+    if(!Array.isArray(source.populationPolicies) || source.populationPolicies.length > 2) fail("Schema 11 migration source has an invalid policy population")
+    const migrated = JSON.parse(JSON.stringify(source))
+    migrated.version = MODEL_SCHEMA_VERSION
+    migrated.modelFamily = MODEL_FAMILY
+    migrated.placementStats = {}
+    migrated.loadoutPlacementStats = {}
+    migrated.tacticalFamilyStats = Object.fromEntries(Object.entries(source.tacticalFamilyStats).filter(([key]) => !key.startsWith("human|")))
+    migrated.policy = migrateSchema11Policy(source.policy, "model.policy")
+    migrated.championPolicy = migrateSchema11Policy(source.championPolicy, "model.championPolicy")
+    migrated.populationPolicies = source.populationPolicies.map((policy, index) => migrateSchema11Policy(policy, `model.populationPolicies[${index}]`))
+    return migrated
+}
+
 function assertMigrationRetention(source, migrated) {
+    if(source.version == 11) {
+        if(digest(migrateSchema11Model(source)) != digest(migrated)) fail("Schema 11 migration changed data beyond identity, policy input expansion, incompatible stores, and reserved human priors")
+        return
+    }
     const modelKeys = [
         "totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations",
-        "playerProfile", "strategyStats", "loadoutStats", "placementStats", "loadoutPlacementStats", "timingStats",
+        "playerProfile", "strategyStats", "loadoutStats", "timingStats",
         "loadoutStrategyStats", "crosspathStats", "loadoutCounterStats", "tacticalStats", "tacticalFamilyStats",
         "totalTacticalSamples", "candidateGeneration", "championGeneration",
     ]
     for(const key of modelKeys) if(digest(source[key]) != digest(migrated[key])) fail(`Migration did not preserve model.${key}`)
+    if(Object.keys(migrated.placementStats).length != 0 || Object.keys(migrated.loadoutPlacementStats).length != 0) fail("Migration did not reset perspective-sensitive placement stores")
     if(migrated.totalDecisionSamples != 0) fail("Migration did not reset totalDecisionSamples")
 
     const retainedDecisionKeys = [
-        "stateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount",
-        "WState1", "bState1", "WState2", "bState2", "WStateToMemory", "WMemoryToMemory", "bMemory",
+        "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount",
+        "bState1", "WState2", "bState2", "WStateToMemory", "WMemoryToMemory", "bMemory",
         "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival",
     ]
     const policyPairs = [[source.policy, migrated.policy], [source.championPolicy, migrated.championPolicy]]
@@ -187,6 +238,8 @@ function assertMigrationRetention(source, migrated) {
         if(digest(oldPolicy.strategy) != digest(newPolicy.strategy)) fail("Migration did not preserve a strategy network")
         if(oldPolicy.strategyLearningRate != newPolicy.strategyLearningRate || oldPolicy.decisionLearningRate != newPolicy.decisionLearningRate) fail("Migration did not preserve learning rates")
         for(const key of retainedDecisionKeys) if(digest(oldPolicy.decision[key]) != digest(newPolicy.decision[key])) fail(`Migration did not preserve decision.${key}`)
+        const expandedState = appendZeroColumns(oldPolicy.decision.WState1, 96, SCHEMA_11_STATE_INPUT_SIZE, DECISION_STATE_INPUT_SIZE, "schema 10 decision.WState1")
+        if(digest(expandedState) != digest(newPolicy.decision.WState1)) fail("Migration did not preserve and zero-expand decision.WState1")
         if(newPolicy.decision.trainingSamples.some(value => value != 0) || newPolicy.decision.familyBias.some(value => value != 0)) fail("Migration did not reset decision-family training state")
     }
 }
@@ -194,9 +247,11 @@ function assertMigrationRetention(source, migrated) {
 async function migrate(source, seed, shard, output) {
     const runtime = await openRuntime(seed)
     try {
-        const model = await normalizedModel(runtime.page, source.model)
+        const normalized = await normalizedModel(runtime.page, source.model)
         const repeated = await normalizedModel(runtime.page, source.model)
-        if(digest(model) != digest(repeated)) fail("Schema migration is not deterministic")
+        if(digest(normalized) != digest(repeated)) fail("Schema migration is not deterministic")
+        const model = source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
+        if(source.modelSchemaVersion == 11 && digest(model) != digest(normalized)) fail("Explicit schema 11 migration does not match runtime normalization")
         assertMigrationRetention(source.model, model)
         validateModel(model, model.version, model.modelFamily)
         const checkpoint = createCheckpoint({
@@ -313,18 +368,20 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
     })
 }
 
-async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMatches, maxFramesPerMatch) {
+async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMatches, maxFramesPerMatch, afterHarnessInstalled) {
     const page = runtime.page
     await installMatchHarness(page, mode, candidate, baseline, requestedMatches)
+    if(afterHarnessInstalled) await afterHarnessInstalled(page)
     const matches = []
     let framesThisMatch = 0
     let observedStalls = 0
+    let recoveriesThisMatch = 0
     while(matches.length < requestedMatches) {
         const expectedMatches = matches.length
         const remainingBudget = maxFramesPerMatch - framesThisMatch
         if(remainingBudget <= 0) fail(`Frame budget exhausted during match ${expectedMatches}`)
         const batch = Math.min(200, remainingBudget)
-        const state = await page.evaluate(({ expectedMatches, batch, frameMs }) => {
+        const state = await page.evaluate(({ expectedMatches, batch, frameMs, observedStalls }) => {
             function finiteTree(value, seen) {
                 if(typeof value == "number") return Number.isFinite(value)
                 if(value == null || typeof value == "string" || typeof value == "boolean") return true
@@ -340,7 +397,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                 window.__distributedAI.advance(frameMs)
                 advanceRuntimeClock()
                 animate()
-                if(aiTrainingState.trueSelfPlayDiscardCurrentMatch || aiTrainingState.trueSelfPlayStallRecoveries > 0 || aiTrainingState.trueSelfPlayMatches != expectedMatches) {
+                if(aiTrainingState.trueSelfPlayDiscardCurrentMatch || aiTrainingState.trueSelfPlayStallRecoveries != observedStalls || aiTrainingState.trueSelfPlayMatches != expectedMatches) {
                     framesRun++
                     break
                 }
@@ -355,11 +412,18 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                 finiteModel: finiteTree(aiLearning, new Set()),
                 validPolicy: isValidAIPolicy(aiLearning.policy) && isValidAIPolicy(aiLearning.championPolicy),
             }
-        }, { expectedMatches, batch, frameMs: FRAME_MS })
+        }, { expectedMatches, batch, frameMs: FRAME_MS, observedStalls })
         framesThisMatch += state.framesRun
         if(!state.finiteModel || !state.validPolicy) fail(`Non-finite or invalid model values detected during match ${expectedMatches}`)
-        if(state.stalls > observedStalls || state.discarded) fail(`Self-play stalled or discarded match ${expectedMatches}`)
-        observedStalls = state.stalls
+        if(state.stalls < observedStalls) fail(`Self-play stall recovery count moved backwards during match ${expectedMatches}`)
+        const recovered = state.stalls - observedStalls
+        if(recovered > 0) {
+            recoveriesThisMatch += recovered
+            observedStalls = state.stalls
+            console.warn(`Recovered discarded match ${expectedMatches} (${recoveriesThisMatch}/${MAX_STALL_RECOVERIES_PER_MATCH})`)
+            if(recoveriesThisMatch > MAX_STALL_RECOVERIES_PER_MATCH) fail(`Stall recovery limit exceeded during match ${expectedMatches}`)
+            if(observedStalls > MAX_RECOVERED_STALLS) fail(`Stall recovery limit exceeded for the worker result`)
+        }
         if(state.completedMatches < expectedMatches || state.completedMatches > expectedMatches + 1) fail(`Wrong browser match count: expected ${expectedMatches} or ${expectedMatches + 1}, got ${state.completedMatches}`)
         if(state.completedMatches == expectedMatches + 1) {
             if(!state.lastMatch || state.lastMatch.index != expectedMatches) fail(`Missing summary for completed match ${expectedMatches}`)
@@ -373,6 +437,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                 frames: framesThisMatch,
             })
             framesThisMatch = 0
+            recoveriesThisMatch = 0
         }
         assertRuntimeClean(runtime)
     }
@@ -386,7 +451,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
     })
     if(finalState.completedMatches != requestedMatches) fail(`Wrong final browser match count: expected ${requestedMatches}, got ${finalState.completedMatches}`)
     if(matches.length != requestedMatches) fail(`Wrong final match count: expected ${requestedMatches}, got ${matches.length}`)
-    return { matches, model: finalState.model, builtInEvaluationScore: finalState.builtInEvaluationScore }
+    return { matches, model: finalState.model, builtInEvaluationScore: finalState.builtInEvaluationScore, stallRecoveries: observedStalls }
 }
 
 async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, output, maxFramesPerMatch }) {
@@ -404,6 +469,7 @@ async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, ou
         assertRuntimeClean(runtime)
         const metrics = computeMetrics(execution.matches, {
             builtInEvaluationScore: mode == "train" ? execution.builtInEvaluationScore : null,
+            stalls: execution.stallRecoveries,
         })
         let result
         if(mode == "train") {
@@ -504,7 +570,11 @@ if(require.main === module) {
 }
 
 module.exports = {
+    assertMigrationRetention,
     assertRuntimeClean,
     closeRuntime,
+    migrateSchema11Model,
     openRuntime,
+    stepUntilMatches,
+    validateMigrationSource,
 }

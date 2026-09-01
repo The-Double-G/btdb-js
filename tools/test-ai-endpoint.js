@@ -12,8 +12,12 @@ const featureCount = 17
 const strategyCount = 75
 const hidden1 = 64
 const hidden2 = 32
-const stateInputSize = 72
-const candidateInputSize = 64
+const stateInputSize = 80
+const candidateInputSize = 80
+const schema11StateInputSize = 72
+const schema11CandidateInputSize = 64
+const schema10StateInputSize = 72
+const schema10CandidateInputSize = 40
 const stateHiddenSize = 96
 const candidateHiddenSize = 48
 const embeddingSize = 48
@@ -188,6 +192,10 @@ function createSchema9Model() {
     model.version = 9
     model.modelFamily = "shared-neural-controller-v1"
     model.totalDecisionSamples = 7
+    model.tacticalFamilyStats = {
+        "preserved-schema9-family": scoreRecord(2, 0.2),
+        "human|rush|send|2": scoreRecord(3, 0.8),
+    }
     model.policy = createSchema9Policy(0.01)
     model.championPolicy = createSchema9Policy(0.02)
     model.populationPolicies = [createSchema9Policy(0.03), createSchema9Policy(0.04)]
@@ -197,8 +205,8 @@ function createSchema9Model() {
 function createModel() {
     const policy = createPolicy()
     return {
-        version: 11,
-        modelFamily: "semantic-recurrent-actor-critic-v3",
+        version: 12,
+        modelFamily: "semantic-intent-spatial-recurrent-actor-critic-v4",
         totalGames: 0,
         totalSyntheticEpisodes: 0,
         totalPolicySamples: 0,
@@ -225,10 +233,71 @@ function createModel() {
     }
 }
 
+function createSchema11Policy(seed = 0) {
+    const policy = createPolicy()
+    policy.decision.stateInputSize = schema11StateInputSize
+    policy.decision.candidateInputSize = schema11CandidateInputSize
+    policy.decision.WState1 = policy.decision.WState1.map(row => row.slice(0, schema11StateInputSize))
+    policy.decision.WCandidate1 = policy.decision.WCandidate1.map(row => row.slice(0, schema11CandidateInputSize))
+    policy.strategy.W1[0][0] = 0.11 + seed
+    policy.strategy.b1[1] = -0.12 - seed
+    policy.strategy.W2[2][3] = 0.13 + seed
+    policy.strategy.b2[4] = -0.14 - seed
+    policy.strategy.W3[5][6] = 0.15 + seed
+    policy.strategy.b3[7] = -0.16 - seed
+    policy.decision.trainingSamples[2] = 17
+    policy.decision.WState1[0][0] = 0.17 + seed
+    policy.decision.bState1[1] = -0.18 - seed
+    policy.decision.WState2[2][3] = 0.19 + seed
+    policy.decision.bState2[4] = -0.2 - seed
+    policy.decision.WCandidate1[5][6] = 0.21 + seed
+    policy.decision.bCandidate1[7] = -0.22 - seed
+    policy.decision.WCandidate2[8][9] = 0.23 + seed
+    policy.decision.bCandidate2[10] = -0.24 - seed
+    policy.decision.WStateToMemory[11][12] = 0.25 + seed
+    policy.decision.WMemoryToMemory[13][14] = -0.26 - seed
+    policy.decision.bMemory[15] = 0.27 + seed
+    policy.decision.WMemoryToState[16][15] = -0.28 - seed
+    policy.decision.WValue[17] = 0.29 + seed
+    policy.decision.bValue = -0.3 - seed
+    policy.decision.WSurvival[2][18] = 0.31 + seed
+    policy.decision.bSurvival[3] = -0.32 - seed
+    policy.decision.familyBias[4] = 0.33 + seed
+    return policy
+}
+
+function createSchema11Model() {
+    const model = createModel()
+    model.version = 11
+    model.modelFamily = "semantic-recurrent-actor-critic-v3"
+    model.totalDecisionSamples = 29
+    model.totalHumanDemonstrations = 3
+    model.placementStats = { "old-p1-cell": scoreRecord(4, 0.25) }
+    model.loadoutPlacementStats = { "old-loadout-p1-cell": scoreRecord(5, -0.2) }
+    model.timingStats = { "preserved-timing": scoreRecord(6, 0.3) }
+    model.loadoutStrategyStats = { "preserved-strategy": scoreRecord(7, -0.35) }
+    model.crosspathStats = { "preserved-crosspath": scoreRecord(8, 0.4) }
+    model.loadoutCounterStats = { "preserved-counter": scoreRecord(9, -0.45) }
+    model.tacticalStats = { "preserved-tactical": scoreRecord(10, 0.5) }
+    model.tacticalFamilyStats = {
+        "preserved-family": scoreRecord(11, -0.55),
+        "human|placement|place|dart": scoreRecord(12, 0.75),
+    }
+    model.totalTacticalSamples = 10
+    model.candidateGeneration = 12
+    model.championGeneration = 11
+    model.policy = createSchema11Policy(0.01)
+    model.championPolicy = createSchema11Policy(0.02)
+    model.populationPolicies = [createSchema11Policy(0.03), createSchema11Policy(0.04)]
+    return model
+}
+
 function createSchema10Policy(seed = 0) {
     const policy = createPolicy()
-    policy.decision.candidateInputSize = 40
-    policy.decision.WCandidate1 = policy.decision.WCandidate1.map(row => row.slice(0, 40))
+    policy.decision.stateInputSize = schema10StateInputSize
+    policy.decision.candidateInputSize = schema10CandidateInputSize
+    policy.decision.WState1 = policy.decision.WState1.map(row => row.slice(0, schema10StateInputSize))
+    policy.decision.WCandidate1 = policy.decision.WCandidate1.map(row => row.slice(0, schema10CandidateInputSize))
     policy.strategy.W1[0][0] = 0.11 + seed
     policy.decision.WState1[0][0] = 0.13 + seed
     policy.decision.WState2[0][0] = -0.17 - seed
@@ -251,6 +320,10 @@ function createSchema10Model() {
     model.version = 10
     model.modelFamily = "shared-recurrent-actor-critic-v2"
     model.totalDecisionSamples = 7
+    model.tacticalFamilyStats = {
+        "preserved-schema10-family": scoreRecord(2, -0.2),
+        "human|placement|place|farm": scoreRecord(3, 0.8),
+    }
     model.policy = createSchema10Policy(0.01)
     model.championPolicy = createSchema10Policy(0.02)
     model.populationPolicies = [createSchema10Policy(0.03), createSchema10Policy(0.04)]
@@ -259,7 +332,7 @@ function createSchema10Model() {
 
 function createDecisionSample(overrides = {}) {
     return {
-        creditVersion: 2,
+        creditVersion: 3,
         familyIndex: 2,
         stateFeatures: vector(stateInputSize, 0.35),
         chosenCandidateFeatures: vector(candidateInputSize, 0.2),
@@ -277,9 +350,9 @@ function createDecisionSample(overrides = {}) {
 function createLegacyDecisionSample(overrides = {}) {
     return {
         familyIndex: 2,
-        stateFeatures: vector(stateInputSize, 0.35),
-        chosenCandidateFeatures: vector(40, 0.2),
-        rejectedCandidateFeatures: vector(40, -0.2),
+        stateFeatures: vector(schema10StateInputSize, 0.35),
+        chosenCandidateFeatures: vector(schema10CandidateInputSize, 0.2),
+        rejectedCandidateFeatures: vector(schema10CandidateInputSize, -0.2),
         memoryIn: vector(memorySize, 0.1),
         localReward: -0.5,
         age: 7,
@@ -316,11 +389,35 @@ function createHumanDemonstration(id, baseRevision, contributionEpoch) {
         contributionId: id,
         baseRevision,
         contributionEpoch,
+        map: 7,
+        durationMs: 120000,
         matchFeatures: vector(featureCount, 0.75),
         aiLives: 0,
         enemyLives: 100,
-        loadoutKey: "dart,farm,ninja||ecoboost.png,towerboost.png",
+        loadoutKey: "dart,farm,dartling||ecoboost.png,towerboost.png",
         opponentLoadoutKey: "bomb,farm,wizard||bloonboost.png,towerboost.png",
+        events: [
+            { k: "place", t: 0, r: 1, id: 1, tower: "dart", x: 1, y: 2 },
+            { k: "upgrade", t: 250, r: 1, id: 1, path: 1, tier: 1 },
+            { k: "upgrade", t: 500, r: 1, id: 1, path: 1, tier: 2 },
+            { k: "aim", t: 750, r: 1, id: 1, mode: "first", x: 2, y: 3 },
+            { k: "place", t: 1000, r: 1, id: 2, tower: "farm", x: 4, y: 5 },
+            { k: "place", t: 1000, r: 1, id: 3, tower: "farmer", x: 6, y: 0 },
+            { k: "collect", t: 1250, r: 1, source: "bank", id: 2, count: 1 },
+            { k: "collect", t: 1500, r: 1, source: "banana", id: 2, count: 12 },
+            { k: "place", t: 1500, r: 1, id: 4, tower: "dartling", x: 3, y: 3 },
+            { k: "aim", t: 1500, r: 1, id: 4, mode: "follow", x: 3, y: 4 },
+            { k: "send", t: 1750, r: 1, slot: 2, groups: 3, source: "manual" },
+            { k: "send", t: 2000, r: 1, slot: 2, groups: 1, source: "manual" },
+            { k: "send", t: 2250, r: 1, slot: 3, groups: 2, source: "auto" },
+            { k: "eco", t: 2500, r: 1, enabled: true, slot: 3 },
+            { k: "wait", t: 10000, r: 2, ms: 5000 },
+            { k: "wait", t: 30000, r: 3, ms: 20000 },
+            { k: "wait", t: 60000, r: 4, ms: 45000 },
+            { k: "boost", t: 60000, r: 4, boost: "ecoboost.png" },
+            { k: "boost", t: 100000, r: 5, boost: "ecoboost.png" },
+            { k: "sell", t: 100250, r: 5, id: 1 },
+        ],
     }
 }
 
@@ -462,6 +559,24 @@ function canonicalWeight(index, scale, salt) {
     return ((state / 4294967295) * 2 - 1) * scale
 }
 
+function policyParameterCount(policy) {
+    const strategy = policy.strategy
+    const decision = policy.decision
+    return strategy.W1.length * strategy.W1[0].length + strategy.b1.length
+        + strategy.W2.length * strategy.W2[0].length + strategy.b2.length
+        + strategy.W3.length * strategy.W3[0].length + strategy.b3.length
+        + decision.WState1.length * decision.WState1[0].length + decision.bState1.length
+        + decision.WState2.length * decision.WState2[0].length + decision.bState2.length
+        + decision.WCandidate1.length * decision.WCandidate1[0].length + decision.bCandidate1.length
+        + decision.WCandidate2.length * decision.WCandidate2[0].length + decision.bCandidate2.length
+        + decision.WStateToMemory.length * decision.WStateToMemory[0].length
+        + decision.WMemoryToMemory.length * decision.WMemoryToMemory[0].length + decision.bMemory.length
+        + decision.WMemoryToState.length * decision.WMemoryToState[0].length
+        + decision.WValue.length + 1
+        + decision.WSurvival.length * decision.WSurvival[0].length + decision.bSurvival.length
+        + decision.familyBias.length
+}
+
 function policyParameterDeltaNorm(candidate, baseline) {
     const strategyKeys = ["W1", "b1", "W2", "b2", "W3", "b3"]
     const decisionKeys = ["WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"]
@@ -498,20 +613,27 @@ async function main() {
     try {
         const emptyEnvelope = await (await waitForServer(endpoints[0], commonHeaders)).json()
         await waitForServer(endpoints[1], commonHeaders)
-        assert.equal(emptyEnvelope.modelSchema, 11)
+        assert.equal(emptyEnvelope.modelSchema, 12)
         assert.equal(emptyEnvelope.contributionEnabled, false)
         assert.deepEqual(emptyEnvelope.model, [])
 
-        const schema10Model = createSchema10Model()
+        const schema11Model = createSchema11Model()
         const legacyState = {
             protocolVersion: 1,
             revision: 7,
-            modelDigest: `sha256:${"1".repeat(64)}`,
+            modelDigest: hostedDigest(schema11Model),
             updatedAt: "2026-01-01T00:00:00Z",
-            model: schema10Model,
+            model: schema11Model,
             contributionGuard: { recent: { ["f".repeat(32)]: Math.floor(Date.now() / 1000) }, rates: {} },
             contributionEpoch: 4,
         }
+        fs.writeFileSync(statePath, `${JSON.stringify({ ...legacyState, modelDigest: `sha256:${"1".repeat(64)}` })}\n`)
+        const corruptStateResponse = await fetch(endpoints[0], { headers: commonHeaders })
+        assert.equal(corruptStateResponse.status, 503)
+        assert.deepEqual((await corruptStateResponse.json()).error, {
+            code: "storage_corrupt",
+            message: "AI model storage metadata is invalid.",
+        })
         fs.writeFileSync(statePath, `${JSON.stringify(legacyState)}\n`)
 
         const migrationContribution = createContribution("00000000000000000000000000000001", 7, 4)
@@ -530,50 +652,118 @@ async function main() {
         assert.deepEqual(migrationRace.map(response => response.status), [200, 200, 409])
 
         let envelope = await readEnvelope(endpoints[0], commonHeaders)
-        assert.equal(envelope.modelSchema, 11)
+        assert.equal(envelope.modelSchema, 12)
         assert.equal(envelope.revision, 8)
         assert.equal(envelope.contributionEpoch, 5)
-        assert.equal(envelope.model.version, 11)
-        assert.equal(envelope.model.modelFamily, "semantic-recurrent-actor-critic-v3")
-        assert.equal(envelope.model.totalDecisionSamples, 0)
-        assert.equal(envelope.model.totalGames, 1)
-        assert.equal(envelope.model.totalSyntheticEpisodes, 2)
-        assert.equal(envelope.model.totalPolicySamples, 3)
-        assert.equal(envelope.model.totalLoadoutSamples, 1)
-        assert.equal(envelope.model.totalHumanDemonstrations, 2)
-        assert.equal(envelope.model.candidateGeneration, 5)
-        assert.equal(envelope.model.championGeneration, 4)
+        assert.equal(envelope.model.version, 12)
+        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v4")
+        assert.equal(envelope.model.totalDecisionSamples, 29)
+        assert.equal(envelope.model.totalHumanDemonstrations, 3)
+        assert.equal(envelope.model.candidateGeneration, 12)
+        assert.equal(envelope.model.championGeneration, 11)
         assert.equal(envelope.model.populationPolicies.length, 2)
-        assert.equal(envelope.model.tacticalStats["legacy-tactical"].samples, 1)
-        assert.equal(envelope.model.placementStats["legacy-placement"].samples, 1)
+        assert.deepEqual(envelope.model.placementStats, {})
+        assert.deepEqual(envelope.model.loadoutPlacementStats, {})
+        for (const key of ["timingStats", "loadoutStrategyStats", "crosspathStats", "loadoutCounterStats", "tacticalStats"]) {
+            assert.deepEqual(envelope.model[key], schema11Model[key])
+        }
+        assert.deepEqual(envelope.model.tacticalFamilyStats, { "preserved-family": schema11Model.tacticalFamilyStats["preserved-family"] })
+        for (const key of ["totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations", "totalTacticalSamples", "totalDecisionSamples", "candidateGeneration", "championGeneration", "playerProfile", "strategyStats", "loadoutStats"]) {
+            assert.deepEqual(envelope.model[key], schema11Model[key])
+        }
         assert.match(envelope.policyDigest, /^sha256:[a-f0-9]{64}$/)
         assert.match(envelope.championPolicyDigest, /^sha256:[a-f0-9]{64}$/)
         assert.match(envelope.promotionBaseDigest, /^sha256:[a-f0-9]{64}$/)
         assertPolicyContract(envelope.model.policy)
         assertPolicyContract(envelope.model.championPolicy)
+        assert.equal(policyParameterCount(envelope.model.policy), 26440)
         assert.equal(envelope.modelDigest, hostedDigest(envelope.model))
         assert.equal(envelope.policyDigest, hostedDigest(envelope.model.policy))
         createHostedSnapshot(envelope)
 
+        const schema11Bundles = [schema11Model.policy, schema11Model.championPolicy, ...schema11Model.populationPolicies]
+        const migratedBundles = [envelope.model.policy, envelope.model.championPolicy, ...envelope.model.populationPolicies]
+        const preservationSample = createDecisionSample({
+            stateFeatures: Array.from({ length: stateInputSize }, (_, index) => (index % 9 - 4) / 4),
+            chosenCandidateFeatures: Array.from({ length: candidateInputSize }, (_, index) => (index % 7 - 3) / 3),
+        })
+        schema11Bundles.forEach((oldPolicy, index) => {
+            const migratedPolicy = migratedBundles[index]
+            assert.deepEqual(migratedPolicy.strategy, oldPolicy.strategy)
+            assert.deepEqual(migratedPolicy.decision.WState1.map(row => row.slice(0, schema11StateInputSize)), oldPolicy.decision.WState1)
+            assert.ok(migratedPolicy.decision.WState1.every(row => row.slice(schema11StateInputSize).every(value => value === 0)))
+            assert.deepEqual(migratedPolicy.decision.WCandidate1.map(row => row.slice(0, schema11CandidateInputSize)), oldPolicy.decision.WCandidate1)
+            assert.ok(migratedPolicy.decision.WCandidate1.every(row => row.slice(schema11CandidateInputSize).every(value => value === 0)))
+            for (const key of ["trainingSamples", "bState1", "WState2", "bState2", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"]) {
+                assert.deepEqual(migratedPolicy.decision[key], oldPolicy.decision[key])
+            }
+            const oldOutput = decisionPrediction(preservationSample, oldPolicy.decision)
+            const migratedOutput = decisionPrediction(preservationSample, migratedPolicy.decision)
+            assert.ok(Math.abs(oldOutput.actor - migratedOutput.actor) < 1e-15)
+            assert.ok(Math.abs(oldOutput.value - migratedOutput.value) < 1e-15)
+        })
+        let migratedState = JSON.parse(fs.readFileSync(statePath, "utf8"))
+        assert.equal(migratedState.revision, 8)
+        assert.equal(migratedState.contributionEpoch, 5)
+        assert.deepEqual(migratedState.contributionGuard, { recent: [], rates: [] })
+
+        const schema9Model = createSchema9Model()
+        const schema9State = {
+            protocolVersion: 1,
+            revision: 14,
+            modelDigest: hostedDigest(schema9Model),
+            updatedAt: "2026-01-01T12:00:00Z",
+            model: schema9Model,
+            contributionGuard: { recent: {}, rates: {} },
+            contributionEpoch: 6,
+        }
+        fs.writeFileSync(statePath, `${JSON.stringify(schema9State)}\n`)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+        assert.equal(envelope.revision, 15)
+        assert.equal(envelope.contributionEpoch, 7)
+        assert.deepEqual(envelope.model.tacticalFamilyStats, {
+            "preserved-schema9-family": schema9Model.tacticalFamilyStats["preserved-schema9-family"],
+        })
+
+        const schema10Model = createSchema10Model()
+        const schema10State = {
+            protocolVersion: 1,
+            revision: 20,
+            modelDigest: hostedDigest(schema10Model),
+            updatedAt: "2026-01-02T00:00:00Z",
+            model: schema10Model,
+            contributionGuard: { recent: { ["e".repeat(32)]: Math.floor(Date.now() / 1000) }, rates: { stale: { windowStart: 1, count: 1 } } },
+            contributionEpoch: 8,
+        }
+        fs.writeFileSync(statePath, `${JSON.stringify(schema10State)}\n`)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+        assert.equal(envelope.revision, 21)
+        assert.equal(envelope.contributionEpoch, 9)
+        assert.equal(envelope.model.version, 12)
+        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v4")
+        assert.equal(envelope.model.totalDecisionSamples, 0)
+        assert.deepEqual(envelope.model.placementStats, {})
+        assert.deepEqual(envelope.model.loadoutPlacementStats, {})
+        assert.deepEqual(envelope.model.tacticalFamilyStats, {
+            "preserved-schema10-family": schema10Model.tacticalFamilyStats["preserved-schema10-family"],
+        })
         const migratedChampion = envelope.model.championPolicy
-        const migrationFeatures = Array.from({ length: featureCount }, (_, index) => (index + 1) / 30)
-        const oldLogits = strategyForward(migrationFeatures, schema10Model.championPolicy.strategy)
-        const newLogits = strategyForward(migrationFeatures, migratedChampion.strategy)
-        oldLogits.forEach((value, index) => assert.ok(Math.abs(value - newLogits[index]) < 1e-15))
         assert.deepEqual(migratedChampion.strategy, schema10Model.championPolicy.strategy)
-        for (const key of ["WState1", "bState1", "WState2", "bState2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival"]) {
+        assert.deepEqual(migratedChampion.decision.WState1.map(row => row.slice(0, schema10StateInputSize)), schema10Model.championPolicy.decision.WState1)
+        assert.ok(migratedChampion.decision.WState1.every(row => row.slice(schema10StateInputSize).every(value => value === 0)))
+        for (const key of ["bState1", "WState2", "bState2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival"]) {
             assert.deepEqual(migratedChampion.decision[key], schema10Model.championPolicy.decision[key])
         }
         assert.equal(migratedChampion.decision.WCandidate1[0][0], canonicalWeight(0, 0.09, 37))
         assert.equal(migratedChampion.decision.WCandidate2[0][0], canonicalWeight(0, 0.07, 53))
-        assert.notDeepEqual(migratedChampion.decision.WCandidate1.map(row => row.slice(0, 40)), schema10Model.championPolicy.decision.WCandidate1)
+        assert.notDeepEqual(migratedChampion.decision.WCandidate1.map(row => row.slice(0, schema10CandidateInputSize)), schema10Model.championPolicy.decision.WCandidate1)
         assert.ok(migratedChampion.decision.bCandidate1.every(value => value === 0))
         assert.ok(migratedChampion.decision.bCandidate2.every(value => value === 0))
         assert.ok(migratedChampion.decision.familyBias.every(value => value === 0))
         assert.ok(migratedChampion.decision.trainingSamples.every(value => value === 0))
-        const migratedState = JSON.parse(fs.readFileSync(statePath, "utf8"))
-        assert.equal(migratedState.revision, 8)
-        assert.equal(migratedState.contributionEpoch, 5)
+        migratedState = JSON.parse(fs.readFileSync(statePath, "utf8"))
+        assert.equal(migratedState.revision, 21)
+        assert.equal(migratedState.contributionEpoch, 9)
         assert.deepEqual(migratedState.contributionGuard, { recent: [], rates: [] })
         const migratedEpoch = envelope.contributionEpoch
 
@@ -659,6 +849,9 @@ async function main() {
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, brokenSuccessor)).status, 422)
         const tooMany = createContribution("00000000000000000000000000000004", envelope.revision, migratedEpoch, Array.from({ length: 13 }, () => createDecisionSample()))
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, tooMany)).status, 422)
+        const forgedHumanPrior = createContribution("00000000000000000000000000000025", envelope.revision, migratedEpoch)
+        forgedHumanPrior.observations = [{ store: "tacticalFamilyStats", key: "human|rush|send|2", value: 1 }]
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, forgedHumanPrior)).status, 422)
         const futureRevision = createContribution("0000000000000000000000000000000e", envelope.revision + 1, migratedEpoch)
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, futureRevision)).status, 409)
         const staleEpoch = createContribution("0000000000000000000000000000000f", envelope.revision, migratedEpoch - 1)
@@ -723,7 +916,24 @@ async function main() {
         assert.equal(envelope.model.policy.decision.trainingSamples[sample.familyIndex], 13)
         assert.ok(policyParameterDeltaNorm(envelope.model.policy, policyBeforeBatch) <= 0.350000000001)
 
+        const modelBeforeHumanHeadroom = structuredClone(envelope.model)
+        const humanHeadroomModel = structuredClone(envelope.model)
+        humanHeadroomModel.totalHumanDemonstrations = Number.MAX_SAFE_INTEGER - 10
+        assert.equal((await postJson(endpoints[0], "commit", trainerHeaders, { expectedRevision: envelope.revision, model: humanHeadroomModel })).status, 200)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+        const headroomDemo = createHumanDemonstration("00000000000000000000000000000024", envelope.revision, migratedEpoch)
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, headroomDemo)).status, 409)
+        assert.equal((await postJson(endpoints[0], "commit", trainerHeaders, { expectedRevision: envelope.revision, model: modelBeforeHumanHeadroom })).status, 200)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+
         const candidateBeforeHuman = structuredClone(envelope.model.policy)
+        const championBeforeHuman = structuredClone(envelope.model.championPolicy)
+        const historyBeforeHuman = structuredClone(envelope.model.populationPolicies)
+        const tacticalSamplesBeforeHuman = envelope.model.totalTacticalSamples
+        const profileBeforeHuman = structuredClone(envelope.model.playerProfile)
+        const loadoutStatsBeforeHuman = structuredClone(envelope.model.loadoutStats)
+        const loadoutCounterStatsBeforeHuman = structuredClone(envelope.model.loadoutCounterStats)
+        const loadoutSamplesBeforeHuman = envelope.model.totalLoadoutSamples
         const humanResponse = await postJson(
             endpoints[0],
             "contribute",
@@ -734,8 +944,119 @@ async function main() {
         envelope = await readEnvelope(endpoints[0], commonHeaders)
         assert.equal(envelope.model.totalHumanDemonstrations, 3)
         assert.deepEqual(envelope.model.policy, candidateBeforeHuman)
+        assert.deepEqual(envelope.model.championPolicy, championBeforeHuman)
+        assert.deepEqual(envelope.model.populationPolicies, historyBeforeHuman)
+        assert.equal(envelope.model.totalTacticalSamples, tacticalSamplesBeforeHuman)
+        assert.deepEqual(envelope.model.playerProfile, profileBeforeHuman)
+        assert.deepEqual(envelope.model.loadoutStats, loadoutStatsBeforeHuman)
+        assert.deepEqual(envelope.model.loadoutCounterStats, loadoutCounterStatsBeforeHuman)
+        assert.equal(envelope.model.totalLoadoutSamples, loadoutSamplesBeforeHuman)
+        const humanReward = matchReward(0, 100)
+        const expectedHumanKeys = [
+            "human|placement|place|dart",
+            "human|placement|place|dart|1|2",
+            "human|upgrade|upgrade|dart|1",
+            "human|placement|place|farm",
+            "human|placement|place|farm|4|5",
+            "human|placement|place|farmer",
+            "human|placement|place|farmer|6|0",
+            "human|sell|collect|farm",
+            "human|sell|collect|banana",
+            "human|placement|place|dartling",
+            "human|placement|place|dartling|3|3",
+            "human|placement|aim|follow",
+            "human|rush|send|2",
+            "human|eco|send|3",
+            "human|eco|auto|1",
+            "human|boost|boost|ecoboost",
+            "human|sell|sell|dart",
+        ]
+        for (const key of expectedHumanKeys) {
+            assert.equal(envelope.model.tacticalFamilyStats[key].samples, 1)
+            assert.ok(Math.abs(envelope.model.tacticalFamilyStats[key].mean - humanReward) < 1e-15)
+        }
         const invalidHuman = { ...createHumanDemonstration("00000000000000000000000000000007", envelope.revision, migratedEpoch), decisionSamples: [] }
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, invalidHuman)).status, 422)
+
+        const missingEvents = createHumanDemonstration("00000000000000000000000000000017", envelope.revision, migratedEpoch)
+        delete missingEvents.events
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, missingEvents)).status, 422)
+
+        const badChronology = createHumanDemonstration("00000000000000000000000000000018", envelope.revision, migratedEpoch)
+        badChronology.events[2].t = 0
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, badChronology)).status, 422)
+
+        const badEnum = createHumanDemonstration("00000000000000000000000000000019", envelope.revision, migratedEpoch)
+        badEnum.events[0].tower = "unknown"
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, badEnum)).status, 422)
+
+        const inactiveReference = createHumanDemonstration("0000000000000000000000000000001a", envelope.revision, migratedEpoch)
+        inactiveReference.events = [
+            { k: "place", t: 0, r: 1, id: 1, tower: "dart", x: 1, y: 1 },
+            { k: "sell", t: 250, r: 1, id: 1 },
+            { k: "aim", t: 500, r: 1, id: 1, mode: "first", x: 1, y: 1 },
+        ]
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, inactiveReference)).status, 422)
+
+        const badTier = createHumanDemonstration("0000000000000000000000000000001b", envelope.revision, migratedEpoch)
+        badTier.events = [
+            { k: "place", t: 0, r: 1, id: 1, tower: "dart", x: 1, y: 1 },
+            { k: "upgrade", t: 250, r: 1, id: 1, path: 1, tier: 2 },
+        ]
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, badTier)).status, 422)
+
+        const badCrosspath = createHumanDemonstration("0000000000000000000000000000001c", envelope.revision, migratedEpoch)
+        badCrosspath.events = [
+            { k: "place", t: 0, r: 1, id: 1, tower: "dart", x: 1, y: 1 },
+            { k: "upgrade", t: 250, r: 1, id: 1, path: 1, tier: 1 },
+            { k: "upgrade", t: 500, r: 1, id: 1, path: 1, tier: 2 },
+            { k: "upgrade", t: 750, r: 1, id: 1, path: 1, tier: 3 },
+            { k: "upgrade", t: 1000, r: 1, id: 1, path: 2, tier: 1 },
+            { k: "upgrade", t: 1250, r: 1, id: 1, path: 2, tier: 2 },
+            { k: "upgrade", t: 1500, r: 1, id: 1, path: 2, tier: 3 },
+        ]
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, badCrosspath)).status, 422)
+
+        const boostCooldown = createHumanDemonstration("0000000000000000000000000000001d", envelope.revision, migratedEpoch)
+        boostCooldown.events = [
+            { k: "boost", t: 0, r: 1, boost: "ecoboost.png" },
+            { k: "boost", t: 39750, r: 2, boost: "ecoboost.png" },
+        ]
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, boostCooldown)).status, 422)
+
+        const boostCap = createHumanDemonstration("0000000000000000000000000000001e", envelope.revision, migratedEpoch)
+        boostCap.events = [0, 40000, 80000, 120000].map((t, index) => ({ k: "boost", t, r: index + 1, boost: "ecoboost.png" }))
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, boostCap)).status, 422)
+
+        const eventCap = createHumanDemonstration("0000000000000000000000000000001f", envelope.revision, migratedEpoch)
+        eventCap.events = Array.from({ length: 129 }, () => ({ k: "wait", t: 0, r: 1, ms: 3000 }))
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, eventCap)).status, 422)
+
+        const invalidDemoMutations = [
+            demo => { demo.map = 21 },
+            demo => { demo.durationMs = 0 },
+            demo => { demo.events[1].t = 125 },
+            demo => { demo.events[16].r = 2 },
+            demo => { demo.events[0].id = 65 },
+            demo => { demo.events[0].x = 7 },
+            demo => { demo.events[0].tower = "bomb" },
+            demo => { demo.events[1].path = 4 },
+            demo => { demo.events[3].mode = "follow" },
+            demo => { demo.events[6].id = 1 },
+            demo => { demo.events[7].count = 256 },
+            demo => { demo.events[10].groups = 7 },
+            demo => { demo.events[10].source = "queued" },
+            demo => { demo.events[13].enabled = 1 },
+            demo => { demo.events[14].ms = 2999 },
+            demo => { demo.events[17].boost = "bloonboost.png" },
+            demo => { demo.events[0].extra = true },
+        ]
+        for (let index = 0; index < invalidDemoMutations.length; index++) {
+            const contributionId = (0x40 + index).toString(16).padStart(32, "0")
+            const invalidDemo = createHumanDemonstration(contributionId, envelope.revision, migratedEpoch)
+            invalidDemoMutations[index](invalidDemo)
+            assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, invalidDemo)).status, 422)
+        }
 
         const promotionRequest = {
             protocolVersion: 1,
@@ -792,11 +1113,11 @@ async function main() {
         const resetResponse = await postJson(endpoints[0], "reset", trainerHeaders, { expectedRevision: envelope.revision, model: freshModel })
         assert.equal(resetResponse.status, 200)
         const resetResult = await resetResponse.json()
-        assert.equal(resetResult.contributionEpoch, 6)
+        assert.equal(resetResult.contributionEpoch, migratedEpoch + 1)
         assert.equal(resetResult.knowledgeReset, true)
         envelope = await readEnvelope(endpoints[0], commonHeaders)
-        assert.equal(envelope.model.version, 11)
-        assert.equal(envelope.model.modelFamily, "semantic-recurrent-actor-critic-v3")
+        assert.equal(envelope.model.version, 12)
+        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v4")
         assert.equal(envelope.model.totalDecisionSamples, 0)
         assertPolicyContract(envelope.model.policy)
         assert.deepEqual(envelope.model, freshModel)
@@ -816,7 +1137,7 @@ async function main() {
             const contribution = createContribution(
                 (index + 32).toString(16).padStart(32, "0"),
                 envelope.revision,
-                6,
+                migratedEpoch + 1,
                 [createDecisionSample({ familyIndex: index })],
             )
             return postJson(endpoints[serverIndex], "contribute", headers, contribution)
@@ -836,7 +1157,7 @@ async function main() {
         const exhaustedRevisionState = structuredClone(finalState)
         exhaustedRevisionState.revision = Number.MAX_SAFE_INTEGER
         fs.writeFileSync(statePath, `${JSON.stringify(exhaustedRevisionState)}\n`)
-        const exhaustedRevisionContribution = createContribution("00000000000000000000000000000012", Number.MAX_SAFE_INTEGER, 6)
+        const exhaustedRevisionContribution = createContribution("00000000000000000000000000000012", Number.MAX_SAFE_INTEGER, migratedEpoch + 1)
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, exhaustedRevisionContribution)).status, 409)
 
         const exhaustedEpochState = structuredClone(finalState)
@@ -844,7 +1165,7 @@ async function main() {
         fs.writeFileSync(statePath, `${JSON.stringify(exhaustedEpochState)}\n`)
         assert.equal((await postJson(endpoints[0], "reset", trainerHeaders, { expectedRevision: finalState.revision, model: createModel() })).status, 409)
 
-        console.log("AI endpoint integration passed: schema-11 migration, four-step semantic actor-critic learning, promotion, reset, and concurrent writes are serialized.")
+        console.log("AI endpoint integration passed: schema-12 migration, human event priors, four-step actor-critic learning, promotion, reset, and concurrent writes are serialized.")
     } finally {
         servers.forEach(server => server.kill())
         await Promise.all(servers.map(server => new Promise(resolve => server.once("exit", resolve).once("error", resolve))))

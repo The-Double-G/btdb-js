@@ -3,10 +3,14 @@
 const assert = require("node:assert/strict")
 const crypto = require("node:crypto")
 const {
+    DECISION_CANDIDATE_INPUT_SIZE,
+    DECISION_CREDIT_VERSION,
+    DECISION_STATE_INPUT_SIZE,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
     GAME_VERSION,
     MAX_JSON_BYTES,
+    MAX_RECOVERED_STALLS,
     MODEL_FAMILY,
     MODEL_SCHEMA_VERSION,
     POLICY_FORMAT_VERSION,
@@ -41,6 +45,11 @@ const {
     validateTrainResult,
 } = require("./distributed-ai/common")
 const {
+    assertMigrationRetention,
+    migrateSchema11Model,
+    validateMigrationSource,
+} = require("./distributed-ai/run-worker")
+const {
     HOSTED_REQUEST_TIMEOUT_MS,
     HOSTED_RESPONSE_MAX_BYTES,
     createHostedReconciliation,
@@ -69,19 +78,19 @@ function policy(value = 0) {
             b3: vector(75),
         },
         decision: {
-            stateInputSize: 72,
-            candidateInputSize: 64,
+            stateInputSize: DECISION_STATE_INPUT_SIZE,
+            candidateInputSize: DECISION_CANDIDATE_INPUT_SIZE,
             stateHiddenSize: 96,
             candidateHiddenSize: 48,
             embeddingSize: 48,
             memorySize: 16,
             survivalClassCount: 4,
             trainingSamples: vector(8),
-            WState1: matrix(96, 72, value),
+            WState1: matrix(96, DECISION_STATE_INPUT_SIZE, value),
             bState1: vector(96),
             WState2: matrix(48, 96, value),
             bState2: vector(48),
-            WCandidate1: matrix(48, 64, value),
+            WCandidate1: matrix(48, DECISION_CANDIDATE_INPUT_SIZE, value),
             bCandidate1: vector(48),
             WCandidate2: matrix(48, 48, value),
             bCandidate2: vector(48),
@@ -96,6 +105,41 @@ function policy(value = 0) {
             familyBias: vector(8),
         },
     }
+}
+
+function schema11Policy(value = 0) {
+    const legacy = policy(value)
+    legacy.decision.stateInputSize = 72
+    legacy.decision.candidateInputSize = 64
+    legacy.decision.WState1 = legacy.decision.WState1.map(row => row.slice(0, 72))
+    legacy.decision.WCandidate1 = legacy.decision.WCandidate1.map(row => row.slice(0, 64))
+    return legacy
+}
+
+function expectedSchema12Policy(legacy) {
+    const expected = structuredClone(legacy)
+    expected.decision.stateInputSize = 80
+    expected.decision.candidateInputSize = 80
+    expected.decision.WState1 = expected.decision.WState1.map(row => row.concat(vector(8)))
+    expected.decision.WCandidate1 = expected.decision.WCandidate1.map(row => row.concat(vector(16)))
+    return expected
+}
+
+function legacyCheckpoint(legacyModel) {
+    const checkpoint = {
+        kind: "btdb-ai-checkpoint",
+        formatVersion: FORMAT_VERSION,
+        gameVersion: "v-test",
+        modelSchemaVersion: legacyModel.version,
+        modelFamily: legacyModel.modelFamily,
+        modelDigest: digest(legacyModel),
+        checkpointId: "",
+        parentCheckpointId: null,
+        provenance: { mode: "initialize", seed: 1, shard: "schema-11", matches: 0 },
+        model: structuredClone(legacyModel),
+    }
+    checkpoint.checkpointId = digest(Object.fromEntries(Object.entries(checkpoint).filter(([key]) => key != "checkpointId")))
+    return checkpoint
 }
 
 function model() {
@@ -247,9 +291,12 @@ function fakeResponse(chunks, contentLength = null) {
 }
 
 async function main() {
-    assert.equal(MODEL_SCHEMA_VERSION, 11)
-    assert.equal(MODEL_FAMILY, "semantic-recurrent-actor-critic-v3")
-    assert.equal(POLICY_PARAMETER_COUNT, 24904)
+    assert.equal(MODEL_SCHEMA_VERSION, 12)
+    assert.equal(MODEL_FAMILY, "semantic-intent-spatial-recurrent-actor-critic-v4")
+    assert.equal(DECISION_STATE_INPUT_SIZE, 80)
+    assert.equal(DECISION_CANDIDATE_INPUT_SIZE, 80)
+    assert.equal(DECISION_CREDIT_VERSION, 3)
+    assert.equal(POLICY_PARAMETER_COUNT, 26440)
     assert.equal(TRAINING_MATCHES, 192)
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
@@ -291,7 +338,52 @@ async function main() {
     assert.deepEqual(Object.keys(exactPolicy).sort(), ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"].sort())
     assert.deepEqual(Object.keys(exactPolicy.strategy).sort(), ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"].sort())
     assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"].sort())
-    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 19197 })
+    assert.equal(exactPolicy.decision.WState1.length, 96)
+    assert.ok(exactPolicy.decision.WState1.every(row => row.length == 80))
+    assert.equal(exactPolicy.decision.WCandidate1.length, 48)
+    assert.ok(exactPolicy.decision.WCandidate1.every(row => row.length == 80))
+    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 20733 })
+    assert.equal(Object.values(policyParameterCounts(exactPolicy)).reduce((sum, count) => sum + count, 0), 26440)
+
+    const schema11Model = model()
+    schema11Model.version = 11
+    schema11Model.modelFamily = "semantic-recurrent-actor-critic-v3"
+    schema11Model.totalDecisionSamples = 37
+    schema11Model.totalTacticalSamples = 41
+    schema11Model.candidateGeneration = 5
+    schema11Model.championGeneration = 4
+    schema11Model.placementStats.legacy = { samples: 2, score: 0.25, mean: 0.25, m2: 0.5 }
+    schema11Model.loadoutPlacementStats.legacy = { samples: 3, score: -0.25, mean: -0.25, m2: 0.75 }
+    schema11Model.timingStats.retained = { samples: 4, score: 0.5, mean: 0.5, m2: 1 }
+    schema11Model.tacticalFamilyStats["human|placement|place|dart"] = { samples: 5, score: 0.6, mean: 0.6, m2: 1.25 }
+    schema11Model.policy = schema11Policy(0.01)
+    schema11Model.championPolicy = schema11Policy(0.02)
+    schema11Model.populationPolicies = [schema11Policy(0.03), schema11Policy(0.04)]
+    const schema11Policies = [schema11Model.policy, schema11Model.championPolicy, ...schema11Model.populationPolicies]
+    schema11Policies.forEach((legacyPolicy, index) => {
+        legacyPolicy.decision.trainingSamples = vector(8, index + 1)
+        legacyPolicy.decision.familyBias = vector(8, (index + 1) / 10)
+        legacyPolicy.decision.bValue = (index + 1) / 20
+    })
+    const schema11Before = structuredClone(schema11Model)
+    validateMigrationSource(legacyCheckpoint(schema11Model))
+    const safeMigration = migrateSchema11Model(schema11Model)
+    assertMigrationRetention(schema11Model, safeMigration)
+    assert.deepEqual(schema11Model, schema11Before)
+    const expectedMigration = structuredClone(schema11Model)
+    expectedMigration.version = 12
+    expectedMigration.modelFamily = MODEL_FAMILY
+    expectedMigration.placementStats = {}
+    expectedMigration.loadoutPlacementStats = {}
+    expectedMigration.tacticalFamilyStats = {}
+    expectedMigration.policy = expectedSchema12Policy(schema11Model.policy)
+    expectedMigration.championPolicy = expectedSchema12Policy(schema11Model.championPolicy)
+    expectedMigration.populationPolicies = schema11Model.populationPolicies.map(expectedSchema12Policy)
+    assert.deepEqual(safeMigration, expectedMigration)
+    assert.deepEqual(Object.keys(safeMigration).sort(), Object.keys(schema11Model).sort())
+    assert.deepEqual(safeMigration.tacticalFamilyStats, {})
+    assert.equal(Object.prototype.hasOwnProperty.call(safeMigration, "humanTacticalStats"), false)
+    validateModel(safeMigration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
 
     const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
     validateCheckpoint(base)
@@ -323,7 +415,7 @@ async function main() {
     assert.throws(() => validateModel(coercibleDimensionsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /incompatible hidden dimensions/)
     const oldSchemaModel = model()
     oldSchemaModel.version = 8
-    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 11/)
+    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 12/)
 
     assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
     const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
@@ -420,6 +512,14 @@ async function main() {
 
     const evaluationA = evaluationResult("eval-a", 31, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], materialized, base)
     validateEvaluationResult(evaluationA)
+    const recoveredEvaluation = structuredClone(evaluationA)
+    recoveredEvaluation.metrics.stalls = MAX_RECOVERED_STALLS
+    finalizeResult(recoveredEvaluation)
+    validateEvaluationResult(recoveredEvaluation)
+    const excessiveRecovery = structuredClone(recoveredEvaluation)
+    excessiveRecovery.metrics.stalls++
+    finalizeResult(excessiveRecovery)
+    assert.throws(() => validateEvaluationResult(excessiveRecovery), /unrecoverable failed or discarded run/)
     const aggregate = aggregateEvaluationResults([evaluationA], 0.56, 8)
     validateEvaluationAggregate(aggregate)
     assert.deepEqual(aggregate.overall, { games: 8, wins: 3, losses: 2, ties: 3, score: 0.5625 })
@@ -596,7 +696,7 @@ async function main() {
     validateEvaluationAggregate(stalePromotion)
     assert.throws(() => validatePromotionBundle(materialized, stalePromotion, base, 0.56, 8), /current baseline/)
 
-    console.log("Distributed AI unit tests passed: schema-11 bundles, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
+    console.log("Distributed AI unit tests passed: schema-12 bundles, safe schema-11 migration, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
 }
 
 main().catch(error => {

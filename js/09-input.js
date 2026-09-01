@@ -298,9 +298,11 @@ function tryUseBoost(side, slot, keyCode) {
 
     markKeyUsed(keyCode)
     if(getBoostCount(side, slot) > 0 && getBoostExpires(side, slot) + BOOST_SETTINGS.cooldownMs <= gameNow()) {
+        var boostType = players[side].boostTypes[slot]
         activateBoost(side, slot)
         setBoostExpires(side, slot, gameNow())
         setBoostCount(side, slot, getBoostCount(side, slot) - 1)
+        recordLocalHumanBoost(side, boostType)
     }
 }
 
@@ -337,6 +339,7 @@ function tryQueueSelectedBloon(side, keyCode) {
         if(players[side].eco < 0) {
             players[side].eco = 0
         }
+        recordLocalHumanBloonSend(side, "manual")
     }
 }
 
@@ -377,10 +380,12 @@ function handleSharedLiveHotkeys() {
     if(isHumanControlledSide(PLAYER_SIDE.left) && keyState[KEY_CODES.p1AutoEco] && isKeyReady(KEY_CODES.p1AutoEco)) {
         markKeyUsed(KEY_CODES.p1AutoEco)
         players[PLAYER_SIDE.left].autoEco = !players[PLAYER_SIDE.left].autoEco
+        recordLocalHumanEcoToggle(PLAYER_SIDE.left)
     }
     if(isHumanControlledSide(PLAYER_SIDE.right) && keyState[KEY_CODES.p2AutoEco] && isKeyReady(KEY_CODES.p2AutoEco)) {
         markKeyUsed(KEY_CODES.p2AutoEco)
         players[PLAYER_SIDE.right].autoEco = !players[PLAYER_SIDE.right].autoEco
+        recordLocalHumanEcoToggle(PLAYER_SIDE.right)
     }
 }
 
@@ -448,6 +453,7 @@ function tryBuyUpgrade(side, tower, pathProp, costProp) {
     players[side].money -= upgradeCost
     tower.totalCost += upgradeCost
     tower[pathProp]++
+    recordLocalHumanTowerUpgrade(tower, Number(pathProp.charAt(4)))
     return true
 }
 
@@ -808,6 +814,7 @@ function tryPlaceLoadoutTower(side, slotIndex) {
         towers.push(new Tower(activeCursor.x, activeCursor.y, towerConfig.radius, towerConfig.range, towerConfig.towerType, side))
         players[side].money -= towerConfig.price()
         towers[towers.length - 1].totalCost += towerConfig.price()
+        recordLocalHumanTowerPlacement(towers[towers.length - 1])
     }
 }
 
@@ -863,6 +870,7 @@ function sellTowerInstance(tower) {
     }
     players[side].money += getTowerSellValue(tower)
     tower.selected = false
+    recordLocalHumanTowerSale(tower)
     towers.splice(towerIndex, 1)
     return true
 }
@@ -894,17 +902,21 @@ function tryPlaceFarmer(side) {
     towers.push(new Tower(activeCursor.x, activeCursor.y, 30, 250, "farmer", side))
     players[side].money -= baseFarmerPrice
     towers[towers.length - 1].totalCost = baseFarmerPrice
+    recordLocalHumanTowerPlacement(towers[towers.length - 1])
     return true
 }
 
 function collectFarmMoney(tower) {
+    var collected = tower.towerVar
     players[tower.playerSide].money += tower.towerVar
     tower.popCount += tower.towerVar
     moneyText.push(new MoneyText(tower.x, tower.y, tower.towerVar))
     tower.towerVar = 0
+    if(collected > 0) recordLocalHumanCollection(tower, "bank")
 }
 
 function updateTowerTargetPriority(tower, direction) {
+    var previousPriority = tower.targetPrio
     if(tower.towerType == "farm" && tower.path2Upgrades >= 3 && tower.towerVar > 0) {
         collectFarmMoney(tower)
     } else if(tower.towerType != "farm" && tower.towerType != "dartling" && tower.towerType != "mortar") {
@@ -936,6 +948,7 @@ function updateTowerTargetPriority(tower, direction) {
             }
         }
     }
+    if(tower.targetPrio != previousPriority) recordLocalHumanAim(tower)
 }
 
 function handleFarmerOrTargeting(side, keyCode, direction) {

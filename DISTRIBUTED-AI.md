@@ -4,7 +4,7 @@
 
 Every generation starts from one immutable snapshot of the authoritative Hosted Model:
 
-1. Prepare fetches and validates the schema-11 model and credential-free source manifest.
+1. Prepare fetches and validates the schema-12 model and credential-free source manifest.
 2. Deterministic Chromium workers train independent complete policy bundles from that exact snapshot.
 3. The selector validates every unique shard against the same baseline and computes a deterministic policy average. A shard's normalized weight is proportional to `exp((built-in evaluation score - maximum shard score) * 8)`.
 4. Materialization clones the hosted baseline and changes only the aggregated policy bundle, generations, and bounded two-policy history. Neural tensors are score-weighted averages, while each per-family training counter is the baseline count plus the sum of every shard's learned increment. Shard statistics and stores are discarded.
@@ -80,7 +80,7 @@ Continuous promotion requires:
 - Every map, side, and role score to meet the derived bucket floor, `minimum_score - 0.10`.
 - Candidate survival to meet `minimum_score - 0.08` and severe collapses to stay at or below `1 - minimum_score - 0.15`. Survival means candidate lives remain above zero; a severe collapse means candidate lives reach zero while the opponent retains at least 75 lives.
 - Exact baseline, candidate, and evaluation identities.
-- Finite schema-11 policy parameters, the exact 24,904-parameter tensor contract, and size bounds.
+- Finite schema-12 policy parameters, the exact 26,440-parameter tensor contract, and size bounds.
 - Browser, endpoint, distributed, deterministic replay, and exact-commit CI checks.
 - A least-privilege policy-only credential.
 
@@ -106,7 +106,7 @@ npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json
 - Workers replace `Math.random` and `Date.now`, disable timers, and advance fixed 60 Hz frames.
 - Rendering uses a no-op canvas.
 - The local server rejects hidden/runtime data, non-loopback clients, and writes.
-- Workers fail on browser errors, hosted persistence, non-finite models, stalls, discarded matches, frame exhaustion, or schema mismatch.
+- Workers fail on browser errors, hosted persistence, non-finite models, frame exhaustion, schema mismatch, or more than three recovered stalls/discards across one result. A recovered attempt restarts the same fairness slot, remains visible in `metrics.stalls`, and is not counted as a game outcome.
 - The model and hosted tooling enforce an 8 MiB maximum JSON size; public contributions remain capped at 128 KiB.
 - Policy history is limited to two complete bundles.
 

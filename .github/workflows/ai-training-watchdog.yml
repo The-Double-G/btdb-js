@@ -103,7 +103,7 @@ jobs:
 
           active=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ai-training.yml/runs" \
             -f branch="$DEFAULT_BRANCH" -f per_page=100 | jq --arg handoff "$handoff_run_id" \
-            '[.workflow_runs[] | select(.status != "completed") | select(.display_title == "Distributed AI Training" or (.display_title | startswith("Continuous AI training for "))) | select($handoff == "" or (.id | tostring) != $handoff)]')
+            '[.workflow_runs[] | select(.status != "completed") | select($handoff == "" or (.id | tostring) != $handoff)]')
 
           retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
           stale_retained=""
@@ -132,6 +132,13 @@ jobs:
               echo "Checkpoint-only main update belongs to its active training transaction; waiting for that transaction to finish."
               exit 0
             fi
+          fi
+
+          non_continuous_active=$(jq \
+            '[.[] | select((.display_title | startswith("Continuous AI training for ")) | not)] | length' <<<"$active")
+          if [ "$non_continuous_active" -gt 0 ]; then
+            echo "Manual or externally coordinated AI training is active; waiting for it to finish."
+            exit 0
           fi
 
           keep_id=$(jq -r --arg sha "$current_sha" --arg title "$expected_title" \

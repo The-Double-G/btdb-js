@@ -1,6 +1,19 @@
 Current Version: v2.6.0
 
 v2.6.0 -
+Made Banana Farmer placement free in modern and Classic modes, including every Classic Farmer upgrade tier
+Fixed AI Farmer prerequisites, service-range placement, emergency filtering, scored-position execution, duplicate placement, and zero-value resale churn
+Made distributed workers recover and report up to three discarded self-play attempts per result so unattended training continues without hiding repeated failures
+Upgraded the authoritative AI to schema 12 and the 26,440-parameter semantic-intent-spatial recurrent actor-critic v4
+Expanded decision state and candidate inputs to 80 values with normalized strategy intent and perspective-correct placement geometry
+Advanced selected-action learning to credit version 3 while retaining bounded four-step recurrent actor-critic updates
+Added an output-preserving schema-11 migration that appends zero-weight input columns, preserves compatible learned state, and resets incompatible spatial stores and untrusted reserved human-prior keys
+Made hosted migration reject persisted model-digest mismatches instead of laundering corrupted state
+Made the continuous watchdog recognize every active default-branch training run regardless of manual or continuous display title
+Added bounded chronological Local human tactical events that produce deduplicated tactical priors without uploading neural vectors or training policy tensors
+Limited human tactical priors to records with at least four samples and at most a +/-0.05 candidate-ranking adjustment
+Deferred Browser Lab counterfactual training until deterministic randomness, clocks, stepping, restoration, isolation, and state-hash verification are available
+Advanced AI script caches to schema 12 and isolated pending schema-12 contributions in the V2 browser queue
 Replaced the small strategy-only policy with a 23,752-parameter schema-10 recurrent actor-critic
 Added widened state and candidate encoders, 16-value recurrent memory, a value head, final-life survival classes, and factual entity relationships
 Made neural comparisons rank every legal loadout, placement, upgrade, sale, send, aiming, and boost candidate without handcrafted score bonuses

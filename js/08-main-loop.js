@@ -293,6 +293,7 @@ function queueAutoEcoSendForSide(side) {
     if(players[side].eco < 0) {
         players[side].eco = 0
     }
+    recordLocalHumanBloonSend(side, "auto")
     return true
 }
 
@@ -2248,6 +2249,7 @@ function animate() {
                 for(var l = 0; l < towers.length; l++) {
                     if(towers[l].towerID == bananas[i].parentID) {
                         towers[l].popCount += bananas[i].cashGiven
+                        recordLocalHumanCollection(towers[l], "banana")
                     }
                 }
                 moneyText.push(new MoneyText(bananas[i].x, bananas[i].y, bananas[i].cashGiven))
@@ -2260,6 +2262,7 @@ function animate() {
                 for(var l = 0; l < towers.length; l++) {
                     if(towers[l].towerID == bananas[i].parentID) {
                         towers[l].popCount += bananas[i].cashGiven
+                        recordLocalHumanCollection(towers[l], "banana")
                     }
                 }
                 moneyText.push(new MoneyText(bananas[i].x, bananas[i].y, bananas[i].cashGiven))

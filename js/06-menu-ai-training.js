@@ -2194,7 +2194,7 @@ function drawAITrainingScreen() {
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
-        "Model: Temporary ~25k Semantic Actor-Critic",
+        "Model: Temporary 26,440-Parameter Intent-Spatial AC",
         "Publishing: " + publishingLabel,
         (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,

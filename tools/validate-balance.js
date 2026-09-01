@@ -51,7 +51,11 @@ assert(context.balanceBoosts.bloonBoostFactor === 1.4, "Bloon Boost must use the
 
 for(const towerType of towerTypes) {
     const basePrice = context.balancePrices[towerType]
-    assert(Number.isFinite(basePrice) && basePrice > 0, `${towerType} needs a positive base price`)
+    if(towerType === "farmer") {
+        assert(basePrice === 0, "Farmer placement must be free")
+    } else {
+        assert(Number.isFinite(basePrice) && basePrice > 0, `${towerType} needs a positive base price`)
+    }
     const tower = new context.BalanceTower(100, 100, 30, 175, towerType, 1)
     for(const pathNumber of [1, 2, 3]) {
         const names = tower[`path${pathNumber}Name`]
@@ -130,6 +134,8 @@ const towerSource = read("js/03-tower.js")
 const bloonSource = read("js/02-bloon.js")
 const projectileSource = read("js/04-support-entities.js")
 const aiSource = read("js/06-menu-ai.js")
+const classicSource = read("classic/scripts.js")
+const classicIndex = read("classic/index.html")
 
 assert(!mainLoop.includes("Math.floor(Math.random() * 101)"), "Biased 0-100 knockback roll returned")
 assert(!mainLoop.includes("1.15 ** (round - 50)"), "Incorrect freeplay knockback health scaling returned")
@@ -139,8 +145,15 @@ assert(!towerSource.includes("this.overclockFactor * (this.cobraBoosted"), "Dart
 assert(!bloonSource.includes("&& health < 68"), "Freeplay Bloon adjustment uses an undefined health variable")
 assert(projectileSource.includes("this.hitBloons = new Set()"), "Projectile hit history is missing")
 assert(!aiSource.includes("canAIInvestInFarmNow"), "Farm investment heuristics cannot override the neural placement decision")
-assert(aiSource.includes('tower.towerType == "farm" && tower.aiPlacedAt > 0 && tower.aiPlacedRound == visibleRound'), "New AI farms can be sold in their placement round")
+assert(aiSource.includes("function isAITowerSaleProtected(tower)") && aiSource.includes("tower.aiPlacedRound == getCurrentVisibleRound()"), "New AI towers must not be sold in their placement round")
 assert(aiSource.includes('typeof applyPath1UpgradeEffects == "function"') && aiSource.includes('typeof applyPath2UpgradeEffects == "function"') && aiSource.includes('typeof applyPath3UpgradeEffects == "function"'), "Hypothetical upgrades must apply runtime upgrade effects")
+assert(classicSource.includes("var baseFarmerPrice = 0"), "Classic Farmer base price must be zero")
+assert((classicSource.match(/this\.path[123]Cost\[[0-4]\] = baseFarmerPrice/g) || []).length === 15, "Every Classic Farmer upgrade must be free")
+assert((classicSource.match(/new DisplayTowers\([^\n]+baseFarmerPrice\)/g) || []).length === 8, "Every Classic Farmer price label must use the free price")
+assert((classicSource.match(/money >= baseFarmerPrice/g) || []).length === 6, "Every Classic Farmer placement must accept zero money")
+assert((classicSource.match(/money -= baseFarmerPrice/g) || []).length === 6, "Every Classic Farmer placement deduction must use the free price")
+assert((classicSource.match(/totalCost \+= baseFarmerPrice/g) || []).length === 6, "Every Classic Farmer resale basis must use the free price")
+assert(classicIndex.includes('scripts.js?v=farmer-free'), "Classic Farmer balance cache key is missing")
 assert((rounds.match(/else if\(round == 43\)/g) || []).length === 2, "Round 43 must appear exactly once per round mode")
 assert(/maxCounter = 5\s+setTimeout\(function\(\) \{\s+if\(counter < 5\)/.test(rounds), "Mastery round 80 counter mismatch returned")
 assert(!rounds.includes("Math.ceil(9200 *"), "Mastery round 67 side asymmetry returned")

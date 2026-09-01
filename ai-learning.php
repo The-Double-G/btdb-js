@@ -7,7 +7,8 @@ header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 
 const AI_PROTOCOL_VERSION = 1;
-const AI_MODEL_SCHEMA = 11;
+const AI_MODEL_SCHEMA = 12;
+const AI_MODEL_FAMILY = 'semantic-intent-spatial-recurrent-actor-critic-v4';
 const AI_GAME_VERSION = 'v2.6.0';
 const AI_MAX_BODY_BYTES = 8388608;
 const AI_MAX_CONTRIBUTION_BYTES = 131072;
@@ -26,16 +27,19 @@ const AI_HIDDEN_2 = 32;
 const AI_LEGACY_HIDDEN_1 = 12;
 const AI_LEGACY_HIDDEN_2 = 8;
 const AI_POLICY_FORMAT_VERSION = 2;
-const AI_DECISION_STATE_INPUT = 72;
-const AI_DECISION_CANDIDATE_INPUT = 64;
-const AI_LEGACY_DECISION_CANDIDATE_INPUT = 40;
+const AI_DECISION_STATE_INPUT = 80;
+const AI_DECISION_CANDIDATE_INPUT = 80;
+const AI_SCHEMA11_DECISION_STATE_INPUT = 72;
+const AI_SCHEMA11_DECISION_CANDIDATE_INPUT = 64;
+const AI_SCHEMA10_DECISION_STATE_INPUT = 72;
+const AI_SCHEMA10_DECISION_CANDIDATE_INPUT = 40;
 const AI_DECISION_STATE_HIDDEN = 96;
 const AI_DECISION_CANDIDATE_HIDDEN = 48;
 const AI_DECISION_EMBEDDING = 48;
 const AI_DECISION_MEMORY = 16;
 const AI_DECISION_SURVIVAL_CLASSES = 4;
 const AI_DECISION_FAMILY_COUNT = 8;
-const AI_DECISION_CREDIT_VERSION = 2;
+const AI_DECISION_CREDIT_VERSION = 3;
 const AI_DECISION_TD_STEPS = 4;
 const AI_DECISION_DISCOUNT_PER_SECOND = 0.99;
 const AI_WEIGHT_LIMIT = 4.0;
@@ -136,7 +140,7 @@ function valid_strategy($strategy): bool {
         && valid_vector($strategy['b3'] ?? null, AI_STRATEGY_COUNT, AI_WEIGHT_LIMIT);
 }
 
-function valid_decision_for_input($decision, int $candidateInput): bool {
+function valid_decision_for_input($decision, int $stateInput, int $candidateInput): bool {
     if (!is_array($decision) || !exact_keys($decision, [
         'stateInputSize', 'candidateInputSize', 'stateHiddenSize', 'candidateHiddenSize', 'embeddingSize', 'memorySize', 'survivalClassCount',
         'trainingSamples',
@@ -146,7 +150,7 @@ function valid_decision_for_input($decision, int $candidateInput): bool {
     ])) {
         return false;
     }
-    if (($decision['stateInputSize'] ?? null) !== AI_DECISION_STATE_INPUT
+    if (($decision['stateInputSize'] ?? null) !== $stateInput
         || ($decision['candidateInputSize'] ?? null) !== $candidateInput
         || ($decision['stateHiddenSize'] ?? null) !== AI_DECISION_STATE_HIDDEN
         || ($decision['candidateHiddenSize'] ?? null) !== AI_DECISION_CANDIDATE_HIDDEN
@@ -156,7 +160,7 @@ function valid_decision_for_input($decision, int $candidateInput): bool {
         return false;
     }
     return valid_counter_vector($decision['trainingSamples'] ?? null, AI_DECISION_FAMILY_COUNT)
-        && valid_matrix($decision['WState1'] ?? null, AI_DECISION_STATE_HIDDEN, AI_DECISION_STATE_INPUT, AI_WEIGHT_LIMIT)
+        && valid_matrix($decision['WState1'] ?? null, AI_DECISION_STATE_HIDDEN, $stateInput, AI_WEIGHT_LIMIT)
         && valid_vector($decision['bState1'] ?? null, AI_DECISION_STATE_HIDDEN, AI_WEIGHT_LIMIT)
         && valid_matrix($decision['WState2'] ?? null, AI_DECISION_EMBEDDING, AI_DECISION_STATE_HIDDEN, AI_WEIGHT_LIMIT)
         && valid_vector($decision['bState2'] ?? null, AI_DECISION_EMBEDDING, AI_WEIGHT_LIMIT)
@@ -176,11 +180,15 @@ function valid_decision_for_input($decision, int $candidateInput): bool {
 }
 
 function valid_decision($decision): bool {
-    return valid_decision_for_input($decision, AI_DECISION_CANDIDATE_INPUT);
+    return valid_decision_for_input($decision, AI_DECISION_STATE_INPUT, AI_DECISION_CANDIDATE_INPUT);
+}
+
+function valid_schema11_decision($decision): bool {
+    return valid_decision_for_input($decision, AI_SCHEMA11_DECISION_STATE_INPUT, AI_SCHEMA11_DECISION_CANDIDATE_INPUT);
 }
 
 function valid_schema10_decision($decision): bool {
-    return valid_decision_for_input($decision, AI_LEGACY_DECISION_CANDIDATE_INPUT);
+    return valid_decision_for_input($decision, AI_SCHEMA10_DECISION_STATE_INPUT, AI_SCHEMA10_DECISION_CANDIDATE_INPUT);
 }
 
 function valid_policy($policy): bool {
@@ -209,6 +217,19 @@ function valid_schema10_policy($policy): bool {
         && (float)$policy['decisionLearningRate'] > 0
         && valid_strategy($policy['strategy'] ?? null)
         && valid_schema10_decision($policy['decision'] ?? null);
+}
+
+function valid_schema11_policy($policy): bool {
+    if (!is_array($policy) || !exact_keys($policy, ['formatVersion', 'strategyLearningRate', 'decisionLearningRate', 'strategy', 'decision'])) {
+        return false;
+    }
+    return ($policy['formatVersion'] ?? null) === AI_POLICY_FORMAT_VERSION
+        && valid_number($policy['strategyLearningRate'] ?? null, 0.2)
+        && (float)$policy['strategyLearningRate'] > 0
+        && valid_number($policy['decisionLearningRate'] ?? null, 0.1)
+        && (float)$policy['decisionLearningRate'] > 0
+        && valid_strategy($policy['strategy'] ?? null)
+        && valid_schema11_decision($policy['decision'] ?? null);
 }
 
 function valid_schema9_decision($decision): bool {
@@ -308,7 +329,7 @@ function integer_tree_has_headroom($value, int $increments, int $depth = 0): boo
     return true;
 }
 
-function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false): bool {
+function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false): bool {
     $modelKeys = [
         'version', 'modelFamily', 'totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples',
         'totalLoadoutSamples', 'totalHumanDemonstrations', 'playerProfile', 'strategyStats', 'loadoutStats',
@@ -321,8 +342,8 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     }
     if (!is_array($model)
         || !exact_keys($model, $modelKeys)
-        || ($model['version'] ?? null) !== ($legacy ? 8 : ($schema9 ? 9 : ($schema10 ? 10 : AI_MODEL_SCHEMA)))
-        || ($model['modelFamily'] ?? null) !== ($legacy ? 'bounded-contextual-bandit-v1' : ($schema9 ? 'shared-neural-controller-v1' : ($schema10 ? 'shared-recurrent-actor-critic-v2' : 'semantic-recurrent-actor-critic-v3')))) {
+        || ($model['version'] ?? null) !== ($legacy ? 8 : ($schema9 ? 9 : ($schema10 ? 10 : ($schema11 ? 11 : AI_MODEL_SCHEMA))))
+        || ($model['modelFamily'] ?? null) !== ($legacy ? 'bounded-contextual-bandit-v1' : ($schema9 ? 'shared-neural-controller-v1' : ($schema10 ? 'shared-recurrent-actor-critic-v2' : ($schema11 ? 'semantic-recurrent-actor-critic-v3' : AI_MODEL_FAMILY))))) {
         return false;
     }
     $counters = ['totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples', 'totalLoadoutSamples', 'totalHumanDemonstrations', 'totalTacticalSamples', 'candidateGeneration', 'championGeneration'];
@@ -371,7 +392,7 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     if ($model['totalGames'] !== $totalGames || $model['totalSyntheticEpisodes'] !== $totalSyntheticEpisodes) {
         return false;
     }
-    $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : 'valid_policy'));
+    $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : ($schema11 ? 'valid_schema11_policy' : 'valid_policy')));
     if (!$policyValidator($model['policy'] ?? null) || !$policyValidator($model['championPolicy'] ?? null)) {
         return false;
     }
@@ -436,6 +457,10 @@ function valid_schema9_model($model): bool {
 
 function valid_schema10_model($model): bool {
     return valid_model_for_schema($model, false, false, true);
+}
+
+function valid_schema11_model($model): bool {
+    return valid_model_for_schema($model, false, false, false, true);
 }
 
 function valid_fresh_model($model): bool {
@@ -689,10 +714,21 @@ function migrate_legacy_policy(array $legacyPolicy): array {
     ];
 }
 
+function strip_reserved_human_priors(array &$model): void {
+    foreach (array_keys($model['tacticalFamilyStats']) as $key) {
+        if (strpos($key, 'human|') === 0) {
+            unset($model['tacticalFamilyStats'][$key]);
+        }
+    }
+}
+
 function migrate_legacy_model(array $legacyModel): array {
     $model = $legacyModel;
     $model['version'] = AI_MODEL_SCHEMA;
-    $model['modelFamily'] = 'semantic-recurrent-actor-critic-v3';
+    $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['placementStats'] = [];
+    $model['loadoutPlacementStats'] = [];
+    strip_reserved_human_priors($model);
     $model['totalDecisionSamples'] = 0;
     $model['policy'] = migrate_legacy_policy($legacyModel['policy']);
     $model['championPolicy'] = migrate_legacy_policy($legacyModel['championPolicy']);
@@ -713,8 +749,11 @@ function migrate_schema9_decision(array $oldDecision): array {
 
 function migrate_schema10_decision(array $oldDecision): array {
     $decision = create_migrated_decision();
-    foreach (['WState1', 'bState1', 'WState2', 'bState2', 'WStateToMemory', 'WMemoryToMemory', 'bMemory', 'WMemoryToState', 'WValue', 'bValue', 'WSurvival', 'bSurvival'] as $key) {
+    foreach (['bState1', 'WState2', 'bState2', 'WStateToMemory', 'WMemoryToMemory', 'bMemory', 'WMemoryToState', 'WValue', 'bValue', 'WSurvival', 'bSurvival'] as $key) {
         $decision[$key] = $oldDecision[$key];
+    }
+    for ($row = 0; $row < AI_DECISION_STATE_HIDDEN; $row++) {
+        $decision['WState1'][$row] = array_merge($oldDecision['WState1'][$row], zero_vector(AI_DECISION_STATE_INPUT - AI_SCHEMA10_DECISION_STATE_INPUT));
     }
     return $decision;
 }
@@ -732,7 +771,10 @@ function migrate_schema10_policy(array $oldPolicy): array {
 function migrate_schema10_model(array $oldModel): array {
     $model = $oldModel;
     $model['version'] = AI_MODEL_SCHEMA;
-    $model['modelFamily'] = 'semantic-recurrent-actor-critic-v3';
+    $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['placementStats'] = [];
+    $model['loadoutPlacementStats'] = [];
+    strip_reserved_human_priors($model);
     $model['totalDecisionSamples'] = 0;
     $model['policy'] = migrate_schema10_policy($oldModel['policy']);
     $model['championPolicy'] = migrate_schema10_policy($oldModel['championPolicy']);
@@ -753,11 +795,46 @@ function migrate_schema9_policy(array $oldPolicy): array {
 function migrate_schema9_model(array $oldModel): array {
     $model = $oldModel;
     $model['version'] = AI_MODEL_SCHEMA;
-    $model['modelFamily'] = 'semantic-recurrent-actor-critic-v3';
+    $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['placementStats'] = [];
+    $model['loadoutPlacementStats'] = [];
+    strip_reserved_human_priors($model);
     $model['totalDecisionSamples'] = 0;
     $model['policy'] = migrate_schema9_policy($oldModel['policy']);
     $model['championPolicy'] = migrate_schema9_policy($oldModel['championPolicy']);
     $model['populationPolicies'] = array_map('migrate_schema9_policy', array_slice($oldModel['populationPolicies'], -2));
+    return $model;
+}
+
+function migrate_schema11_decision(array $oldDecision): array {
+    $decision = $oldDecision;
+    $decision['stateInputSize'] = AI_DECISION_STATE_INPUT;
+    $decision['candidateInputSize'] = AI_DECISION_CANDIDATE_INPUT;
+    for ($row = 0; $row < AI_DECISION_STATE_HIDDEN; $row++) {
+        $decision['WState1'][$row] = array_merge($oldDecision['WState1'][$row], zero_vector(AI_DECISION_STATE_INPUT - AI_SCHEMA11_DECISION_STATE_INPUT));
+    }
+    for ($row = 0; $row < AI_DECISION_CANDIDATE_HIDDEN; $row++) {
+        $decision['WCandidate1'][$row] = array_merge($oldDecision['WCandidate1'][$row], zero_vector(AI_DECISION_CANDIDATE_INPUT - AI_SCHEMA11_DECISION_CANDIDATE_INPUT));
+    }
+    return $decision;
+}
+
+function migrate_schema11_policy(array $oldPolicy): array {
+    $policy = $oldPolicy;
+    $policy['decision'] = migrate_schema11_decision($oldPolicy['decision']);
+    return $policy;
+}
+
+function migrate_schema11_model(array $oldModel): array {
+    $model = $oldModel;
+    $model['version'] = AI_MODEL_SCHEMA;
+    $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['placementStats'] = [];
+    $model['loadoutPlacementStats'] = [];
+    strip_reserved_human_priors($model);
+    $model['policy'] = migrate_schema11_policy($oldModel['policy']);
+    $model['championPolicy'] = migrate_schema11_policy($oldModel['championPolicy']);
+    $model['populationPolicies'] = array_map('migrate_schema11_policy', $oldModel['populationPolicies']);
     return $model;
 }
 
@@ -805,6 +882,7 @@ function valid_contribution_observation($observation): bool {
         && isset($limits[$store])
         && is_string($key)
         && preg_match('/^[A-Za-z0-9_.|,:-]{1,240}$/D', $key) === 1
+        && ($store !== 'tacticalFamilyStats' || strpos($key, 'human|') !== 0)
         && valid_number($value, 1.0);
 }
 
@@ -835,9 +913,9 @@ function valid_legacy_decision_sample($sample): bool {
     return is_int($sample['familyIndex'] ?? null)
         && $sample['familyIndex'] >= 0
         && $sample['familyIndex'] < AI_DECISION_FAMILY_COUNT
-        && valid_vector($sample['stateFeatures'] ?? null, AI_DECISION_STATE_INPUT, 1.0)
-        && valid_vector($sample['chosenCandidateFeatures'] ?? null, AI_LEGACY_DECISION_CANDIDATE_INPUT, 1.0)
-        && valid_vector($sample['rejectedCandidateFeatures'] ?? null, AI_LEGACY_DECISION_CANDIDATE_INPUT, 1.0)
+        && valid_vector($sample['stateFeatures'] ?? null, AI_SCHEMA10_DECISION_STATE_INPUT, 1.0)
+        && valid_vector($sample['chosenCandidateFeatures'] ?? null, AI_SCHEMA10_DECISION_CANDIDATE_INPUT, 1.0)
+        && valid_vector($sample['rejectedCandidateFeatures'] ?? null, AI_SCHEMA10_DECISION_CANDIDATE_INPUT, 1.0)
         && valid_vector($sample['memoryIn'] ?? null, AI_DECISION_MEMORY, 1.0)
         && valid_number($sample['localReward'] ?? null, 1.0)
         && is_int($sample['age'] ?? null)
@@ -949,7 +1027,31 @@ function valid_contribution($request): bool {
     return true;
 }
 
-function valid_human_demonstration($request): bool {
+function human_demo_loadout_parts(string $loadoutKey): array {
+    $parts = explode('||', $loadoutKey);
+    if (count($parts) !== 2) {
+        return ['towers' => [], 'boosts' => []];
+    }
+    return [
+        'towers' => $parts[0] === '' ? [] : explode(',', $parts[0]),
+        'boosts' => $parts[1] === '' ? [] : explode(',', $parts[1]),
+    ];
+}
+
+function valid_human_demo_id($value): bool {
+    return is_int($value) && $value >= 1 && $value <= 64;
+}
+
+function valid_human_demo_slot($value): bool {
+    return is_int($value) && $value >= 0 && $value <= 9;
+}
+
+function valid_human_demo_cell($value, int $maximum): bool {
+    return is_int($value) && $value >= 0 && $value <= $maximum;
+}
+
+function valid_human_demonstration($request, ?array &$semanticKeys = null): bool {
+    $semanticKeys = [];
     if (!is_array($request)) {
         return false;
     }
@@ -958,11 +1060,14 @@ function valid_human_demonstration($request): bool {
         'eventType',
         'contributionId',
         'baseRevision',
+        'map',
+        'durationMs',
         'matchFeatures',
         'aiLives',
         'enemyLives',
         'loadoutKey',
         'opponentLoadoutKey',
+        'events',
     ];
     if (array_key_exists('contributionEpoch', $request)) {
         $expectedKeys[] = 'contributionEpoch';
@@ -995,7 +1100,192 @@ function valid_human_demonstration($request): bool {
         }
     }
     $counterKey = $opponentLoadoutKey . '|' . $loadoutKey;
-    return strlen($counterKey) <= 240 && preg_match('/^[A-Za-z0-9_.|,:-]{1,240}$/D', $counterKey) === 1;
+    if (strlen($counterKey) > 240 || preg_match('/^[A-Za-z0-9_.|,:-]{1,240}$/D', $counterKey) !== 1) {
+        return false;
+    }
+
+    $map = $request['map'] ?? null;
+    $durationMs = $request['durationMs'] ?? null;
+    $events = $request['events'] ?? null;
+    if (!is_int($map) || $map < 0 || $map > 20
+        || !is_int($durationMs) || $durationMs < 1 || $durationMs > 7200000
+        || !is_array($events) || !is_list_array($events) || count($events) > 128) {
+        return false;
+    }
+
+    $closedTowers = ['dart', 'tack', 'bomb', 'ice', 'super', 'farm', 'farmer', 'ninja', 'dartling', 'wizard', 'cobra', 'boomer', 'sniper', 'engi', 'buccaneer', 'mortar', 'sword'];
+    $closedBoosts = ['towerboost.png', 'bloonboost.png', 'lightningboost.png', 'slowboost.png', 'ecoboost.png'];
+    $loadout = human_demo_loadout_parts($loadoutKey);
+    $towers = [];
+    $boostCounts = [];
+    $lastBoostTimes = [];
+    $derived = [];
+    $previousTime = -1;
+    $previousRound = -1;
+
+    foreach ($events as $event) {
+        if (!is_array($event) || !isset($event['k']) || !is_string($event['k'])) {
+            return false;
+        }
+        $time = $event['t'] ?? null;
+        $round = $event['r'] ?? null;
+        if (!is_int($time) || $time < 0 || $time > $durationMs || $time % 250 !== 0
+            || !valid_nonnegative_integer($round)
+            || $time < $previousTime || $round < $previousRound) {
+            return false;
+        }
+        $previousTime = $time;
+        $previousRound = $round;
+
+        $kind = $event['k'];
+        if ($kind === 'place') {
+            if (!exact_keys($event, ['k', 't', 'r', 'id', 'tower', 'x', 'y'])
+                || !valid_human_demo_id($event['id'] ?? null)
+                || isset($towers[$event['id']])
+                || !is_string($event['tower'] ?? null)
+                || !in_array($event['tower'], $closedTowers, true)
+                || ($event['tower'] !== 'farmer' && !in_array($event['tower'], $loadout['towers'], true))
+                || !valid_human_demo_cell($event['x'] ?? null, 6)
+                || !valid_human_demo_cell($event['y'] ?? null, 5)) {
+                return false;
+            }
+            $tower = $event['tower'];
+            $towers[$event['id']] = ['active' => true, 'tower' => $tower, 'paths' => [0, 0, 0]];
+            $derived['human|placement|place|' . $tower] = true;
+            $derived['human|placement|place|' . $tower . '|' . $event['x'] . '|' . $event['y']] = true;
+            continue;
+        }
+
+        if ($kind === 'upgrade') {
+            $id = $event['id'] ?? null;
+            $path = $event['path'] ?? null;
+            $tier = $event['tier'] ?? null;
+            if (!exact_keys($event, ['k', 't', 'r', 'id', 'path', 'tier'])
+                || !valid_human_demo_id($id)
+                || !isset($towers[$id]) || !$towers[$id]['active']
+                || !is_int($path) || $path < 1 || $path > 3
+                || !is_int($tier) || $tier < 1 || $tier > 5
+                || $tier !== $towers[$id]['paths'][$path - 1] + 1) {
+                return false;
+            }
+            $nextPaths = $towers[$id]['paths'];
+            $nextPaths[$path - 1] = $tier;
+            $usedPaths = 0;
+            $mainPaths = 0;
+            foreach ($nextPaths as $pathTier) {
+                if ($pathTier > 0) {
+                    $usedPaths++;
+                }
+                if ($pathTier > 2) {
+                    $mainPaths++;
+                }
+            }
+            if ($usedPaths > 2 || $mainPaths > 1) {
+                return false;
+            }
+            $towers[$id]['paths'] = $nextPaths;
+            $derived['human|upgrade|upgrade|' . $towers[$id]['tower'] . '|' . $path] = true;
+            continue;
+        }
+
+        if ($kind === 'sell') {
+            $id = $event['id'] ?? null;
+            if (!exact_keys($event, ['k', 't', 'r', 'id'])
+                || !valid_human_demo_id($id)
+                || !isset($towers[$id]) || !$towers[$id]['active']) {
+                return false;
+            }
+            $derived['human|sell|sell|' . $towers[$id]['tower']] = true;
+            $towers[$id]['active'] = false;
+            continue;
+        }
+
+        if ($kind === 'send') {
+            if (!exact_keys($event, ['k', 't', 'r', 'slot', 'groups', 'source'])
+                || !valid_human_demo_slot($event['slot'] ?? null)
+                || !is_int($event['groups'] ?? null) || $event['groups'] < 1 || $event['groups'] > 6
+                || !is_string($event['source'] ?? null) || !in_array($event['source'], ['manual', 'auto'], true)) {
+                return false;
+            }
+            $family = $event['source'] === 'manual' ? 'rush' : 'eco';
+            $derived['human|' . $family . '|send|' . $event['slot']] = true;
+            continue;
+        }
+
+        if ($kind === 'eco') {
+            if (!exact_keys($event, ['k', 't', 'r', 'enabled', 'slot'])
+                || !is_bool($event['enabled'] ?? null)
+                || !valid_human_demo_slot($event['slot'] ?? null)) {
+                return false;
+            }
+            $derived['human|eco|auto|' . ($event['enabled'] ? '1' : '0')] = true;
+            continue;
+        }
+
+        if ($kind === 'collect') {
+            $id = $event['id'] ?? null;
+            $source = $event['source'] ?? null;
+            if (!exact_keys($event, ['k', 't', 'r', 'source', 'id', 'count'])
+                || !valid_human_demo_id($id)
+                || !isset($towers[$id]) || !$towers[$id]['active']
+                || !is_string($source) || !in_array($source, ['bank', 'banana'], true)
+                || !is_int($event['count'] ?? null) || $event['count'] < 1 || $event['count'] > 255
+                || ($source === 'bank' && $towers[$id]['tower'] !== 'farm')) {
+                return false;
+            }
+            $derived['human|sell|collect|' . ($source === 'bank' ? 'farm' : 'banana')] = true;
+            continue;
+        }
+
+        if ($kind === 'aim') {
+            $id = $event['id'] ?? null;
+            $mode = $event['mode'] ?? null;
+            if (!exact_keys($event, ['k', 't', 'r', 'id', 'mode', 'x', 'y'])
+                || !valid_human_demo_id($id)
+                || !isset($towers[$id]) || !$towers[$id]['active']
+                || !is_string($mode) || !in_array($mode, ['first', 'last', 'close', 'strong', 'follow', 'lock'], true)
+                || (($mode === 'follow' || $mode === 'lock') && !in_array($towers[$id]['tower'], ['dartling', 'mortar'], true))
+                || !valid_human_demo_cell($event['x'] ?? null, 6)
+                || !valid_human_demo_cell($event['y'] ?? null, 5)) {
+                return false;
+            }
+            if ($mode === 'follow' || $mode === 'lock') {
+                $derived['human|placement|aim|' . $mode] = true;
+            }
+            continue;
+        }
+
+        if ($kind === 'boost') {
+            $boost = $event['boost'] ?? null;
+            if (!exact_keys($event, ['k', 't', 'r', 'boost'])
+                || !is_string($boost) || !in_array($boost, $closedBoosts, true)
+                || !in_array($boost, $loadout['boosts'], true)) {
+                return false;
+            }
+            $count = (int)($boostCounts[$boost] ?? 0) + 1;
+            if ($count > 3 || (isset($lastBoostTimes[$boost]) && $time - $lastBoostTimes[$boost] < 40000)) {
+                return false;
+            }
+            $boostCounts[$boost] = $count;
+            $lastBoostTimes[$boost] = $time;
+            $derived['human|boost|boost|' . substr($boost, 0, -4)] = true;
+            continue;
+        }
+
+        if ($kind === 'wait') {
+            $milliseconds = $event['ms'] ?? null;
+            if (!exact_keys($event, ['k', 't', 'r', 'ms'])
+                || !is_int($milliseconds) || $milliseconds < 3000 || $milliseconds > 60000) {
+                return false;
+            }
+            continue;
+        }
+
+        return false;
+    }
+
+    $semanticKeys = array_keys($derived);
+    return true;
 }
 
 function read_json_request(int $maximumBytes): array {
@@ -1608,31 +1898,13 @@ function apply_public_contribution(array &$model, array $request): void {
     $model['totalLoadoutSamples'] = loadout_sample_count($model['loadoutStats']);
 }
 
-function apply_human_demonstration(array &$model, array $request): void {
-    $aiLives = (float)$request['aiLives'];
-    $enemyLives = (float)$request['enemyLives'];
-    $reward = match_reward($aiLives, $enemyLives);
-    $profileGames = max(0, (int)($model['playerProfile']['games'] ?? 0)) + 1;
-    for ($feature = 0; $feature < AI_FEATURE_COUNT; $feature++) {
-        $previous = (float)$model['playerProfile']['features'][$feature];
-        $next = (float)$request['matchFeatures'][$feature];
-        $model['playerProfile']['features'][$feature] = $previous + ($next - $previous) / $profileGames;
+function apply_human_demonstration(array &$model, array $request, array $semanticKeys): void {
+    $reward = match_reward((float)$request['aiLives'], (float)$request['enemyLives']);
+    foreach ($semanticKeys as $key) {
+        update_score_record($model['tacticalFamilyStats'], $key, $reward);
     }
-    $model['playerProfile']['games'] = $profileGames;
-
-    $loadoutKey = $request['loadoutKey'];
-    if (!isset($model['loadoutStats'][$loadoutKey]) || !is_array($model['loadoutStats'][$loadoutKey])) {
-        $model['loadoutStats'][$loadoutKey] = ['games' => 0, 'wins' => 0, 'losses' => 0, 'ties' => 0, 'lastReward' => 0];
-    }
-    increment_match_record($model['loadoutStats'][$loadoutKey], $aiLives, $enemyLives, $reward);
-    unset($model['loadoutStats'][$loadoutKey]['syntheticEpisodes']);
-    $counterKey = $request['opponentLoadoutKey'] . '|' . $loadoutKey;
-    update_score_record($model['loadoutCounterStats'], $counterKey, $reward);
-    $model['totalLoadoutSamples'] = max(0, (int)($model['totalLoadoutSamples'] ?? 0)) + 1;
     $model['totalHumanDemonstrations'] = max(0, (int)($model['totalHumanDemonstrations'] ?? 0)) + 1;
-    prune_score_store($model['loadoutCounterStats'], contribution_store_limits()['loadoutCounterStats']);
-    prune_loadout_stats($model['loadoutStats'], 1800);
-    $model['totalLoadoutSamples'] = loadout_sample_count($model['loadoutStats']);
+    prune_score_store($model['tacticalFamilyStats'], contribution_store_limits()['tacticalFamilyStats']);
 }
 
 function normalized_contribution_guard(array $state): array {
@@ -1739,7 +2011,10 @@ function decode_state(string $contents): array {
     if (isset($decoded['protocolVersion'], $decoded['revision'], $decoded['model']) && is_array($decoded['model'])) {
         if ($decoded['protocolVersion'] !== AI_PROTOCOL_VERSION
             || !valid_nonnegative_integer($decoded['revision'])
-            || (isset($decoded['contributionEpoch']) && (!valid_nonnegative_integer($decoded['contributionEpoch']) || $decoded['contributionEpoch'] < 1))) {
+            || (isset($decoded['contributionEpoch']) && (!valid_nonnegative_integer($decoded['contributionEpoch']) || $decoded['contributionEpoch'] < 1))
+            || !isset($decoded['modelDigest']) || !is_string($decoded['modelDigest'])
+            || preg_match('/^sha256:[a-f0-9]{64}$/D', $decoded['modelDigest']) !== 1
+            || !hash_equals(model_digest($decoded['model']), $decoded['modelDigest'])) {
             fail_json(503, 'storage_corrupt', 'AI model storage metadata is invalid.');
         }
         return $decoded;
@@ -1774,12 +2049,15 @@ function migrate_state_locked(array $state, string $stateFile): array {
         return $state;
     }
     normalize_model_accounting($legacyModel);
-    $isSchema10 = valid_schema10_model($legacyModel);
-    $isSchema9 = !$isSchema10 && valid_schema9_model($legacyModel);
-    if (!$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
+    $isSchema11 = valid_schema11_model($legacyModel);
+    $isSchema10 = !$isSchema11 && valid_schema10_model($legacyModel);
+    $isSchema9 = !$isSchema11 && !$isSchema10 && valid_schema9_model($legacyModel);
+    if (!$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
         return $state;
     }
-    $model = $isSchema10 ? migrate_schema10_model($legacyModel) : ($isSchema9 ? migrate_schema9_model($legacyModel) : migrate_legacy_model($legacyModel));
+    $model = $isSchema11
+        ? migrate_schema11_model($legacyModel)
+        : ($isSchema10 ? migrate_schema10_model($legacyModel) : ($isSchema9 ? migrate_schema9_model($legacyModel) : migrate_legacy_model($legacyModel)));
     if (!valid_model($model)) {
         fail_json(500, 'migration_failed_validation', 'The legacy AI model could not be migrated safely.');
     }
@@ -1897,7 +2175,8 @@ if ($action === 'contribute') {
         fail_json(401, 'invalid_contribution_token', 'AI contribution token is missing or expired.');
     }
     $request = read_json_request(AI_MAX_CONTRIBUTION_BYTES);
-    $isHumanDemonstration = valid_human_demonstration($request);
+    $humanSemanticKeys = [];
+    $isHumanDemonstration = valid_human_demonstration($request, $humanSemanticKeys);
     if (!$isHumanDemonstration && !valid_contribution($request)) {
         fail_json(422, 'invalid_contribution', 'AI match contribution schema or values are invalid.');
     }
@@ -1974,7 +2253,7 @@ if ($action === 'contribute') {
     }
 
     $requiredCounterHeadroom = $isHumanDemonstration
-        ? 1
+        ? max(1, count($request['events']))
         : max(1, count($request['decisionSamples'] ?? []), count($request['observations'] ?? []));
     if (!integer_tree_has_headroom($current['model'], $requiredCounterHeadroom)) {
         flock($lock, LOCK_UN);
@@ -1984,7 +2263,7 @@ if ($action === 'contribute') {
 
     $model = $current['model'];
     if ($isHumanDemonstration) {
-        apply_human_demonstration($model, $request);
+        apply_human_demonstration($model, $request, $humanSemanticKeys);
     } else {
         apply_public_contribution($model, $request);
     }

@@ -38,7 +38,7 @@ const BASE_TOWER_PRICES = {
     ice: 650,
     super: 1250,
     farm: 1400,
-    farmer: 250,
+    farmer: 0,
     dartling: 800,
     wizard: 550,
     cobra: 450,

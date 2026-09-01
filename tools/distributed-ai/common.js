@@ -17,22 +17,24 @@ const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
 const POLICY_FORMAT_VERSION = 2
 const GAME_VERSION = "v2.6.0"
-const MODEL_SCHEMA_VERSION = 11
-const MODEL_FAMILY = "semantic-recurrent-actor-critic-v3"
+const MODEL_SCHEMA_VERSION = 12
+const MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v4"
 const MAX_JSON_BYTES = 8 * 1024 * 1024
+const MAX_RECOVERED_STALLS = 3
 const FEATURE_COUNT = 17
 const STRATEGY_HIDDEN_SIZE_1 = 64
 const STRATEGY_HIDDEN_SIZE_2 = 32
 const STRATEGY_COUNT = 75
-const DECISION_STATE_INPUT_SIZE = 72
-const DECISION_CANDIDATE_INPUT_SIZE = 64
+const DECISION_STATE_INPUT_SIZE = 80
+const DECISION_CANDIDATE_INPUT_SIZE = 80
+const DECISION_CREDIT_VERSION = 3
 const DECISION_STATE_HIDDEN_SIZE = 96
 const DECISION_CANDIDATE_HIDDEN_SIZE = 48
 const DECISION_EMBEDDING_SIZE = 48
 const DECISION_MEMORY_SIZE = 16
 const DECISION_SURVIVAL_CLASS_COUNT = 4
 const DECISION_FAMILY_COUNT = 8
-const POLICY_PARAMETER_COUNT = 24904
+const POLICY_PARAMETER_COUNT = 26440
 const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
@@ -572,7 +574,7 @@ function validateMatchesAndMetrics(result, label) {
     const computed = computeMetrics(result.matches, { builtInEvaluationScore: result.metrics.builtInEvaluationScore })
     for(const key of ["wins", "losses", "ties", "totalFrames"]) if(result.metrics[key] != computed[key]) fail(`${label}.metrics.${key} is inconsistent`)
     for(const key of ["score", "averageRound"]) if(Math.abs(result.metrics[key] - computed[key]) > 1e-12) fail(`${label}.metrics.${key} is inconsistent`)
-    if(result.metrics.discarded != 0 || result.metrics.stalls != 0 || result.metrics.frameBudgetExhausted != 0) fail(`${label} records a failed or discarded run`)
+    if(result.metrics.discarded != 0 || result.metrics.stalls > MAX_RECOVERED_STALLS || result.metrics.frameBudgetExhausted != 0) fail(`${label} records an unrecoverable failed or discarded run`)
 }
 
 function validateTrainResult(result, label = "train result") {
@@ -1203,6 +1205,9 @@ function defaultMarkdownPath(jsonPath) {
 
 module.exports = {
     CHECKPOINT_KIND,
+    DECISION_CANDIDATE_INPUT_SIZE,
+    DECISION_CREDIT_VERSION,
+    DECISION_STATE_INPUT_SIZE,
     EVALUATION_AGGREGATE_KIND,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
@@ -1210,6 +1215,7 @@ module.exports = {
     HOSTED_PROMOTION_RECEIPT_KIND,
     HOSTED_SNAPSHOT_KIND,
     MAX_JSON_BYTES,
+    MAX_RECOVERED_STALLS,
     MODEL_FAMILY,
     MODEL_SCHEMA_VERSION,
     POLICY_FORMAT_VERSION,

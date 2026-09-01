@@ -1,7 +1,7 @@
 "use strict"
 
 const assert = require("node:assert/strict")
-const { assertRuntimeClean, closeRuntime, openRuntime } = require("./distributed-ai/run-worker")
+const { assertRuntimeClean, closeRuntime, openRuntime, stepUntilMatches } = require("./distributed-ai/run-worker")
 
 async function main() {
     const runtime = await openRuntime(253)
@@ -306,6 +306,9 @@ async function main() {
             AI_IS_LOCAL_RUNTIME = originalLocalRuntime
             window.fetch = originalFetch
             AI_CROSS_MATCH_LEARNING_ENABLED = true
+            localStorage.setItem("aiPendingContributionsV1", JSON.stringify([{ contributionId: "obsolete-schema-11" }]))
+            getAIPublicContributionQueue()
+            const legacyContributionQueueRemoved = localStorage.getItem("aiPendingContributionsV1") == null
             aiPersistenceState.loadInFlight = true
             const refreshingSaveState = getAITrainingSaveButtonState()
             const matchesBeforeRefreshControlProbe = aiTrainingState.trueSelfPlayMatches
@@ -602,28 +605,69 @@ async function main() {
                 populationSize: migratedModel.populationPolicies.length,
             }
 
-            const schema10Policy = cloneAIPolicy(migratedModel.policy)
+            const schema11Policy = cloneAIPolicy(migratedModel.policy)
+            schema11Policy.decision.stateInputSize = 72
+            schema11Policy.decision.candidateInputSize = 64
+            schema11Policy.decision.WState1 = schema11Policy.decision.WState1.map(row => row.slice(0, 72))
+            schema11Policy.decision.WCandidate1 = schema11Policy.decision.WCandidate1.map(row => row.slice(0, 64))
+            schema11Policy.decision.WState1[0][0] = 0.123
+            schema11Policy.decision.WCandidate1[0][0] = -0.456
+            schema11Policy.decision.WStateToMemory[0][0] = -0.234
+            schema11Policy.decision.WValue[0] = 0.345
+            schema11Policy.decision.familyBias[AI_DECISION_FAMILY.upgrade] = 0.25
+            schema11Policy.decision.trainingSamples[AI_DECISION_FAMILY.upgrade] = 7
+            const schema12Policy = migrateAIPolicy(schema11Policy)
+            const repeatedSchema12Policy = migrateAIPolicy(schema11Policy)
+            const schema11State = Array.from({ length: 72 }, (_, index) => (index % 9 - 4) / 4)
+            const schema11Candidate = Array.from({ length: 64 }, (_, index) => (index % 7 - 3) / 3)
+            const schema12State = schema11State.concat(Array(8).fill(0.75))
+            const schema12Candidate = schema11Candidate.concat(Array(16).fill(-0.75))
+            const oldStateEmbedding = aiDecisionEncode(schema11State, schema11Policy.decision.WState1, schema11Policy.decision.bState1, schema11Policy.decision.WState2, schema11Policy.decision.bState2).embedding
+            const newStateEmbedding = aiDecisionEncode(schema12State, schema12Policy.decision.WState1, schema12Policy.decision.bState1, schema12Policy.decision.WState2, schema12Policy.decision.bState2).embedding
+            const oldCandidateEmbedding = aiDecisionEncode(schema11Candidate, schema11Policy.decision.WCandidate1, schema11Policy.decision.bCandidate1, schema11Policy.decision.WCandidate2, schema11Policy.decision.bCandidate2).embedding
+            const newCandidateEmbedding = aiDecisionEncode(schema12Candidate, schema12Policy.decision.WCandidate1, schema12Policy.decision.bCandidate1, schema12Policy.decision.WCandidate2, schema12Policy.decision.bCandidate2).embedding
+            const schema11Model = JSON.parse(JSON.stringify(migratedModel))
+            schema11Model.version = 11
+            schema11Model.modelFamily = "semantic-recurrent-actor-critic-v3"
+            schema11Model.policy = schema11Policy
+            schema11Model.championPolicy = cloneAIPolicy(schema11Policy)
+            schema11Model.populationPolicies = [cloneAIPolicy(schema11Policy)]
+            schema11Model.totalDecisionSamples = 321
+            schema11Model.placementStats = { stale: { samples: 2, mean: 0.5 } }
+            schema11Model.loadoutPlacementStats = { stale: { samples: 2, mean: 0.5 } }
+            schema11Model.tacticalFamilyStats["human|placement|place|dart"] = { samples: 5, score: 1, mean: 1, m2: 0 }
+            const normalizedSchema11Model = normalizeAILearningData(schema11Model)
+            const schema11Migration = {
+                valid: isValidAIPolicy(schema12Policy),
+                deterministic: JSON.stringify(schema12Policy) == JSON.stringify(repeatedSchema12Policy),
+                strategyPreserved: JSON.stringify(schema12Policy.strategy) == JSON.stringify(schema11Policy.strategy),
+                statePrefixPreserved: schema12Policy.decision.WState1.every((row, index) => JSON.stringify(row.slice(0, 72)) == JSON.stringify(schema11Policy.decision.WState1[index])),
+                candidatePrefixPreserved: schema12Policy.decision.WCandidate1.every((row, index) => JSON.stringify(row.slice(0, 64)) == JSON.stringify(schema11Policy.decision.WCandidate1[index])),
+                newColumnsZero: schema12Policy.decision.WState1.every(row => row.slice(72).every(value => value == 0)) && schema12Policy.decision.WCandidate1.every(row => row.slice(64).every(value => value == 0)),
+                outputPreserved: oldStateEmbedding.every((value, index) => Math.abs(value - newStateEmbedding[index]) < 1e-12) && oldCandidateEmbedding.every((value, index) => Math.abs(value - newCandidateEmbedding[index]) < 1e-12),
+                recurrentValueSurvivalPreserved: JSON.stringify(schema12Policy.decision.WStateToMemory) == JSON.stringify(schema11Policy.decision.WStateToMemory) && JSON.stringify(schema12Policy.decision.WValue) == JSON.stringify(schema11Policy.decision.WValue) && JSON.stringify(schema12Policy.decision.WSurvival) == JSON.stringify(schema11Policy.decision.WSurvival),
+                familyTrainingPreserved: JSON.stringify(schema12Policy.decision.trainingSamples) == JSON.stringify(schema11Policy.decision.trainingSamples) && JSON.stringify(schema12Policy.decision.familyBias) == JSON.stringify(schema11Policy.decision.familyBias),
+                totalDecisionSamplesPreserved: normalizedSchema11Model.totalDecisionSamples == 321,
+                spatialStoresReset: Object.keys(normalizedSchema11Model.placementStats).length == 0 && Object.keys(normalizedSchema11Model.loadoutPlacementStats).length == 0,
+                reservedHumanPriorsReset: Object.keys(normalizedSchema11Model.tacticalFamilyStats).every(key => key.indexOf("human|") != 0),
+            }
+
+            const schema10Policy = cloneAIPolicy(schema11Policy)
             schema10Policy.decision.candidateInputSize = 40
             schema10Policy.decision.WCandidate1 = schema10Policy.decision.WCandidate1.map(row => row.slice(0, 40))
-            schema10Policy.decision.WState1[0][0] = 0.123
-            schema10Policy.decision.WStateToMemory[0][0] = -0.234
-            schema10Policy.decision.WValue[0] = 0.345
-            schema10Policy.decision.WCandidate1[0][0] = -0.456
             schema10Policy.decision.WCandidate2[0][0] = 0.567
-            schema10Policy.decision.familyBias[AI_DECISION_FAMILY.upgrade] = 0.25
-            schema10Policy.decision.trainingSamples[AI_DECISION_FAMILY.upgrade] = 7
-            const schema11Policy = migrateAIPolicy(schema10Policy)
-            const repeatedSchema11Policy = migrateAIPolicy(schema10Policy)
+            const schema12From10Policy = migrateAIPolicy(schema10Policy)
+            const repeatedSchema12From10Policy = migrateAIPolicy(schema10Policy)
             const defaultDecision = createDefaultAIDecisionPolicy()
             const schema10Migration = {
-                valid: isValidAIPolicy(schema11Policy),
-                deterministic: JSON.stringify(schema11Policy) == JSON.stringify(repeatedSchema11Policy),
-                strategyPreserved: JSON.stringify(schema11Policy.strategy) == JSON.stringify(schema10Policy.strategy),
-                statePreserved: JSON.stringify(schema11Policy.decision.WState1) == JSON.stringify(schema10Policy.decision.WState1),
-                recurrentPreserved: JSON.stringify(schema11Policy.decision.WStateToMemory) == JSON.stringify(schema10Policy.decision.WStateToMemory),
-                valuePreserved: JSON.stringify(schema11Policy.decision.WValue) == JSON.stringify(schema10Policy.decision.WValue),
-                candidateReset: JSON.stringify(schema11Policy.decision.WCandidate1) == JSON.stringify(defaultDecision.WCandidate1) && JSON.stringify(schema11Policy.decision.WCandidate2) == JSON.stringify(defaultDecision.WCandidate2),
-                familyTrainingReset: schema11Policy.decision.trainingSamples.every(value => value == 0) && schema11Policy.decision.familyBias.every((value, index) => value == defaultDecision.familyBias[index]),
+                valid: isValidAIPolicy(schema12From10Policy),
+                deterministic: JSON.stringify(schema12From10Policy) == JSON.stringify(repeatedSchema12From10Policy),
+                strategyPreserved: JSON.stringify(schema12From10Policy.strategy) == JSON.stringify(schema10Policy.strategy),
+                statePreserved: schema12From10Policy.decision.WState1.every((row, index) => JSON.stringify(row.slice(0, 72)) == JSON.stringify(schema10Policy.decision.WState1[index]) && row.slice(72).every(value => value == 0)),
+                recurrentPreserved: JSON.stringify(schema12From10Policy.decision.WStateToMemory) == JSON.stringify(schema10Policy.decision.WStateToMemory),
+                valuePreserved: JSON.stringify(schema12From10Policy.decision.WValue) == JSON.stringify(schema10Policy.decision.WValue),
+                candidateReset: JSON.stringify(schema12From10Policy.decision.WCandidate1) == JSON.stringify(defaultDecision.WCandidate1) && JSON.stringify(schema12From10Policy.decision.WCandidate2) == JSON.stringify(defaultDecision.WCandidate2),
+                familyTrainingReset: schema12From10Policy.decision.trainingSamples.every(value => value == 0) && schema12From10Policy.decision.familyBias.every((value, index) => value == defaultDecision.familyBias[index]),
             }
 
             const decisionPolicy = cloneAIPolicy(migratedModel.policy)
@@ -679,10 +723,10 @@ async function main() {
             aiDecisionEncode = originalDecisionEncode
             aiDecisionStateCache = null
 
-            const factualFeaturesBefore = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48)
+            const factualFeaturesBefore = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48, 72)
             towers.reverse()
             bloons.reverse()
-            const factualFeaturesAfter = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48)
+            const factualFeaturesAfter = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48, 72)
             towers.reverse()
             bloons.reverse()
             const relationshipFeaturesLowHeuristic = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, { id: "factual-relation", type: "wizard", x: 100, y: 200, cost: 300, money: 1000, heuristic: -100 }).slice(32)
@@ -703,13 +747,102 @@ async function main() {
                 const renamed = buildAIDecisionCandidateFeatures(aiSide, familyIndex, { ...metadata, id: `candidate-${familyIndex}-b` })
                 const noop = buildAIDecisionCandidateFeatures(aiSide, familyIndex, { ...metadata, noop: true })
                 return {
-                    bounded: [action, noop].every(vector => vector.length == 64 && vector.every(value => Number.isFinite(value) && value >= -1 && value <= 1)),
+                    bounded: [action, noop].every(vector => vector.length == 80 && vector.every(value => Number.isFinite(value) && value >= -1 && value <= 1)),
                     familyOneHot: action.slice(0, AI_DECISION_FAMILY_COUNT).every((value, index) => value == (index == familyIndex ? 1 : 0)),
                     stableIdIndependent: action.every((value, index) => value == renamed[index]),
                     noopMarked: action[21] == 0 && noop[21] == 1,
                     manualCapabilities: action[62] == 1 && action[63] == 1,
                 }
             })
+            const previousStrategy = aiCurrentStrategy
+            const intentStrategy = { rushRound: 20, rushMoney: 4000, ecoFloor: 2500, rushBias: 0.575, placementProfile: "aggressive" }
+            aiCurrentStrategy = intentStrategy
+            const stateIntent = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.rush, null).slice(72)
+            const candidateIntent = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.strategy, { strategyIntent: intentStrategy }).slice(64, 72)
+            aiCurrentStrategy = previousStrategy
+            const leftBounds = getSideBounds(PLAYER_SIDE.left, 0)
+            const rightBounds = getSideBounds(PLAYER_SIDE.right, 0)
+            const leftX = leftBounds.minX + (leftBounds.maxX - leftBounds.minX) * 0.25
+            const rightX = rightBounds.maxX - (rightBounds.maxX - rightBounds.minX) * 0.25
+            const placementFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, range: 200, placementGeometry: true })
+            const manualAimFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, manualLock: true })
+            const placementFeatureContract = {
+                stateIntent,
+                candidateIntent,
+                mirroredPerspectiveX: getAIPerspectivePlacementX(PLAYER_SIDE.left, leftX) == getAIPerspectivePlacementX(PLAYER_SIDE.right, rightX),
+                mirroredBucket: getAIPlacementBucket(PLAYER_SIDE.left, leftX, canvas.height * 0.5).x == getAIPlacementBucket(PLAYER_SIDE.right, rightX, canvas.height * 0.5).x,
+                geometryPresent: placementFeatures.slice(72).some(value => value != 0),
+                placementIntentEmpty: placementFeatures.slice(64, 72).every(value => value == 0),
+                manualAimGeometryEmpty: manualAimFeatures.slice(72).every(value => value == 0),
+                strategyGeometryEmpty: buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.strategy, { strategyIntent: intentStrategy }).slice(72).every(value => value == 0),
+            }
+
+            const savedFarmerProbe = {
+                action: aiProfile.currentAction,
+                bananas: bananas.slice(),
+                gameStarted,
+                money: players[aiSide].money,
+                round,
+                towers: towers.slice(),
+            }
+            let farmerPriceContract
+            try {
+                towers.length = 0
+                bananas.length = 0
+                gameStarted = false
+                players[aiSide].money = 0
+                round = 2
+                aiProfile.currentAction = null
+                const rejectedWithoutFarm = getLearnedFarmerPlacementOption(aiSide, null) == null
+                const farmSpot = findAISpot(aiSide, 45, 200, "farm", 0, "farm")
+                const directPlacementRejectedWithoutFarm = aiPlaceFarmer(aiSide, farmSpot.x, farmSpot.y) == null
+                const farm = new Tower(farmSpot.x, farmSpot.y, 45, 200, "farm", aiSide)
+                farm.aiPlacedAt = gameNow()
+                farm.aiPlacedRound = getCurrentVisibleRound()
+                towers.push(farm)
+                const option = getLearnedFarmerPlacementOption(aiSide, null)
+                const requested = requestAIDefenseOption(aiSide, option, AI_ACTION_PRIORITY.normal)
+                const scoredTargetPreserved = requested && aiProfile.currentAction.targetX == option.targetX && aiProfile.currentAction.targetY == option.targetY
+                aiProfile.currentAction = null
+                const moneyBefore = players[aiSide].money
+                const farmer = aiPlaceFarmer(aiSide, option.targetX, option.targetY)
+                const directSameRoundSaleBlocked = aiTrySellTower(aiSide, farmer) == false
+                const requestedSameRoundSaleBlocked = aiRequestSellTower(aiSide, farmer, AI_ACTION_PRIORITY.normal) == false
+                const sameRoundSaleBlocked = getBestAIEconomyUtilityOption(aiSide, null) == null
+                const redundantFarmerPlacementBlocked = getLearnedFarmerPlacementOption(aiSide, null) == null
+                round++
+                const nextRoundUtility = getBestAIEconomyUtilityOption(aiSide, null)
+                const nextRoundFarmerSaleExcluded = !nextRoundUtility || nextRoundUtility.tower != farmer
+                aiProfile.currentAction = { type: "placeFarmer" }
+                const freeActionDoesNotPauseEco = isAIPaidActionPending() == false
+                aiProfile.currentAction = null
+                farmerPriceContract = {
+                    basePrice: getBaseTowerPriceByType("farmer"),
+                    candidateFinite: option.decisionSample.candidateFeatures.every(Number.isFinite),
+                    freeActionDoesNotPauseEco,
+                    moneyUnchanged: players[aiSide].money == moneyBefore,
+                    placed: !!farmer,
+                    rejectedWithoutFarm,
+                    directPlacementRejectedWithoutFarm,
+                    sameRoundSaleBlocked,
+                    directSameRoundSaleBlocked,
+                    requestedSameRoundSaleBlocked,
+                    redundantFarmerPlacementBlocked,
+                    nextRoundFarmerSaleExcluded,
+                    scoredTargetPreserved,
+                    sellValue: getAITowerSellValueEstimate(farmer),
+                    totalCost: farmer && farmer.totalCost,
+                    upgradeable: farmer && canTowerUpgradePathNow(aiSide, farmer, 1),
+                }
+            } finally {
+                towers.splice(0, towers.length, ...savedFarmerProbe.towers)
+                bananas.splice(0, bananas.length, ...savedFarmerProbe.bananas)
+                gameStarted = savedFarmerProbe.gameStarted
+                players[aiSide].money = savedFarmerProbe.money
+                round = savedFarmerProbe.round
+                aiProfile.currentAction = savedFarmerProbe.action
+                aiDecisionStateCache = null
+            }
 
             ensureAILoadoutLibraryInitialized()
             const originalLoadoutLibrary = aiLoadoutLibrary
@@ -891,6 +1024,156 @@ async function main() {
             aiMatchTelemetry.contributionStatus = "not-eligible"
             const ineligibleContributionMessage = getCompletedMatchAIRematchMessage()
 
+            const originalCaptureEnvironment = {
+                aiEnabled,
+                bossMode,
+                gameOver,
+                gameStarted,
+                localMatchCollectionState,
+                mapNumber,
+                practiceMode,
+                round,
+                selectedMenuMode,
+                timeGameStarted,
+                leftAutoEco: players[PLAYER_SIDE.left].autoEco,
+                leftCursor: { x: players[PLAYER_SIDE.left].cursor.x, y: players[PLAYER_SIDE.left].cursor.y },
+                leftSelectedBloon: players[PLAYER_SIDE.left].selectedBloon,
+            }
+            let humanTacticalCapture
+            try {
+                selectedMenuMode = "local"
+                aiEnabled = false
+                practiceMode = false
+                bossMode = false
+                gameStarted = true
+                gameOver = false
+                mapNumber = 7
+                round = 2
+                timeGameStarted = gameNow() - 5000
+                players[PLAYER_SIDE.left].selectedBloon = 2
+                players[PLAYER_SIDE.left].autoEco = true
+                players[PLAYER_SIDE.left].cursor.x = 180
+                players[PLAYER_SIDE.left].cursor.y = 240
+                resetLocalMatchCollection()
+
+                const capturedTower = {
+                    playerSide: PLAYER_SIDE.left,
+                    towerType: "dart",
+                    x: 140,
+                    y: 180,
+                    path1Upgrades: 0,
+                    path2Upgrades: 0,
+                    path3Upgrades: 0,
+                    targetPrio: 0,
+                }
+                const placed = recordLocalHumanTowerPlacement(capturedTower)
+                window.__distributedAI.advance(3250)
+                advanceRuntimeClock()
+                capturedTower.path1Upgrades = 1
+                const upgraded = recordLocalHumanTowerUpgrade(capturedTower, 1)
+                const sentFirst = recordLocalHumanBloonSend(PLAYER_SIDE.left, "manual")
+                const sentSecond = recordLocalHumanBloonSend(PLAYER_SIDE.left, "manual")
+                const ecoToggled = recordLocalHumanEcoToggle(PLAYER_SIDE.left)
+                const collectedFirst = recordLocalHumanCollection(capturedTower, "banana")
+                const collectedSecond = recordLocalHumanCollection(capturedTower, "banana")
+                const aimed = recordLocalHumanAim(capturedTower)
+                const boosted = recordLocalHumanBoost(PLAYER_SIDE.left, "towerboost.png")
+                window.__distributedAI.advance(40250)
+                advanceRuntimeClock()
+                const sold = recordLocalHumanTowerSale(capturedTower)
+                const subjectSummary = summarizeLoadoutSelection(["000dart.png", "000farm.png", "000wizard.png"], ["bloonboost.png", "towerboost.png"])
+                const opponentSummary = summarizeLoadoutSelection(["000bomb.png", "000farm.png", "000ninja.png"], ["ecoboost.png", "towerboost.png"])
+                const demonstration = createLocalHumanDemonstration(PLAYER_SIDE.left, PLAYER_SIDE.right, subjectSummary, opponentSummary)
+                const expectedEventKeys = {
+                    aim: ["id", "k", "mode", "r", "t", "x", "y"],
+                    boost: ["boost", "k", "r", "t"],
+                    collect: ["count", "id", "k", "r", "source", "t"],
+                    eco: ["enabled", "k", "r", "slot", "t"],
+                    place: ["id", "k", "r", "t", "tower", "x", "y"],
+                    sell: ["id", "k", "r", "t"],
+                    send: ["groups", "k", "r", "slot", "source", "t"],
+                    upgrade: ["id", "k", "path", "r", "t", "tier"],
+                    wait: ["k", "ms", "r", "t"],
+                }
+                const exactEventKeys = demonstration.events.every(event => JSON.stringify(Object.keys(event).sort()) == JSON.stringify(expectedEventKeys[event.k]))
+                const chronologicalEvents = demonstration.events.every((event, index) => event.t % 250 == 0 && event.t <= demonstration.durationMs && (index == 0 || event.t >= demonstration.events[index - 1].t && event.r >= demonstration.events[index - 1].r))
+                const capturedActions = { placed, upgraded, sentFirst, sentSecond, ecoToggled, collectedFirst, collectedSecond, aimed, boosted, sold }
+
+                aiEnabled = true
+                const ineligibleCaptureRejected = recordLocalHumanBoost(PLAYER_SIDE.left, "towerboost.png") == false
+                aiEnabled = false
+                resetLocalMatchCollection()
+                const towerIdResults = []
+                for(let towerIndex = 0; towerIndex < 65; towerIndex++) {
+                    towerIdResults.push(recordLocalHumanTowerPlacement({
+                        playerSide: PLAYER_SIDE.right,
+                        towerType: "dart",
+                        x: 900,
+                        y: 180,
+                    }))
+                }
+
+                resetLocalMatchCollection()
+                let capRejected = false
+                for(let eventIndex = 0; eventIndex <= AI_MAX_CAPTURED_HUMAN_ACTIONS; eventIndex++) {
+                    const recorded = recordLocalHumanTacticalEvent(PLAYER_SIDE.left, { k: "eco", enabled: true, slot: 2 })
+                    if(eventIndex == AI_MAX_CAPTURED_HUMAN_ACTIONS) capRejected = recorded == false
+                }
+                const cappedActions = localMatchCollectionState.sides[PLAYER_SIDE.left].tacticalEvents.length
+                const cappedUploadEvents = getLocalHumanTacticalEventsForUpload(PLAYER_SIDE.left).length
+
+                const originalTacticalFamilyStats = aiLearning.tacticalFamilyStats
+                aiLearning.tacticalFamilyStats = {
+                    "human|upgrade|upgrade|dart|1": { samples: 3, score: 1, mean: 1, m2: 0 },
+                }
+                const belowThresholdBonus = getAIHumanTacticalCandidateBonus(PLAYER_SIDE.left, AI_DECISION_FAMILY.upgrade, { actionKey: "upgrade|dart|1" })
+                aiLearning.tacticalFamilyStats["human|upgrade|upgrade|dart|1"] = { samples: 1000000, score: 10, mean: 10, m2: 0 }
+                const positiveCappedBonus = getAIHumanTacticalCandidateBonus(PLAYER_SIDE.left, AI_DECISION_FAMILY.upgrade, { actionKey: "upgrade|dart|1" })
+                aiLearning.tacticalFamilyStats["human|upgrade|upgrade|dart|1"] = { samples: 1000000, score: -10, mean: -10, m2: 0 }
+                const negativeCappedBonus = getAIHumanTacticalCandidateBonus(PLAYER_SIDE.left, AI_DECISION_FAMILY.upgrade, { actionKey: "upgrade|dart|1" })
+                aiLearning.tacticalFamilyStats = originalTacticalFamilyStats
+                const ecoSendHumanKeys = getAIHumanTacticalCandidateKeys(PLAYER_SIDE.left, AI_DECISION_FAMILY.eco, { actionKey: "send|3" })
+                const ecoStopHumanKeys = getAIHumanTacticalCandidateKeys(PLAYER_SIDE.left, AI_DECISION_FAMILY.eco, { actionKey: "auto|0" })
+
+                humanTacticalCapture = {
+                    capturedActions,
+                    payloadKeys: Object.keys(demonstration),
+                    eventKinds: demonstration.events.map(event => event.k),
+                    exactEventKeys,
+                    chronologicalEvents,
+                    sendGroups: demonstration.events.find(event => event.k == "send").groups,
+                    collectionCount: demonstration.events.find(event => event.k == "collect").count,
+                    waits: demonstration.events.filter(event => event.k == "wait").map(event => event.ms),
+                    boundedPayload: demonstration.map >= 0 && demonstration.map <= 20 && demonstration.durationMs >= demonstration.events[demonstration.events.length - 1].t && demonstration.matchFeatures.length == AI_FEATURE_KEYS.length && demonstration.matchFeatures.every(value => value >= 0 && value <= 1),
+                    excludesNeuralData: !Object.prototype.hasOwnProperty.call(demonstration, "model") && !Object.prototype.hasOwnProperty.call(demonstration, "decisionSamples") && !Object.prototype.hasOwnProperty.call(demonstration, "observations"),
+                    ineligibleCaptureRejected,
+                    towerIdBounded: towerIdResults.slice(0, 64).every(Boolean) && towerIdResults[64] == false,
+                    cappedActions,
+                    cappedUploadEvents,
+                    capRejected,
+                    belowThresholdBonus,
+                    positiveCappedBonus,
+                    negativeCappedBonus,
+                    ecoSendHumanKeys,
+                    ecoStopHumanKeys,
+                }
+            } finally {
+                aiEnabled = originalCaptureEnvironment.aiEnabled
+                bossMode = originalCaptureEnvironment.bossMode
+                gameOver = originalCaptureEnvironment.gameOver
+                gameStarted = originalCaptureEnvironment.gameStarted
+                localMatchCollectionState = originalCaptureEnvironment.localMatchCollectionState
+                mapNumber = originalCaptureEnvironment.mapNumber
+                practiceMode = originalCaptureEnvironment.practiceMode
+                round = originalCaptureEnvironment.round
+                selectedMenuMode = originalCaptureEnvironment.selectedMenuMode
+                timeGameStarted = originalCaptureEnvironment.timeGameStarted
+                players[PLAYER_SIDE.left].autoEco = originalCaptureEnvironment.leftAutoEco
+                players[PLAYER_SIDE.left].cursor.x = originalCaptureEnvironment.leftCursor.x
+                players[PLAYER_SIDE.left].cursor.y = originalCaptureEnvironment.leftCursor.y
+                players[PLAYER_SIDE.left].selectedBloon = originalCaptureEnvironment.leftSelectedBloon
+            }
+
             return {
                 aimActionCompleted: initialAimActionCompleted,
                 aimTarget: { x: aimX, y: aimY },
@@ -908,12 +1191,14 @@ async function main() {
                 neuralFollowStarted,
                 emptyTrainingStrategyCount,
                 hostedRefreshDuringSession,
+                humanTacticalCapture,
                 acceptedContributionMessage,
                 authenticatedSaveState,
                 goalCompleteStartDisabled,
                 ineligibleContributionMessage,
                 labOpenedByPointer,
                 lastEvaluation,
+                legacyContributionQueueRemoved,
                 liveEvaluation,
                 localSaveState,
                 lockStartedThroughRunAiming,
@@ -922,12 +1207,15 @@ async function main() {
                 migrationDeterministic: JSON.stringify(migratedPolicy) == JSON.stringify(repeatedMigratedPolicy),
                 migrationMaxOutputDelta,
                 migrationRetention,
+                schema11Migration,
                 schema10Migration,
                 normalDelta: { x: normalEnd.x - normalStart.x, y: normalEnd.y - normalStart.y },
                 normalDirectMode,
                 overviewLabels,
                 policyContract,
                 candidateFeatureContracts,
+                placementFeatureContract,
+                farmerPriceContract,
                 factualFeaturesPermutationInvariant: factualFeaturesBefore.every((value, index) => value == factualFeaturesAfter[index]),
                 relationshipFeaturesHeuristicIndependent: relationshipFeaturesLowHeuristic.every((value, index) => value == relationshipFeaturesHighHeuristic[index]),
                 memoryLifecycle,
@@ -1014,6 +1302,7 @@ async function main() {
         assert.equal(result.liveEvaluation.score, 0.625)
         assert.equal(result.lastEvaluation.label, "Last Eval")
         assert.equal(result.lastEvaluation.score, 0.58)
+        assert.equal(result.legacyContributionQueueRemoved, true)
         assert.equal(result.sameEpochRefreshSucceeded, true)
         assert.deepEqual(result.sameEpochRefresh, { games: 7, generation: 4, revision: 4 })
         assert.equal(result.resetEpochRefreshSucceeded, true)
@@ -1067,8 +1356,22 @@ async function main() {
             candidateGeneration: 6,
             championGeneration: 5,
             tacticalStoreRetained: true,
-            placementStoreRetained: true,
+            placementStoreRetained: false,
             populationSize: 2,
+        })
+        assert.deepEqual(result.schema11Migration, {
+            valid: true,
+            deterministic: true,
+            strategyPreserved: true,
+            statePrefixPreserved: true,
+            candidatePrefixPreserved: true,
+            newColumnsZero: true,
+            outputPreserved: true,
+            recurrentValueSurvivalPreserved: true,
+            familyTrainingPreserved: true,
+            totalDecisionSamplesPreserved: true,
+            spatialStoresReset: true,
+            reservedHumanPriorsReset: true,
         })
         assert.deepEqual(result.schema10Migration, {
             valid: true,
@@ -1081,16 +1384,16 @@ async function main() {
             familyTrainingReset: true,
         })
         assert.deepEqual(result.policyContract, {
-            version: 11,
-            modelFamily: "semantic-recurrent-actor-critic-v3",
+            version: 12,
+            modelFamily: "semantic-intent-spatial-recurrent-actor-critic-v4",
             formatVersion: 2,
             policyKeys: ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"],
             strategyKeys: ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"],
             decisionKeys: ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"],
             familyIndices: [0, 1, 2, 3, 4, 5, 6, 7],
             strategyDimensions: [64, 17, 32, 64, 75, 32],
-            decisionDimensions: [96, 72, 48, 96, 48, 64, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 8],
-            parameterCount: 24904,
+            decisionDimensions: [96, 80, 48, 96, 48, 80, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 8],
+            parameterCount: 26440,
             valid: true,
         })
         assert.equal(result.decisionTraining.succeeded, true)
@@ -1111,6 +1414,65 @@ async function main() {
                 manualCapabilities: true,
             })
         }
+        assert.deepEqual(result.placementFeatureContract, {
+            stateIntent: [0.4, 0.4, 0.25, 0.5, 0, 0, 0, 1],
+            candidateIntent: [0.4, 0.4, 0.25, 0.5, 0, 0, 0, 1],
+            mirroredPerspectiveX: true,
+            mirroredBucket: true,
+            geometryPresent: true,
+            placementIntentEmpty: true,
+            manualAimGeometryEmpty: true,
+            strategyGeometryEmpty: true,
+        })
+        assert.deepEqual(result.farmerPriceContract, {
+            basePrice: 0,
+            candidateFinite: true,
+            freeActionDoesNotPauseEco: true,
+            moneyUnchanged: true,
+            placed: true,
+            rejectedWithoutFarm: true,
+            directPlacementRejectedWithoutFarm: true,
+            sameRoundSaleBlocked: true,
+            directSameRoundSaleBlocked: true,
+            requestedSameRoundSaleBlocked: true,
+            redundantFarmerPlacementBlocked: true,
+            nextRoundFarmerSaleExcluded: true,
+            scoredTargetPreserved: true,
+            sellValue: 0,
+            totalCost: 0,
+            upgradeable: false,
+        })
+        assert.deepEqual(result.humanTacticalCapture.capturedActions, {
+            placed: true,
+            upgraded: true,
+            sentFirst: true,
+            sentSecond: true,
+            ecoToggled: true,
+            collectedFirst: true,
+            collectedSecond: true,
+            aimed: true,
+            boosted: true,
+            sold: true,
+        })
+        assert.deepEqual(result.humanTacticalCapture.payloadKeys, ["protocolVersion", "eventType", "contributionId", "baseRevision", "contributionEpoch", "map", "durationMs", "matchFeatures", "aiLives", "enemyLives", "loadoutKey", "opponentLoadoutKey", "events"])
+        assert.deepEqual(result.humanTacticalCapture.eventKinds, ["wait", "place", "wait", "upgrade", "send", "eco", "collect", "aim", "boost", "wait", "sell"])
+        assert.equal(result.humanTacticalCapture.exactEventKeys, true)
+        assert.equal(result.humanTacticalCapture.chronologicalEvents, true)
+        assert.equal(result.humanTacticalCapture.sendGroups, 2)
+        assert.equal(result.humanTacticalCapture.collectionCount, 2)
+        assert.deepEqual(result.humanTacticalCapture.waits, [5000, 3250, 40250])
+        assert.equal(result.humanTacticalCapture.boundedPayload, true)
+        assert.equal(result.humanTacticalCapture.excludesNeuralData, true)
+        assert.equal(result.humanTacticalCapture.ineligibleCaptureRejected, true)
+        assert.equal(result.humanTacticalCapture.towerIdBounded, true)
+        assert.equal(result.humanTacticalCapture.cappedActions, 96)
+        assert.ok(result.humanTacticalCapture.cappedUploadEvents <= 128)
+        assert.equal(result.humanTacticalCapture.capRejected, true)
+        assert.equal(result.humanTacticalCapture.belowThresholdBonus, 0)
+        assert.ok(result.humanTacticalCapture.positiveCappedBonus > 0 && result.humanTacticalCapture.positiveCappedBonus <= 0.05)
+        assert.ok(result.humanTacticalCapture.negativeCappedBonus < 0 && result.humanTacticalCapture.negativeCappedBonus >= -0.05)
+        assert.deepEqual(result.humanTacticalCapture.ecoSendHumanKeys, ["human|eco|send|3", "human|eco|auto|1"])
+        assert.deepEqual(result.humanTacticalCapture.ecoStopHumanKeys, ["human|eco|auto|0"])
         assert.deepEqual(result.terminalSettlement, {
             count: 2,
             firstTerminal: false,
@@ -1159,6 +1521,49 @@ async function main() {
         assert.match(result.queuedContributionMessage, /finishes syncing/)
         assert.match(result.acceptedContributionMessage, /accepted/)
         assert.match(result.ineligibleContributionMessage, /No global AI contribution/)
+
+        const recoveryPolicy = await runtime.page.evaluate(() => {
+            if(aiTrainingSessionModelActive) deactivateAITrainingSessionModel()
+            aiTrainingSessionLearning = null
+            aiTrainingHostedLearning = null
+            return cloneAIPolicy(aiLearning.policy)
+        })
+        const recoveredExecution = await stepUntilMatches(
+            runtime,
+            "evaluate",
+            { model: { policy: recoveryPolicy } },
+            { model: { championPolicy: recoveryPolicy } },
+            1,
+            10000,
+            async page => page.evaluate(() => {
+                const baseWatchdog = syncAITrainingTrueSelfPlayProgressWatchdog
+                let forcedDiscard = false
+                syncAITrainingTrueSelfPlayProgressWatchdog = function() {
+                    if(!forcedDiscard && isAITrainingTrueSelfPlayActive() && !gameOver) {
+                        forcedDiscard = true
+                        aiTrainingState.trueSelfPlayStallRecoveries++
+                        aiTrainingState.trueSelfPlayDiscardCurrentMatch = true
+                        aiTrainingState.trueSelfPlayLastWinner = "Forced recovery test"
+                        gameOver = true
+                        return
+                    }
+                    if(forcedDiscard && isAITrainingTrueSelfPlayActive() && !gameOver && !aiTrainingState.trueSelfPlayDiscardCurrentMatch) {
+                        syncAITrainingTrueSelfPlayProgressWatchdog = baseWatchdog
+                        p1lives = 150
+                        p2lives = 0
+                        players[PLAYER_SIDE.left].lives = 150
+                        players[PLAYER_SIDE.right].lives = 0
+                        gameOver = true
+                        return
+                    }
+                    return baseWatchdog.apply(this, arguments)
+                }
+            }),
+        )
+        assert.equal(recoveredExecution.stallRecoveries, 1)
+        assert.equal(recoveredExecution.matches.length, 1)
+        assert.equal(recoveredExecution.matches[0].index, 0)
+        assert.deepEqual(recoveredExecution.model.policy, recoveryPolicy)
 
         await runtime.page.setViewportSize({ width: 390, height: 844 })
         const portraitCanvas = await runtime.page.evaluate(() => {
