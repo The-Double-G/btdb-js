@@ -677,7 +677,7 @@ function requestAITrainingControlSave() {
     var saveState = getAITrainingSaveButtonState()
     if(saveState.action == "contributions") {
         flushAIPublicContributionQueue()
-        setAITrainingNotice("Queued global contributions are syncing.", 2200)
+        setAITrainingNotice("Saving...", 2200)
         return true
     }
     return false
@@ -1336,7 +1336,7 @@ function startAITrainingTrueSelfPlay() {
     var persistenceMode = getAITrainingPersistenceMode()
     if(persistenceMode == "snapshot" && (aiPersistenceState.contributionInFlight || getAIPublicContributionQueue().length > 0)) {
         flushAIPublicContributionQueue()
-        setAITrainingNotice("Wait for queued global contributions to finish syncing.", 2000)
+        setAITrainingNotice("Saving...", 2000)
         return false
     }
     aiTrainingState.persistenceMode = persistenceMode

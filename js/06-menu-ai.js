@@ -3991,10 +3991,10 @@ function getCompletedMatchAIContributionStatus() {
 function getCompletedMatchAIRematchMessage() {
     var status = getCompletedMatchAIContributionStatus()
     if(status == "queued") {
-        return "Refresh after the global AI contribution finishes syncing..."
+        return "Saving..."
     }
     if(status == "accepted") {
-        return "Refresh to rematch! Global AI contribution accepted."
+        return "Saved! You can close now."
     }
     if(status == "unavailable" || status == "failed") {
         return "Refresh to rematch! Global AI sync was unavailable."
