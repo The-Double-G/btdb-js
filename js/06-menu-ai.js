@@ -1607,7 +1607,7 @@ function refreshAILearningFromBackend(forceModelInstall) {
 
     aiPersistenceState.restoreRequested = true
     aiPersistenceState.loadInFlight = true
-    aiLearningRefreshPromise = fetch(AI_LEARNING_ENDPOINT + "&t=" + realNow(), { cache: "no-store" }).then(function(response) {
+    aiLearningRefreshPromise = fetch(AI_LEARNING_ENDPOINT + "&t=" + realNow(), { cache: "no-store", credentials: "same-origin" }).then(function(response) {
         if(response.ok == false) {
             throw new Error("Backend load failed: " + response.status)
         }
@@ -1836,6 +1836,7 @@ function flushAIPublicContributionQueue() {
     fetch(AI_LEARNING_ENDPOINT + "&action=contribute", {
         method: "POST",
         cache: "no-store",
+        credentials: "same-origin",
         headers: {
             "Content-Type": "application/json",
             "X-AI-Contribution-Token": aiPersistenceState.contributionToken,
@@ -1952,6 +1953,7 @@ function saveAILearningSnapshot() {
     fetch(AI_LEARNING_ENDPOINT + "&action=commit", {
         method: "POST",
         cache: "no-store",
+        credentials: "same-origin",
         headers: {
             "Content-Type": "application/json",
             "X-AI-Trainer-Key": trainerKey,
