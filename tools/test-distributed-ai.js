@@ -6,11 +6,15 @@ const {
     DECISION_CANDIDATE_INPUT_SIZE,
     DECISION_CREDIT_VERSION,
     DECISION_STATE_INPUT_SIZE,
+    EVALUATION_AGGREGATE_FORMAT_VERSION,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
     GAME_VERSION,
     MAX_JSON_BYTES,
     MAX_RECOVERED_STALLS,
+    ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES,
+    ABSOLUTE_DEFENSE_MINIMUM_LIVES,
+    ABSOLUTE_DEFENSE_MINIMUM_RATE,
     MODEL_FAMILY,
     MODEL_SCHEMA_VERSION,
     POLICY_FORMAT_VERSION,
@@ -119,10 +123,10 @@ function schema11Policy(value = 0) {
 
 function expectedSchema12Policy(legacy) {
     const expected = structuredClone(legacy)
-    expected.decision.stateInputSize = 80
-    expected.decision.candidateInputSize = 80
-    expected.decision.WState1 = expected.decision.WState1.map(row => row.concat(vector(8)))
-    expected.decision.WCandidate1 = expected.decision.WCandidate1.map(row => row.concat(vector(16)))
+    expected.decision.stateInputSize = 112
+    expected.decision.candidateInputSize = 112
+    expected.decision.WState1 = expected.decision.WState1.map(row => row.concat(vector(40)))
+    expected.decision.WCandidate1 = expected.decision.WCandidate1.map(row => row.concat(vector(48)))
     return expected
 }
 
@@ -178,7 +182,7 @@ function match(index, result, evaluation) {
     const scenarioIndex = index % 8
     const candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right"
     const candidateRole = Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe"
-    const candidateLives = result == "win" ? 80 : result == "loss" ? 0 : 50
+    const candidateLives = result == "win" ? 80 : result == "loss" ? 25 : 50
     const opponentLives = result == "win" ? 0 : result == "loss" ? 65 : 50
     return {
         index,
@@ -292,12 +296,16 @@ function fakeResponse(chunks, contentLength = null) {
 }
 
 async function main() {
-    assert.equal(MODEL_SCHEMA_VERSION, 12)
-    assert.equal(MODEL_FAMILY, "semantic-intent-spatial-recurrent-actor-critic-v4")
-    assert.equal(DECISION_STATE_INPUT_SIZE, 80)
-    assert.equal(DECISION_CANDIDATE_INPUT_SIZE, 80)
+    assert.equal(MODEL_SCHEMA_VERSION, 13)
+    assert.equal(MODEL_FAMILY, "semantic-intent-spatial-recurrent-actor-critic-v5")
+    assert.equal(DECISION_STATE_INPUT_SIZE, 112)
+    assert.equal(DECISION_CANDIDATE_INPUT_SIZE, 112)
     assert.equal(DECISION_CREDIT_VERSION, 3)
-    assert.equal(POLICY_PARAMETER_COUNT, 26440)
+    assert.equal(EVALUATION_AGGREGATE_FORMAT_VERSION, 2)
+    assert.equal(ABSOLUTE_DEFENSE_MINIMUM_LIVES, 50)
+    assert.equal(ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES, 25)
+    assert.equal(ABSOLUTE_DEFENSE_MINIMUM_RATE, 0.75)
+    assert.equal(POLICY_PARAMETER_COUNT, 31048)
     assert.equal(TRAINING_MATCHES, 192)
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
@@ -344,11 +352,11 @@ async function main() {
     assert.deepEqual(Object.keys(exactPolicy.strategy).sort(), ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"].sort())
     assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"].sort())
     assert.equal(exactPolicy.decision.WState1.length, 96)
-    assert.ok(exactPolicy.decision.WState1.every(row => row.length == 80))
+    assert.ok(exactPolicy.decision.WState1.every(row => row.length == 112))
     assert.equal(exactPolicy.decision.WCandidate1.length, 48)
-    assert.ok(exactPolicy.decision.WCandidate1.every(row => row.length == 80))
-    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 20733 })
-    assert.equal(Object.values(policyParameterCounts(exactPolicy)).reduce((sum, count) => sum + count, 0), 26440)
+    assert.ok(exactPolicy.decision.WCandidate1.every(row => row.length == 112))
+    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 25341 })
+    assert.equal(Object.values(policyParameterCounts(exactPolicy)).reduce((sum, count) => sum + count, 0), 31048)
 
     const schema11Model = model()
     schema11Model.version = 11
@@ -376,7 +384,7 @@ async function main() {
     assertMigrationRetention(schema11Model, safeMigration)
     assert.deepEqual(schema11Model, schema11Before)
     const expectedMigration = structuredClone(schema11Model)
-    expectedMigration.version = 12
+    expectedMigration.version = 13
     expectedMigration.modelFamily = MODEL_FAMILY
     expectedMigration.placementStats = {}
     expectedMigration.loadoutPlacementStats = {}
@@ -420,7 +428,7 @@ async function main() {
     assert.throws(() => validateModel(coercibleDimensionsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /incompatible hidden dimensions/)
     const oldSchemaModel = model()
     oldSchemaModel.version = 8
-    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 12/)
+    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 13/)
 
     assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
     const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
@@ -549,10 +557,40 @@ async function main() {
     assert.equal(gateAggregate.thresholds.minimumBucketScore, 0.48)
     assert.equal(gateAggregate.thresholds.minimumSurvivalRate, 0.5)
     assert.ok(Math.abs(gateAggregate.thresholds.maximumSevereCollapseRate - 0.27) < 1e-12)
-    assert.equal(gateAggregate.safety.survivalRate, 0.75)
+    assert.equal(gateAggregate.thresholds.minimumDefensiveGames, 32)
+    assert.equal(gateAggregate.thresholds.minimumDefensiveLives, 50)
+    assert.equal(gateAggregate.thresholds.minimumDefensiveFloorLives, 25)
+    assert.equal(gateAggregate.thresholds.minimumDefensiveRate, 0.75)
+    assert.equal(gateAggregate.safety.survivalRate, 1)
     assert.equal(gateAggregate.safety.severeCollapseRate, 0)
+    assert.equal(gateAggregate.absoluteDefense.games, 32)
+    assert.equal(gateAggregate.absoluteDefense.protectedGames, 24)
+    assert.equal(gateAggregate.absoluteDefense.protectionRate, 0.75)
+    assert.equal(gateAggregate.absoluteDefense.minimumCandidateLives, 25)
     assert.equal(gateAggregate.passed, true)
     validatePromotionBundle(materialized, gateAggregate, base)
+    const legacyAggregate = structuredClone(gateAggregate)
+    legacyAggregate.formatVersion = FORMAT_VERSION
+    delete legacyAggregate.absoluteDefense
+    legacyAggregate.thresholds = Object.fromEntries(Object.entries(legacyAggregate.thresholds).filter(([key]) => ["minimumScore", "minimumGames", "minimumBucketScore", "minimumSurvivalRate", "maximumSevereCollapseRate"].includes(key)))
+    legacyAggregate.aggregateId = digest(Object.fromEntries(Object.entries(legacyAggregate).filter(([key]) => key != "aggregateId")))
+    validateEvaluationAggregate(legacyAggregate)
+    assert.throws(() => validatePromotionBundle(materialized, legacyAggregate, base), /format-2 absolute defensive competence/)
+
+    const weakDefenseEvaluation = evaluationResult("eval-weak-defense", 35, Array(8).fill("win"), materialized, base)
+    for(const matchSummary of weakDefenseEvaluation.matches) {
+        if(matchSummary.candidateRole != "responder") continue
+        matchSummary.candidateLives = 25
+        matchSummary.opponentLives = 0
+        matchSummary.leftLives = matchSummary.candidateSide == "left" ? 25 : 0
+        matchSummary.rightLives = matchSummary.candidateSide == "right" ? 25 : 0
+    }
+    weakDefenseEvaluation.resultId = digest(Object.fromEntries(Object.entries(weakDefenseEvaluation).filter(([key]) => key != "resultId")))
+    const weakDefenseAggregate = aggregateEvaluationResults([weakDefenseEvaluation], 0.58, 8)
+    assert.equal(weakDefenseAggregate.overall.score, 1)
+    assert.equal(weakDefenseAggregate.absoluteDefense.protectionRate, 0)
+    assert.equal(weakDefenseAggregate.passed, false)
+    assert.throws(() => validatePromotionBundle(materialized, weakDefenseAggregate, base), /did not pass/)
 
     const weakBucketOutcomes = Array.from({ length: 64 }, (_, index) => index % 8 >= 4 || Math.floor(index / 8) * 4 + index % 4 < 12 ? "win" : "loss")
     const weakBucketAggregate = aggregateEvaluationResults([evaluationResult("eval-weak-bucket", 33, weakBucketOutcomes, materialized, base)], 0.58, 64)

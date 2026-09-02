@@ -166,6 +166,37 @@ function applyAINonProjectileTowerCapabilities(facts, tower) {
     if(tower.towerType == "farmer") facts.trapCapacity = Math.max(0, Number(tower.farmerCap) || 0)
 }
 
+function applyAITimedEconomyCapabilities(facts, tower) {
+    var cashDelta = 0
+    var ecoDelta = 0
+    var economyInterval = 30000
+    var path1 = Math.max(0, Number(tower.path1Upgrades) || 0)
+    var path2 = Math.max(0, Number(tower.path2Upgrades) || 0)
+    var path3 = Math.max(0, Number(tower.path3Upgrades) || 0)
+
+    if(tower.towerType == "cobra" && path2 >= 1) {
+        cashDelta = path2 == 5 ? 5070 : 70
+        ecoDelta = path2 >= 2 ? path2 == 5 ? 104 : 4 : 0
+    } else if(tower.towerType == "buccaneer" && path3 >= 3) {
+        cashDelta = path3 == 5 ? 2000 : path3 == 4 ? 700 : 300
+    } else if(tower.towerType == "farm") {
+        if(path2 == 5) ecoDelta = 200
+        if(path2 >= 3 && path3 == 2) {
+            cashDelta = path2 == 5 ? 30000 : path2 == 4 ? 20000 : 14000
+        } else if(path3 >= 3) {
+            if(path3 == 3) cashDelta = path2 == 2 ? 60 : 40
+            if(path3 == 4) cashDelta = path2 == 2 ? 240 : 160
+            if(path3 == 5) cashDelta = path2 == 2 ? 480 : 320
+        }
+    }
+
+    if(cashDelta > 0) facts.cashDelta = Math.max(facts.cashDelta, cashDelta)
+    if(ecoDelta > 0) facts.ecoDelta = Math.max(facts.ecoDelta, ecoDelta)
+    if(cashDelta > 0 || ecoDelta > 0) {
+        facts.economyInterval = facts.economyInterval > 0 ? Math.min(facts.economyInterval, economyInterval) : economyInterval
+    }
+}
+
 function summarizeAITowerProbe(tower, emittedProjectiles, emittedBananas, emittedSubtowers, moneyDelta, bankDelta, now) {
     var facts = createAIEmptyCapabilities()
     facts.range = Number.isFinite(Number(tower.range)) ? Math.max(0, Number(tower.range)) : typeof canvas != "undefined" ? canvas.width : 1366
@@ -212,6 +243,7 @@ function summarizeAITowerProbe(tower, emittedProjectiles, emittedBananas, emitte
     facts.cashDelta = Math.max(0, bananaCash + moneyDelta + bankDelta)
     if(facts.cashDelta > 0 && Number(tower.attackSpeed) > 0) facts.economyInterval = Number(tower.attackSpeed)
     applyAINonProjectileTowerCapabilities(facts, tower)
+    applyAITimedEconomyCapabilities(facts, tower)
     return facts
 }
 
@@ -339,8 +371,18 @@ function getAILoadoutCapabilityFacts(towerImages, boostImages, roundNumber) {
     var facts = createAIEmptyCapabilities()
     var count = 0
     var multiplierCounts = { targetSpeedMultiplier: 0, attackRateMultiplier: 0, rangeMultiplier: 0, sendSpeedMultiplier: 0 }
+    var maxKeys = {
+        range: true, projectileSpeed: true, projectileRadius: true, effectRadius: true,
+        projectileLifespan: true, dotInterval: true, effectDuration: true, stunDuration: true,
+        economyInterval: true, sendHealth: true, sendSpacing: true,
+    }
     function addLoadoutFacts(source) {
-        addAICapabilities(facts, source, 1)
+        for(var factIndex = 0; factIndex < AI_CAPABILITY_KEYS.length; factIndex++) {
+            var factKey = AI_CAPABILITY_KEYS[factIndex]
+            var value = Number(source[factKey]) || 0
+            if(maxKeys[factKey]) facts[factKey] = Math.max(facts[factKey], value)
+            else facts[factKey] += value
+        }
         var multiplierKeys = Object.keys(multiplierCounts)
         for(var keyIndex = 0; keyIndex < multiplierKeys.length; keyIndex++) {
             if(Number(source[multiplierKeys[keyIndex]]) > 0) multiplierCounts[multiplierKeys[keyIndex]]++
@@ -366,7 +408,7 @@ function getAILoadoutCapabilityFacts(towerImages, boostImages, roundNumber) {
     if(count > 1) {
         for(var factIndex = 0; factIndex < AI_CAPABILITY_KEYS.length; factIndex++) {
             var key = AI_CAPABILITY_KEYS[factIndex]
-            facts[key] /= multiplierCounts[key] || count
+            if(multiplierCounts[key]) facts[key] /= multiplierCounts[key]
         }
     }
     return facts

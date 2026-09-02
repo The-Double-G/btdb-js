@@ -4,12 +4,12 @@
 
 Every generation starts from one immutable snapshot of the authoritative Hosted Model:
 
-1. Prepare fetches and validates the schema-12 model and credential-free source manifest.
+1. Prepare fetches and validates the schema-13 model and credential-free source manifest.
 2. Deterministic Chromium workers train independent complete policy bundles from that exact snapshot.
 3. The selector validates every unique shard against the same baseline and computes a deterministic policy average. A shard's normalized weight is proportional to `exp((built-in evaluation score - maximum shard score) * 8)`.
 4. Materialization clones the hosted baseline and changes only the aggregated policy bundle, generations, and bounded two-policy history. Neural tensors are score-weighted averages, while each per-family training counter is the baseline count plus the sum of every shard's learned increment. Shard statistics and stores are discarded.
 5. Separate workers evaluate that exact candidate against the snapshot's frozen champion with learning and exploration disabled.
-6. Aggregation requires balanced maps, candidate sides, and probe/responder roles.
+6. Aggregation requires balanced maps, candidate sides, and probe/responder roles, plus an absolute defensive-competence benchmark.
 7. Exact-commit CI runs before a protected publisher can atomically promote the bundle to the Hosted Model.
 8. `training/checkpoints/champion.json` advances only after hosted publication; it remains an audit mirror, not the authority.
 
@@ -79,12 +79,13 @@ Continuous promotion requires:
 - Balanced map, side, and role coverage.
 - Every map, side, and role score to meet the derived bucket floor, `minimum_score - 0.10`.
 - Candidate survival to meet `minimum_score - 0.08` and severe collapses to stay at or below `1 - minimum_score - 0.15`. Survival means candidate lives remain above zero; a severe collapse means candidate lives reach zero while the opponent retains at least 75 lives.
+- Absolute defense in frozen-champion responder matches: at least half the required games, at least 75% of responder matches finishing with 50 or more candidate lives, and no responder match finishing below 25 candidate lives.
 - Exact baseline, candidate, and evaluation identities.
-- Finite schema-12 policy parameters, the exact 26,440-parameter tensor contract, and size bounds.
+- Finite schema-13 policy parameters, the exact 31,048-parameter tensor contract, and size bounds.
 - Browser, endpoint, distributed, deterministic replay, and exact-commit CI checks.
 - A least-privilege policy-only credential.
 
-Thresholds are rounded to 12 decimal places and clamped to `[0, 1]`. At the continuous 58% score gate, the bucket, survival, and severe-collapse gates are 48%, 50%, and 27%, respectively. Evaluation artifacts and trainer status retain these thresholds plus the observed worst bucket, survival rate, severe-collapse rate, and average final lives.
+Thresholds are rounded to 12 decimal places and clamped to `[0, 1]`. At the continuous 58% score gate, the bucket, survival, and severe-collapse gates are 48%, 50%, and 27%, respectively. Absolute defense requires 75% protected responder matches, at least 50 lives for protection, and a 25-life floor. Evaluation artifacts and trainer status retain these thresholds plus the observed worst bucket, survival rate, severe-collapse rate, average final lives, and responder protection rate.
 
 Ordinary contributions may continue while GitHub trains. Promotion conflicts only when the source epoch or frozen champion identity changed. Current aggregate records are preserved, and an independently changed live candidate is not overwritten. Replaying the same promotion is idempotent.
 

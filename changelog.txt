@@ -2,12 +2,12 @@ Current Version: v2.6.0
 
 v2.6.0 -
 Made Banana Farmer placement free in modern and Classic modes, including every Classic Farmer upgrade tier
-Fixed AI Farmer prerequisites, service-range placement, emergency filtering, scored-position execution, duplicate placement, and zero-value resale churn
+Made AI Farmer placement use the same free, legal placement rules as human input while retaining learned position scoring
 Made distributed workers recover and report up to three discarded self-play attempts per match with a match-count-aware aggregate limit so full unattended generations continue without hiding repeated failures
 Made self-play liveness track bloon path movement so valid frozen-evaluation matches are not discarded while entities are still advancing
 Made accelerated self-play use normal bounded cursor movement, tower selection, manual aiming, input cooldowns, and 250 ms simulation-time decision cadence instead of teleporting or oversampling actions
 Made the Stats trainer panel overlay validated live GitHub job progress on published status, report freshness and fallback, and refresh active views every two minutes
-Stopped the AI from selling towers within four rounds of placement or an upgrade, preventing repeated sellback-loss churn while preserving older strategic sales
+Removed the AI-only four-round sale hold so sellback losses are learned from outcomes under the normal sale rules
 Upgraded the authoritative AI to schema 12 and the 26,440-parameter semantic-intent-spatial recurrent actor-critic v4
 Expanded decision state and candidate inputs to 80 values with normalized strategy intent and perspective-correct placement geometry
 Advanced selected-action learning to credit version 3 while retaining bounded four-step recurrent actor-critic updates
@@ -18,7 +18,7 @@ Made promotion finalizers require CI on the exact squash-merged main commit befo
 Added bounded chronological Local human tactical events that produce deduplicated tactical priors without uploading neural vectors or training policy tensors
 Limited human tactical priors to records with at least four samples and at most a +/-0.05 candidate-ranking adjustment
 Deferred Browser Lab counterfactual training until deterministic randomness, clocks, stepping, restoration, isolation, and state-hash verification are available
-Advanced AI script caches to schema 12 and isolated pending schema-12 contributions in the V2 browser queue
+Advanced AI script caches to schema 13 and isolated pending schema-13 contributions in the V2 browser queue
 Replaced the small strategy-only policy with a 23,752-parameter schema-10 recurrent actor-critic
 Added widened state and candidate encoders, 16-value recurrent memory, a value head, final-life survival classes, and factual entity relationships
 Made neural comparisons rank every legal loadout, placement, upgrade, sale, send, aiming, and boost candidate without handcrafted score bonuses
@@ -26,6 +26,13 @@ Kept deterministic code only for legality, affordability, execution, cooldowns, 
 Added bounded decision-sample learning to browser matches, Browser Lab self-play, and the hosted PHP authority
 Added family-balanced traces, selected no-op learning, policy-controlled self-play loadouts, and aggregate server update clipping
 Added factual life-and-pop local rewards, exactly-once recurrent memory commits, and per-family no-op comparisons
+Added bounded factual money rewards with pre-action snapshots and action-aware spend, income, and sellback accounting
+Enabled learned loadout sampling via bounded performance, UCB exploration, and dominant unseen-loadout coverage bonuses over the full 5,600 legal tower/boost library
+Made loadout candidates expose factual role features in the candidate vector and preserved non-diluted tower capability aggregates for loadout scoring
+Made state expose matchup danger/safe-to-greed, roundReady/pending-payout, and stored farm-bank/collectible-banana economy context
+Made tower capabilities expose timed cobra/buccaneer/farm income intervals and made farm-liquidation candidates preserve bank proceeds
+Upgraded the authoritative AI to schema 13 and the 31,048-parameter semantic-intent-spatial recurrent actor-critic v5 with 112-value state and candidate encoders (32 extra dims for per-tower-type composition and detailed tier/cost context) and 32-zero-column preserved migrations from schema 12/11/10/9
+Destructively reset the hosted schema-12 model to a fresh schema-13 model (revision+1/epoch+1, queued 80-dim contributions rejected until refresh) to restart training on the larger brain
 Added a lock-safe migration from schema 9 to schema 10 that preserves actor logits and aggregate knowledge
 Expanded Browser Lab generations to 128 learning and 64 frozen internal evaluation matches with a 58% promotion gate
 Expanded continuous GitHub generations to 3,840 training matches and 320 frozen evaluation matches

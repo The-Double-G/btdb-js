@@ -7,13 +7,14 @@ header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 
 const AI_PROTOCOL_VERSION = 1;
-const AI_MODEL_SCHEMA = 12;
-const AI_MODEL_FAMILY = 'semantic-intent-spatial-recurrent-actor-critic-v4';
+const AI_MODEL_SCHEMA = 13;
+const AI_MODEL_FAMILY = 'semantic-intent-spatial-recurrent-actor-critic-v5';
 const AI_GAME_VERSION = 'v2.6.0';
 const AI_MAX_BODY_BYTES = 8388608;
 const AI_MAX_CONTRIBUTION_BYTES = 131072;
 const AI_MAX_CONTRIBUTION_OBSERVATIONS = 320;
 const AI_MAX_DECISION_SAMPLES = 12;
+const AI_MAX_PLACEMENT_SAMPLES = 24;
 const AI_MAX_DECISION_SAMPLE_AGE = 1000000;
 const AI_MAX_CONTRIBUTION_POLICY_DELTA_NORM = 0.35;
 const AI_CONTRIBUTION_RATE_LIMIT = 120;
@@ -27,8 +28,10 @@ const AI_HIDDEN_2 = 32;
 const AI_LEGACY_HIDDEN_1 = 12;
 const AI_LEGACY_HIDDEN_2 = 8;
 const AI_POLICY_FORMAT_VERSION = 2;
-const AI_DECISION_STATE_INPUT = 80;
-const AI_DECISION_CANDIDATE_INPUT = 80;
+const AI_DECISION_STATE_INPUT = 112;
+const AI_DECISION_CANDIDATE_INPUT = 112;
+const AI_SCHEMA12_DECISION_STATE_INPUT = 80;
+const AI_SCHEMA12_DECISION_CANDIDATE_INPUT = 80;
 const AI_SCHEMA11_DECISION_STATE_INPUT = 72;
 const AI_SCHEMA11_DECISION_CANDIDATE_INPUT = 64;
 const AI_SCHEMA10_DECISION_STATE_INPUT = 72;
@@ -232,6 +235,23 @@ function valid_schema11_policy($policy): bool {
         && valid_schema11_decision($policy['decision'] ?? null);
 }
 
+function valid_schema12_decision($decision): bool {
+    return valid_decision_for_input($decision, AI_SCHEMA12_DECISION_STATE_INPUT, AI_SCHEMA12_DECISION_CANDIDATE_INPUT);
+}
+
+function valid_schema12_policy($policy): bool {
+    if (!is_array($policy) || !exact_keys($policy, ['formatVersion', 'strategyLearningRate', 'decisionLearningRate', 'strategy', 'decision'])) {
+        return false;
+    }
+    return ($policy['formatVersion'] ?? null) === AI_POLICY_FORMAT_VERSION
+        && valid_number($policy['strategyLearningRate'] ?? null, 0.2)
+        && (float)$policy['strategyLearningRate'] > 0
+        && valid_number($policy['decisionLearningRate'] ?? null, 0.1)
+        && (float)$policy['decisionLearningRate'] > 0
+        && valid_strategy($policy['strategy'] ?? null)
+        && valid_schema12_decision($policy['decision'] ?? null);
+}
+
 function valid_schema9_decision($decision): bool {
     if (!is_array($decision) || !exact_keys($decision, [
         'stateInputSize', 'candidateInputSize', 'stateHiddenSize', 'candidateHiddenSize', 'embeddingSize',
@@ -329,7 +349,7 @@ function integer_tree_has_headroom($value, int $increments, int $depth = 0): boo
     return true;
 }
 
-function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false): bool {
+function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false, bool $schema12 = false): bool {
     $modelKeys = [
         'version', 'modelFamily', 'totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples',
         'totalLoadoutSamples', 'totalHumanDemonstrations', 'playerProfile', 'strategyStats', 'loadoutStats',
@@ -342,8 +362,8 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     }
     if (!is_array($model)
         || !exact_keys($model, $modelKeys)
-        || ($model['version'] ?? null) !== ($legacy ? 8 : ($schema9 ? 9 : ($schema10 ? 10 : ($schema11 ? 11 : AI_MODEL_SCHEMA))))
-        || ($model['modelFamily'] ?? null) !== ($legacy ? 'bounded-contextual-bandit-v1' : ($schema9 ? 'shared-neural-controller-v1' : ($schema10 ? 'shared-recurrent-actor-critic-v2' : ($schema11 ? 'semantic-recurrent-actor-critic-v3' : AI_MODEL_FAMILY))))) {
+        || ($model['version'] ?? null) !== ($legacy ? 8 : ($schema9 ? 9 : ($schema10 ? 10 : ($schema11 ? 11 : ($schema12 ? 12 : AI_MODEL_SCHEMA)))))
+        || ($model['modelFamily'] ?? null) !== ($legacy ? 'bounded-contextual-bandit-v1' : ($schema9 ? 'shared-neural-controller-v1' : ($schema10 ? 'shared-recurrent-actor-critic-v2' : ($schema11 ? 'semantic-recurrent-actor-critic-v3' : ($schema12 ? 'semantic-intent-spatial-recurrent-actor-critic-v4' : AI_MODEL_FAMILY)))))) {
         return false;
     }
     $counters = ['totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples', 'totalLoadoutSamples', 'totalHumanDemonstrations', 'totalTacticalSamples', 'candidateGeneration', 'championGeneration'];
@@ -392,7 +412,7 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     if ($model['totalGames'] !== $totalGames || $model['totalSyntheticEpisodes'] !== $totalSyntheticEpisodes) {
         return false;
     }
-    $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : ($schema11 ? 'valid_schema11_policy' : 'valid_policy')));
+    $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : ($schema11 ? 'valid_schema11_policy' : ($schema12 ? 'valid_schema12_policy' : 'valid_policy'))));
     if (!$policyValidator($model['policy'] ?? null) || !$policyValidator($model['championPolicy'] ?? null)) {
         return false;
     }
@@ -461,6 +481,10 @@ function valid_schema10_model($model): bool {
 
 function valid_schema11_model($model): bool {
     return valid_model_for_schema($model, false, false, false, true);
+}
+
+function valid_schema12_model($model): bool {
+    return valid_model_for_schema($model, false, false, false, false, true);
 }
 
 function valid_fresh_model($model): bool {
@@ -838,6 +862,38 @@ function migrate_schema11_model(array $oldModel): array {
     return $model;
 }
 
+function migrate_schema12_decision(array $oldDecision): array {
+    $decision = $oldDecision;
+    $decision['stateInputSize'] = AI_DECISION_STATE_INPUT;
+    $decision['candidateInputSize'] = AI_DECISION_CANDIDATE_INPUT;
+    for ($row = 0; $row < AI_DECISION_STATE_HIDDEN; $row++) {
+        $decision['WState1'][$row] = array_merge($oldDecision['WState1'][$row], zero_vector(AI_DECISION_STATE_INPUT - AI_SCHEMA12_DECISION_STATE_INPUT));
+    }
+    for ($row = 0; $row < AI_DECISION_CANDIDATE_HIDDEN; $row++) {
+        $decision['WCandidate1'][$row] = array_merge($oldDecision['WCandidate1'][$row], zero_vector(AI_DECISION_CANDIDATE_INPUT - AI_SCHEMA12_DECISION_CANDIDATE_INPUT));
+    }
+    return $decision;
+}
+
+function migrate_schema12_policy(array $oldPolicy): array {
+    $policy = $oldPolicy;
+    $policy['decision'] = migrate_schema12_decision($oldPolicy['decision']);
+    return $policy;
+}
+
+function migrate_schema12_model(array $oldModel): array {
+    $model = $oldModel;
+    $model['version'] = AI_MODEL_SCHEMA;
+    $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['placementStats'] = [];
+    $model['loadoutPlacementStats'] = [];
+    strip_reserved_human_priors($model);
+    $model['policy'] = migrate_schema12_policy($oldModel['policy']);
+    $model['championPolicy'] = migrate_schema12_policy($oldModel['championPolicy']);
+    $model['populationPolicies'] = array_map('migrate_schema12_policy', $oldModel['populationPolicies']);
+    return $model;
+}
+
 function valid_unit_vector($value, int $length): bool {
     if (!is_array($value) || !is_list_array($value) || count($value) !== $length) {
         return false;
@@ -927,6 +983,23 @@ function valid_decision_sample($sample): bool {
     return valid_decision_sample_v2($sample) || valid_legacy_decision_sample($sample);
 }
 
+function valid_placement_sample($sample): bool {
+    if (!is_array($sample) || !exact_keys($sample, ['creditVersion', 'familyIndex', 'stateFeatures', 'chosenCandidateFeatures', 'memoryIn', 'startedAtMs', 'settledAtMs', 'intervalReward'])) {
+        return false;
+    }
+    return ($sample['creditVersion'] ?? null) === AI_DECISION_CREDIT_VERSION
+        && is_int($sample['familyIndex'] ?? null)
+        && $sample['familyIndex'] >= 0
+        && $sample['familyIndex'] < AI_DECISION_FAMILY_COUNT
+        && valid_vector($sample['stateFeatures'] ?? null, AI_DECISION_STATE_INPUT, 1.0)
+        && valid_vector($sample['chosenCandidateFeatures'] ?? null, AI_DECISION_CANDIDATE_INPUT, 1.0)
+        && valid_vector($sample['memoryIn'] ?? null, AI_DECISION_MEMORY, 1.0)
+        && valid_nonnegative_integer($sample['startedAtMs'] ?? null)
+        && valid_nonnegative_integer($sample['settledAtMs'] ?? null)
+        && $sample['settledAtMs'] >= $sample['startedAtMs']
+        && valid_number($sample['intervalReward'] ?? null, 1.0);
+}
+
 function valid_contribution($request): bool {
     if (!is_array($request)) {
         return false;
@@ -949,6 +1022,9 @@ function valid_contribution($request): bool {
     }
     if (array_key_exists('decisionSamples', $request)) {
         $expectedKeys[] = 'decisionSamples';
+    }
+    if (array_key_exists('placementSamples', $request)) {
+        $expectedKeys[] = 'placementSamples';
     }
     if (!exact_keys($request, $expectedKeys)) {
         return false;
@@ -1021,6 +1097,17 @@ function valid_contribution($request): bool {
                 $previousSettledAt = $sample['settledAtMs'];
                 $previousSuccessorState = $sample['successorStateFeatures'];
                 $previousSuccessorMemory = $sample['successorMemory'];
+            }
+        }
+    }
+    if (array_key_exists('placementSamples', $request)) {
+        $placementSamples = $request['placementSamples'];
+        if (!is_array($placementSamples) || !is_list_array($placementSamples) || count($placementSamples) > AI_MAX_PLACEMENT_SAMPLES) {
+            return false;
+        }
+        foreach ($placementSamples as $sample) {
+            if (!valid_placement_sample($sample)) {
+                return false;
             }
         }
     }
@@ -1856,6 +1943,11 @@ function apply_public_contribution(array &$model, array $request): void {
     foreach ($decisionSamples as $sampleIndex => $sample) {
         train_candidate_decision($model, $sample, $decisionTargets[$sampleIndex], $survivalClass);
     }
+    foreach ($request['placementSamples'] ?? [] as $placementSample) {
+        if (($placementSample['creditVersion'] ?? null) === AI_DECISION_CREDIT_VERSION) {
+            train_candidate_decision($model, $placementSample, (float)$placementSample['intervalReward'], $survivalClass);
+        }
+    }
     limit_policy_parameter_delta($model['policy'], $baselinePolicy, AI_MAX_CONTRIBUTION_POLICY_DELTA_NORM);
 
     if (!$request['selfPlay']) {
@@ -2049,15 +2141,16 @@ function migrate_state_locked(array $state, string $stateFile): array {
         return $state;
     }
     normalize_model_accounting($legacyModel);
-    $isSchema11 = valid_schema11_model($legacyModel);
-    $isSchema10 = !$isSchema11 && valid_schema10_model($legacyModel);
-    $isSchema9 = !$isSchema11 && !$isSchema10 && valid_schema9_model($legacyModel);
-    if (!$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
+    $isSchema12 = valid_schema12_model($legacyModel);
+    $isSchema11 = !$isSchema12 && valid_schema11_model($legacyModel);
+    $isSchema10 = !$isSchema12 && !$isSchema11 && valid_schema10_model($legacyModel);
+    $isSchema9 = !$isSchema12 && !$isSchema11 && !$isSchema10 && valid_schema9_model($legacyModel);
+    if (!$isSchema12 && !$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
         return $state;
     }
-    $model = $isSchema11
-        ? migrate_schema11_model($legacyModel)
-        : ($isSchema10 ? migrate_schema10_model($legacyModel) : ($isSchema9 ? migrate_schema9_model($legacyModel) : migrate_legacy_model($legacyModel)));
+    $model = $isSchema12
+        ? migrate_schema12_model($legacyModel)
+        : ($isSchema11 ? migrate_schema11_model($legacyModel) : ($isSchema10 ? migrate_schema10_model($legacyModel) : ($isSchema9 ? migrate_schema9_model($legacyModel) : migrate_legacy_model($legacyModel))));
     if (!valid_model($model)) {
         fail_json(500, 'migration_failed_validation', 'The legacy AI model could not be migrated safely.');
     }

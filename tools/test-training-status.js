@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict")
 const {
+    EVALUATION_AGGREGATE_FORMAT_VERSION,
     FORMAT_VERSION,
     HOSTED_PROMOTION_RECEIPT_KIND,
     digest,
@@ -85,7 +86,7 @@ function evaluation(runNumber) {
     const bucket = games => ({ games, wins: games, losses: 0, ties: 0, score: 1 })
     const aggregate = {
         kind: "btdb-ai-evaluation-aggregate",
-        formatVersion: FORMAT_VERSION,
+        formatVersion: EVALUATION_AGGREGATE_FORMAT_VERSION,
         aggregateId: "",
         candidateCheckpointId: objectId(runNumber * 10 + 1),
         candidateModelDigest: objectId(runNumber * 10 + 2),
@@ -99,6 +100,10 @@ function evaluation(runNumber) {
             minimumBucketScore: 0.48,
             minimumSurvivalRate: 0.5,
             maximumSevereCollapseRate: 0.27,
+            minimumDefensiveGames: 4,
+            minimumDefensiveLives: 50,
+            minimumDefensiveFloorLives: 25,
+            minimumDefensiveRate: 0.75,
         },
         passed: true,
         overall: bucket(8),
@@ -122,6 +127,13 @@ function evaluation(runNumber) {
             severeCollapseRate: 0,
             averageCandidateLives: 150,
             averageOpponentLives: 0,
+        },
+        absoluteDefense: {
+            games: 4,
+            protectedGames: 4,
+            protectionRate: 1,
+            minimumCandidateLives: 150,
+            averageCandidateLives: 150,
         },
         sourceResultIds: [objectId(runNumber * 10 + 5)],
     }
@@ -391,6 +403,9 @@ async function main() {
     assert.equal(api.status.latestEvaluation.worstBucketScore, 1)
     assert.equal(api.status.latestEvaluation.survivalRate, 1)
     assert.equal(api.status.latestEvaluation.severeCollapseRate, 0)
+    assert.equal(api.status.latestEvaluation.defensiveProtectionRate, 1)
+    assert.equal(api.status.latestEvaluation.minimumDefensiveLives, 50)
+    assert.equal(api.status.latestEvaluation.minimumDefensiveObservedLives, 150)
     assert.equal(api.status.latestPromotion.promotionId, aggregate10.candidateCheckpointId)
     validateStatus(api.status)
 

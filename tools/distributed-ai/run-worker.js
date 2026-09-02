@@ -37,6 +37,9 @@ const SCHEMA_10_FAMILY = "shared-recurrent-actor-critic-v2"
 const SCHEMA_11_FAMILY = "semantic-recurrent-actor-critic-v3"
 const SCHEMA_11_STATE_INPUT_SIZE = 72
 const SCHEMA_11_CANDIDATE_INPUT_SIZE = 64
+const SCHEMA_12_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v4"
+const SCHEMA_12_STATE_INPUT_SIZE = 80
+const SCHEMA_12_CANDIDATE_INPUT_SIZE = 80
 
 const usage = `Usage:
   node tools/distributed-ai/run-worker.js --mode initialize --seed N --shard ID --output checkpoint.json
@@ -168,8 +171,8 @@ async function normalizedModel(page, model) {
 
 function validateMigrationSource(checkpoint) {
     if(!checkpoint || checkpoint.kind != "btdb-ai-checkpoint" || checkpoint.formatVersion != FORMAT_VERSION) fail("Migration source has an unsupported kind or format version")
-    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : null
-    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, or schema 11 and ${SCHEMA_11_FAMILY}`)
+    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : checkpoint.modelSchemaVersion == 12 ? SCHEMA_12_FAMILY : null
+    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, schema 11 and ${SCHEMA_11_FAMILY}, or schema 12 and ${SCHEMA_12_FAMILY}`)
     if(!checkpoint.model || checkpoint.model.version != checkpoint.modelSchemaVersion || checkpoint.model.modelFamily != checkpoint.modelFamily) fail("Migration source model identity is inconsistent")
     if(digest(checkpoint.model) != checkpoint.modelDigest) fail("Migration source modelDigest does not match its model")
     const identity = {}
@@ -213,7 +216,38 @@ function migrateSchema11Model(source) {
     return migrated
 }
 
+function migrateSchema12Policy(policy, label) {
+    if(!policy || !policy.decision) fail(`${label} is missing its decision network`)
+    const migrated = JSON.parse(JSON.stringify(policy))
+    const decision = migrated.decision
+    if(decision.stateInputSize != SCHEMA_12_STATE_INPUT_SIZE || decision.candidateInputSize != SCHEMA_12_CANDIDATE_INPUT_SIZE) fail(`${label}.decision has incompatible schema 12 input dimensions`)
+    decision.stateInputSize = DECISION_STATE_INPUT_SIZE
+    decision.candidateInputSize = DECISION_CANDIDATE_INPUT_SIZE
+    decision.WState1 = appendZeroColumns(decision.WState1, 96, SCHEMA_12_STATE_INPUT_SIZE, DECISION_STATE_INPUT_SIZE, `${label}.decision.WState1`)
+    decision.WCandidate1 = appendZeroColumns(decision.WCandidate1, 48, SCHEMA_12_CANDIDATE_INPUT_SIZE, DECISION_CANDIDATE_INPUT_SIZE, `${label}.decision.WCandidate1`)
+    return migrated
+}
+
+function migrateSchema12Model(source) {
+    if(!source || source.version != 12 || source.modelFamily != SCHEMA_12_FAMILY) fail(`Migration requires schema 12 and ${SCHEMA_12_FAMILY}`)
+    if(!Array.isArray(source.populationPolicies) || source.populationPolicies.length > 2) fail("Schema 12 migration source has an invalid policy population")
+    const migrated = JSON.parse(JSON.stringify(source))
+    migrated.version = MODEL_SCHEMA_VERSION
+    migrated.modelFamily = MODEL_FAMILY
+    migrated.placementStats = {}
+    migrated.loadoutPlacementStats = {}
+    migrated.tacticalFamilyStats = Object.fromEntries(Object.entries(source.tacticalFamilyStats).filter(([key]) => !key.startsWith("human|")))
+    migrated.policy = migrateSchema12Policy(source.policy, "model.policy")
+    migrated.championPolicy = migrateSchema12Policy(source.championPolicy, "model.championPolicy")
+    migrated.populationPolicies = source.populationPolicies.map((policy, index) => migrateSchema12Policy(policy, `model.populationPolicies[${index}]`))
+    return migrated
+}
+
 function assertMigrationRetention(source, migrated) {
+    if(source.version == 12) {
+        if(digest(migrateSchema12Model(source)) != digest(migrated)) fail("Schema 12 migration changed data beyond identity, policy input expansion, incompatible stores, and reserved human priors")
+        return
+    }
     if(source.version == 11) {
         if(digest(migrateSchema11Model(source)) != digest(migrated)) fail("Schema 11 migration changed data beyond identity, policy input expansion, incompatible stores, and reserved human priors")
         return
@@ -251,8 +285,8 @@ async function migrate(source, seed, shard, output) {
         const normalized = await normalizedModel(runtime.page, source.model)
         const repeated = await normalizedModel(runtime.page, source.model)
         if(digest(normalized) != digest(repeated)) fail("Schema migration is not deterministic")
-        const model = source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
-        if(source.modelSchemaVersion == 11 && digest(model) != digest(normalized)) fail("Explicit schema 11 migration does not match runtime normalization")
+        const model = source.modelSchemaVersion == 12 ? migrateSchema12Model(source.model) : source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
+        if((source.modelSchemaVersion == 11 || source.modelSchemaVersion == 12) && digest(model) != digest(normalized)) fail("Explicit schema migration does not match runtime normalization")
         assertMigrationRetention(source.model, model)
         validateModel(model, model.version, model.modelFamily)
         const checkpoint = createCheckpoint({

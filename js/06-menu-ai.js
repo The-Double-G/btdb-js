@@ -29,6 +29,10 @@ var aiProfile = {
     explorationEnabled: false,
     pendingTacticalDecision: null,
     tacticalTrace: [],
+    placementOutcomes: {},
+    placementSamples: [],
+    observedLivesBySide: {},
+    observedLivesLostBySide: {},
     decisionMemory: [],
 }
 
@@ -43,11 +47,12 @@ var AI_TRAINING_JOBS_ENDPOINT = "https://api.github.com/repos/The-Double-G/btdb-
 var AI_TRAINING_STATUS_MAX_BYTES = 32768
 var AI_TRAINING_JOBS_MAX_BYTES = 1048576
 var AI_TRAINING_STATUS_REFRESH_INTERVAL = 120000
-var AI_TOWER_MINIMUM_HOLD_ROUNDS = 4
 var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV2"
 var AI_MAX_PENDING_CONTRIBUTIONS = 8
 var AI_MAX_CONTRIBUTION_OBSERVATIONS = 320
 var AI_MAX_PUBLIC_CONTRIBUTION_BYTES = 131072
+var AI_MAX_PLACEMENT_SAMPLES = 64
+var AI_MAX_PUBLIC_PLACEMENT_SAMPLES = 24
 var AI_MAX_HUMAN_TACTICAL_EVENTS = 128
 var AI_MAX_CAPTURED_HUMAN_ACTIONS = 96
 var AI_MAX_HUMAN_TACTICAL_TOWERS = 64
@@ -80,8 +85,8 @@ var AI_ACTION_PRIORITY = {
 }
 var AI_POLICY_HIDDEN_SIZE_1 = 64
 var AI_POLICY_HIDDEN_SIZE_2 = 32
-var AI_DECISION_STATE_INPUT_SIZE = 80
-var AI_DECISION_CANDIDATE_INPUT_SIZE = 80
+var AI_DECISION_STATE_INPUT_SIZE = 112
+var AI_DECISION_CANDIDATE_INPUT_SIZE = 112
 var AI_DECISION_STATE_HIDDEN_SIZE = 96
 var AI_DECISION_CANDIDATE_HIDDEN_SIZE = 48
 var AI_DECISION_EMBEDDING_SIZE = 48
@@ -102,8 +107,8 @@ var AI_DECISION_FAMILY = {
     boost: 7,
 }
 var AI_POLICY_PARAMETER_LIMIT = 4
-var AI_LEARNING_SCHEMA_VERSION = 12
-var AI_MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v4"
+var AI_LEARNING_SCHEMA_VERSION = 13
+var AI_MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v5"
 var AI_DECISION_CREDIT_VERSION = 3
 var AI_DECISION_TD_STEPS = 4
 var AI_DECISION_DISCOUNT_PER_SECOND = 0.99
@@ -152,528 +157,29 @@ var aiTickState = {
     lastCursorAt: 0,
 }
 var AI_STRATEGY_LIBRARY = [
-    {
-        id: "arcane_banks",
-        baseBias: 0.42,
-        towers: ["000farm.png", "000wizard.png", "000bomb.png"],
-        boosts: ["towerboost.png", "bloonboost.png"],
-        placementProfile: "balanced",
-        rushRound: 18,
-        rushMoney: 4200,
-        ecoFloor: 3200,
-        rushBias: 0.72,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000wizard.png": "core",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000wizard.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 12, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 300 },
-            { round: 20, image: "000wizard.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 26, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 400 },
-            { round: 34, image: "000wizard.png", maxCount: 3, role: "core", buffer: 1000 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000wizard.png": [3, 2, 1],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "shadow_stall",
-        baseBias: 0.27,
-        towers: ["000farm.png", "000ninja.png", "000bomb.png"],
-        boosts: ["towerboost.png", "lightningboost.png"],
-        placementProfile: "spread",
-        rushRound: 20,
-        rushMoney: 4600,
-        ecoFloor: 3400,
-        rushBias: 0.5,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000ninja.png": "core",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000ninja.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 12, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 22, image: "000ninja.png", maxCount: 2, role: "core", buffer: 300 },
-            { round: 28, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 450 },
-            { round: 36, image: "000ninja.png", maxCount: 3, role: "core", buffer: 1200 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000ninja.png": [1, 3, 2],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "sniper_econ",
-        baseBias: 0.22,
-        towers: ["000farm.png", "000sniper.png", "000bomb.png"],
-        boosts: ["towerboost.png", "ecoboost.png"],
-        placementProfile: "safe",
-        rushRound: 22,
-        rushMoney: 5200,
-        ecoFloor: 3600,
-        rushBias: 0.35,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000sniper.png": "support",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000sniper.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 6, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 12, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 300 },
-            { round: 22, image: "000sniper.png", maxCount: 2, role: "support", buffer: 500 },
-            { round: 28, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 500 },
-            { round: 36, image: "000sniper.png", maxCount: 3, role: "support", buffer: 1500 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000sniper.png": [3, 2, 1],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "cobra_punish",
-        baseBias: 0.18,
-        towers: ["000cobra.png", "000wizard.png", "000bomb.png"],
-        boosts: ["slowboost.png", "bloonboost.png"],
-        placementProfile: "aggressive",
-        rushRound: 14,
-        rushMoney: 2600,
-        ecoFloor: 2200,
-        rushBias: 1,
-        placementRoles: {
-            "000cobra.png": "support",
-            "000wizard.png": "core",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000wizard.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 4, image: "000cobra.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 10, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 16, image: "000cobra.png", maxCount: 2, role: "support", buffer: 200 },
-            { round: 22, image: "000wizard.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 26, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 350 },
-            { round: 32, image: "000cobra.png", maxCount: 3, role: "support", buffer: 700 },
-        ],
-        upgradePrefs: {
-            "000cobra.png": [2, 3, 1],
-            "000wizard.png": [3, 2, 1],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "arcane_super",
-        baseBias: 0.14,
-        towers: ["000farm.png", "000wizard.png", "000super.png"],
-        boosts: ["towerboost.png", "ecoboost.png"],
-        placementProfile: "safe",
-        rushRound: 24,
-        rushMoney: 6000,
-        ecoFloor: 4200,
-        rushBias: 0.28,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000wizard.png": "core",
-            "000super.png": "elite",
-        },
-        buildPlan: [
-            { round: 1, image: "000wizard.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 300 },
-            { round: 22, image: "000wizard.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 28, image: "000super.png", maxCount: 1, role: "elite", buffer: 0 },
-            { round: 34, image: "000farm.png", maxCount: 3, role: "farm", buffer: 500 },
-            { round: 40, image: "000super.png", maxCount: 2, role: "elite", buffer: 3000 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000wizard.png": [3, 2, 1],
-            "000super.png": [3, 2, 1],
-        },
-    },
-    {
-        id: "artillery_grid",
-        baseBias: 0.17,
-        towers: ["000farm.png", "000mortar.png", "000bomb.png"],
-        boosts: ["towerboost.png", "slowboost.png"],
-        placementProfile: "safe",
-        rushRound: 19,
-        rushMoney: 4300,
-        ecoFloor: 3000,
-        rushBias: 0.44,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000mortar.png": "core",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000mortar.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 6, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 12, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 250 },
-            { round: 20, image: "000mortar.png", maxCount: 2, role: "core", buffer: 350 },
-            { round: 28, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 400 },
-            { round: 36, image: "000mortar.png", maxCount: 3, role: "core", buffer: 1400 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000mortar.png": [2, 1, 3],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "laser_lane",
-        baseBias: 0.16,
-        towers: ["000farm.png", "000dartling.png", "000wizard.png"],
-        boosts: ["towerboost.png", "ecoboost.png"],
-        placementProfile: "balanced",
-        rushRound: 18,
-        rushMoney: 4000,
-        ecoFloor: 3200,
-        rushBias: 0.52,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000dartling.png": "core",
-            "000wizard.png": "support",
-        },
-        buildPlan: [
-            { round: 1, image: "000dartling.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 9, image: "000wizard.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 22, image: "000dartling.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 28, image: "000wizard.png", maxCount: 2, role: "support", buffer: 500 },
-            { round: 36, image: "000dartling.png", maxCount: 3, role: "core", buffer: 1200 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000dartling.png": [2, 1, 3],
-            "000wizard.png": [3, 2, 1],
-        },
-    },
-    {
-        id: "engineer_shells",
-        baseBias: 0.12,
-        towers: ["000farm.png", "000engi.png", "000bomb.png"],
-        boosts: ["towerboost.png", "lightningboost.png"],
-        placementProfile: "spread",
-        rushRound: 21,
-        rushMoney: 4700,
-        ecoFloor: 3300,
-        rushBias: 0.38,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000engi.png": "core",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000engi.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 6, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 12, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 250 },
-            { round: 22, image: "000engi.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 28, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 400 },
-            { round: 36, image: "000engi.png", maxCount: 3, role: "core", buffer: 1400 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000engi.png": [1, 3, 2],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "boomer_pressure",
-        baseBias: 0.13,
-        towers: ["000farm.png", "000boomer.png", "000wizard.png"],
-        boosts: ["towerboost.png", "bloonboost.png"],
-        placementProfile: "aggressive",
-        rushRound: 17,
-        rushMoney: 3600,
-        ecoFloor: 2800,
-        rushBias: 0.66,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000boomer.png": "core",
-            "000wizard.png": "support",
-        },
-        buildPlan: [
-            { round: 1, image: "000boomer.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 9, image: "000wizard.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 17, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 20, image: "000boomer.png", maxCount: 2, role: "core", buffer: 200 },
-            { round: 28, image: "000wizard.png", maxCount: 2, role: "support", buffer: 500 },
-            { round: 36, image: "000boomer.png", maxCount: 3, role: "core", buffer: 1300 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000boomer.png": [1, 2, 3],
-            "000wizard.png": [3, 2, 1],
-        },
-    },
-    {
-        id: "tack_shells",
-        baseBias: 0.11,
-        towers: ["000farm.png", "000tack.png", "000bomb.png"],
-        boosts: ["towerboost.png", "lightningboost.png"],
-        placementProfile: "balanced",
-        rushRound: 17,
-        rushMoney: 3600,
-        ecoFloor: 2900,
-        rushBias: 0.6,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000tack.png": "core",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000tack.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 11, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 17, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 20, image: "000tack.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 26, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 350 },
-            { round: 34, image: "000tack.png", maxCount: 3, role: "core", buffer: 1100 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000tack.png": [1, 2, 3],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "frost_shells",
-        baseBias: 0.1,
-        towers: ["000farm.png", "000ice.png", "000bomb.png"],
-        boosts: ["towerboost.png", "slowboost.png"],
-        placementProfile: "safe",
-        rushRound: 19,
-        rushMoney: 4100,
-        ecoFloor: 3000,
-        rushBias: 0.42,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000ice.png": "support",
-            "000bomb.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000ice.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 6, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 12, image: "000bomb.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 250 },
-            { round: 22, image: "000ice.png", maxCount: 2, role: "support", buffer: 250 },
-            { round: 28, image: "000bomb.png", maxCount: 2, role: "antiMoab", buffer: 400 },
-            { round: 36, image: "000ice.png", maxCount: 3, role: "support", buffer: 1200 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000ice.png": [1, 3, 2],
-            "000bomb.png": [2, 3, 1],
-        },
-    },
-    {
-        id: "dart_marksman",
-        baseBias: 0.09,
-        towers: ["000farm.png", "000dart.png", "000sniper.png"],
-        boosts: ["towerboost.png", "ecoboost.png"],
-        placementProfile: "spread",
-        rushRound: 20,
-        rushMoney: 4300,
-        ecoFloor: 3200,
-        rushBias: 0.4,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000dart.png": "core",
-            "000sniper.png": "antiMoab",
-        },
-        buildPlan: [
-            { round: 1, image: "000dart.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 10, image: "000sniper.png", maxCount: 1, role: "antiMoab", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 22, image: "000dart.png", maxCount: 2, role: "core", buffer: 200 },
-            { round: 28, image: "000sniper.png", maxCount: 2, role: "antiMoab", buffer: 400 },
-            { round: 36, image: "000dart.png", maxCount: 3, role: "core", buffer: 900 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000dart.png": [1, 2, 3],
-            "000sniper.png": [3, 2, 1],
-        },
-    },
-    {
-        id: "sword_arcane",
-        baseBias: 0.1,
-        towers: ["000farm.png", "000sword.png", "000wizard.png"],
-        boosts: ["towerboost.png", "bloonboost.png"],
-        placementProfile: "aggressive",
-        rushRound: 18,
-        rushMoney: 3800,
-        ecoFloor: 2900,
-        rushBias: 0.62,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000sword.png": "elite",
-            "000wizard.png": "support",
-        },
-        buildPlan: [
-            { round: 1, image: "000sword.png", maxCount: 1, role: "elite", buffer: 0 },
-            { round: 5, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 9, image: "000wizard.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 22, image: "000sword.png", maxCount: 2, role: "elite", buffer: 250 },
-            { round: 28, image: "000wizard.png", maxCount: 2, role: "support", buffer: 400 },
-            { round: 36, image: "000sword.png", maxCount: 3, role: "elite", buffer: 1200 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000sword.png": [3, 2, 1],
-            "000wizard.png": [3, 2, 1],
-        },
-    },
-    {
-        id: "tack_shadow",
-        baseBias: 0.09,
-        towers: ["000farm.png", "000tack.png", "000ninja.png"],
-        boosts: ["lightningboost.png", "bloonboost.png"],
-        placementProfile: "aggressive",
-        rushRound: 16,
-        rushMoney: 3400,
-        ecoFloor: 2700,
-        rushBias: 0.7,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000tack.png": "core",
-            "000ninja.png": "support",
-        },
-        buildPlan: [
-            { round: 1, image: "000tack.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 4, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 9, image: "000ninja.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 16, image: "000farm.png", maxCount: 2, role: "farm", buffer: 200 },
-            { round: 20, image: "000tack.png", maxCount: 2, role: "core", buffer: 150 },
-            { round: 26, image: "000ninja.png", maxCount: 2, role: "support", buffer: 350 },
-            { round: 34, image: "000tack.png", maxCount: 3, role: "core", buffer: 900 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000tack.png": [1, 2, 3],
-            "000ninja.png": [1, 3, 2],
-        },
-    },
-    {
-        id: "ice_arcane",
-        baseBias: 0.08,
-        towers: ["000farm.png", "000ice.png", "000wizard.png"],
-        boosts: ["slowboost.png", "lightningboost.png"],
-        placementProfile: "safe",
-        rushRound: 20,
-        rushMoney: 4200,
-        ecoFloor: 3100,
-        rushBias: 0.33,
-        placementRoles: {
-            "000farm.png": "farm",
-            "000ice.png": "support",
-            "000wizard.png": "core",
-        },
-        buildPlan: [
-            { round: 1, image: "000wizard.png", maxCount: 1, role: "core", buffer: 0 },
-            { round: 6, image: "000farm.png", maxCount: 1, role: "farm", buffer: 0 },
-            { round: 10, image: "000ice.png", maxCount: 1, role: "support", buffer: 0 },
-            { round: 18, image: "000farm.png", maxCount: 2, role: "farm", buffer: 250 },
-            { round: 22, image: "000wizard.png", maxCount: 2, role: "core", buffer: 250 },
-            { round: 28, image: "000ice.png", maxCount: 2, role: "support", buffer: 350 },
-            { round: 36, image: "000wizard.png", maxCount: 3, role: "core", buffer: 1200 },
-        ],
-        upgradePrefs: {
-            "000farm.png": [3, 2, 1],
-            "000ice.png": [1, 3, 2],
-            "000wizard.png": [3, 2, 1],
-        },
-    },
+    { id: "arcane_banks", towers: ["000farm.png", "000wizard.png", "000bomb.png"], boosts: ["towerboost.png", "bloonboost.png"] },
+    { id: "shadow_stall", towers: ["000farm.png", "000ninja.png", "000bomb.png"], boosts: ["towerboost.png", "lightningboost.png"] },
+    { id: "sniper_econ", towers: ["000farm.png", "000sniper.png", "000bomb.png"], boosts: ["towerboost.png", "ecoboost.png"] },
+    { id: "cobra_punish", towers: ["000cobra.png", "000wizard.png", "000bomb.png"], boosts: ["slowboost.png", "bloonboost.png"] },
+    { id: "arcane_super", towers: ["000farm.png", "000wizard.png", "000super.png"], boosts: ["towerboost.png", "ecoboost.png"] },
+    { id: "artillery_grid", towers: ["000farm.png", "000mortar.png", "000bomb.png"], boosts: ["towerboost.png", "slowboost.png"] },
+    { id: "laser_lane", towers: ["000farm.png", "000dartling.png", "000wizard.png"], boosts: ["towerboost.png", "ecoboost.png"] },
+    { id: "engineer_shells", towers: ["000farm.png", "000engi.png", "000bomb.png"], boosts: ["towerboost.png", "lightningboost.png"] },
+    { id: "boomer_pressure", towers: ["000farm.png", "000boomer.png", "000wizard.png"], boosts: ["towerboost.png", "bloonboost.png"] },
+    { id: "tack_shells", towers: ["000farm.png", "000tack.png", "000bomb.png"], boosts: ["towerboost.png", "lightningboost.png"] },
+    { id: "frost_shells", towers: ["000farm.png", "000ice.png", "000bomb.png"], boosts: ["towerboost.png", "slowboost.png"] },
+    { id: "dart_marksman", towers: ["000farm.png", "000dart.png", "000sniper.png"], boosts: ["towerboost.png", "ecoboost.png"] },
+    { id: "sword_arcane", towers: ["000farm.png", "000sword.png", "000wizard.png"], boosts: ["towerboost.png", "bloonboost.png"] },
+    { id: "tack_shadow", towers: ["000farm.png", "000tack.png", "000ninja.png"], boosts: ["lightningboost.png", "bloonboost.png"] },
+    { id: "ice_arcane", towers: ["000farm.png", "000ice.png", "000wizard.png"], boosts: ["slowboost.png", "lightningboost.png"] },
 ]
-function cloneAIStrategyVariant(strategy) {
-    return JSON.parse(JSON.stringify(strategy))
-}
-
-function adjustAIStrategyBuildPlan(strategy, roundDelta, farmBufferDelta, combatBufferDelta) {
-    for(var i = 0; i < strategy.buildPlan.length; i++) {
-        strategy.buildPlan[i].round = Math.max(1, strategy.buildPlan[i].round + roundDelta)
-        if(strategy.buildPlan[i].role == "farm") {
-            strategy.buildPlan[i].buffer = Math.max(0, strategy.buildPlan[i].buffer + farmBufferDelta)
-        } else {
-            strategy.buildPlan[i].buffer = Math.max(0, strategy.buildPlan[i].buffer + combatBufferDelta)
-        }
-    }
-}
-
-function getAIStrategyVariantBoosts(baseStrategy, variantType) {
-    if(variantType == "greedy") {
-        return ["towerboost.png", "ecoboost.png"]
-    }
-    if(variantType == "pressure") {
-        return baseStrategy.towers.indexOf("000cobra.png") != -1 ? ["slowboost.png", "bloonboost.png"] : ["towerboost.png", "bloonboost.png"]
-    }
-    if(variantType == "defensive") {
-        return baseStrategy.towers.indexOf("000ice.png") != -1 || baseStrategy.towers.indexOf("000bomb.png") != -1 ? ["towerboost.png", "lightningboost.png"] : ["towerboost.png", "slowboost.png"]
-    }
-    return baseStrategy.boosts.slice(0)
-}
 
 function createAIStrategyVariant(baseStrategy, variantType) {
-    var strategy = cloneAIStrategyVariant(baseStrategy)
-    strategy.id = baseStrategy.id + "_" + variantType
-
-    if(variantType == "greedy") {
-        strategy.baseBias += 0.015
-        strategy.placementProfile = "safe"
-        strategy.rushRound += 2
-        strategy.rushMoney += 1100
-        strategy.ecoFloor += 700
-        strategy.rushBias = Math.max(0.1, strategy.rushBias - 0.2)
-        strategy.boosts = getAIStrategyVariantBoosts(baseStrategy, variantType)
-        adjustAIStrategyBuildPlan(strategy, 1, 250, 100)
-    } else if(variantType == "pressure") {
-        strategy.baseBias += 0.01
-        strategy.placementProfile = "aggressive"
-        strategy.rushRound = Math.max(10, strategy.rushRound - 2)
-        strategy.rushMoney = Math.max(1800, strategy.rushMoney - 1000)
-        strategy.ecoFloor = Math.max(1800, strategy.ecoFloor - 500)
-        strategy.rushBias = Math.min(1.15, strategy.rushBias + 0.18)
-        strategy.boosts = getAIStrategyVariantBoosts(baseStrategy, variantType)
-        adjustAIStrategyBuildPlan(strategy, -1, -100, -120)
-    } else if(variantType == "defensive") {
-        strategy.baseBias += 0.008
-        strategy.placementProfile = strategy.placementProfile == "aggressive" ? "balanced" : "safe"
-        strategy.rushRound += 1
-        strategy.rushMoney += 500
-        strategy.ecoFloor += 250
-        strategy.rushBias = Math.max(0.15, strategy.rushBias - 0.08)
-        strategy.boosts = getAIStrategyVariantBoosts(baseStrategy, variantType)
-        adjustAIStrategyBuildPlan(strategy, 0, 100, 120)
-    } else if(variantType == "tempo") {
-        strategy.baseBias += 0.006
-        strategy.placementProfile = baseStrategy.placementProfile == "safe" ? "balanced" : baseStrategy.placementProfile
-        strategy.rushRound = Math.max(10, strategy.rushRound - 1)
-        strategy.rushMoney = Math.max(1800, strategy.rushMoney - 350)
-        strategy.ecoFloor += 100
-        strategy.rushBias = Math.min(1.1, strategy.rushBias + 0.08)
-        strategy.boosts = getAIStrategyVariantBoosts(baseStrategy, variantType)
-        adjustAIStrategyBuildPlan(strategy, 0, 50, -40)
+    return {
+        id: baseStrategy.id + "_" + variantType,
+        towers: baseStrategy.towers.slice(0),
+        boosts: baseStrategy.boosts.slice(0),
     }
-
-    return strategy
 }
 
 var aiBaseStrategiesForVariants = AI_STRATEGY_LIBRARY.slice(0)
@@ -684,28 +190,6 @@ for(var aiBaseStrategyIndex = 0; aiBaseStrategyIndex < aiBaseStrategiesForVarian
     AI_STRATEGY_LIBRARY.push(createAIStrategyVariant(aiBaseStrategiesForVariants[aiBaseStrategyIndex], "tempo"))
 }
 
-var AI_PLACEMENT_PROFILES = {
-    balanced: {
-        farmAnchorY: 0.17,
-        farmOffsets: [{ x: 0, y: 0 }, { x: 88, y: 0 }, { x: 0, y: 88 }, { x: 88, y: 88 }, { x: 176, y: 0 }, { x: 0, y: 176 }],
-        roleY: { core: [0.5, 0.38, 0.62], antiMoab: [0.62, 0.5, 0.36], support: [0.68, 0.54, 0.4], elite: [0.56, 0.7, 0.44] },
-    },
-    spread: {
-        farmAnchorY: 0.16,
-        farmOffsets: [{ x: 0, y: 0 }, { x: 96, y: 16 }, { x: 24, y: 108 }, { x: 120, y: 100 }, { x: 200, y: 8 }, { x: 112, y: 192 }],
-        roleY: { core: [0.36, 0.64, 0.5], antiMoab: [0.56, 0.72, 0.42], support: [0.28, 0.58, 0.44], elite: [0.62, 0.46, 0.78] },
-    },
-    safe: {
-        farmAnchorY: 0.14,
-        farmOffsets: [{ x: 0, y: 0 }, { x: 76, y: 0 }, { x: 0, y: 92 }, { x: 76, y: 92 }, { x: 152, y: 0 }, { x: 0, y: 184 }],
-        roleY: { core: [0.62, 0.74, 0.5], antiMoab: [0.68, 0.54, 0.4], support: [0.76, 0.62, 0.48], elite: [0.58, 0.72, 0.44] },
-    },
-    aggressive: {
-        farmAnchorY: 0.2,
-        farmOffsets: [{ x: 0, y: 0 }, { x: 92, y: 0 }, { x: 0, y: 78 }, { x: 92, y: 78 }, { x: 184, y: 0 }, { x: 0, y: 156 }],
-        roleY: { core: [0.36, 0.48, 0.6], antiMoab: [0.44, 0.56, 0.68], support: [0.32, 0.44, 0.58], elite: [0.48, 0.62, 0.74] },
-    },
-}
 var AI_PLACEMENT_GRID_X = 7
 var AI_PLACEMENT_GRID_Y = 6
 var AI_CROSSPATH_CONTEXT_KEYS = ["balanced", "swarm", "heavy", "greed", "pressure"]
@@ -918,6 +402,10 @@ function resetAIProfile() {
     aiProfile.explorationEnabled = false
     aiProfile.pendingTacticalDecision = null
     aiProfile.tacticalTrace = []
+    aiProfile.placementOutcomes = {}
+    aiProfile.placementSamples = []
+    aiProfile.observedLivesBySide = {}
+    aiProfile.observedLivesLostBySide = {}
     aiProfile.decisionMemory = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
     aiDecisionStateCache = null
     aiTickState.lastLogicAt = gameNow()
@@ -1263,6 +751,19 @@ function getAILoadoutExplorationBonus(loadoutKey) {
     return Math.sqrt(Math.log(totalSamples + 1) / Math.max(1, games + 1)) * 0.42
 }
 
+function getAILoadoutCoverageBonus(loadoutKey) {
+    if(!aiProfile || aiProfile.explorationEnabled == false) {
+        return 0
+    }
+    var record = peekAILoadoutStatsRecord(loadoutKey)
+    if(!record || Math.max(0, Number(record.games) || 0) == 0) {
+        // Sample every legal loadout before policy noise can favor a small
+        // familiar subset indefinitely.
+        return 2.25
+    }
+    return 0
+}
+
 function getAILoadoutCounterHeuristicBonus(loadoutSummary, observedLoadoutSummary) {
     if(!observedLoadoutSummary || observedLoadoutSummary.hasAnySelection == false) {
         return loadoutSummary.eco * 0.08 + loadoutSummary.support * 0.04 + loadoutSummary.late * 0.03
@@ -1338,10 +839,14 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
             maxIndex: Math.max(1, candidateLimit - 1),
             count: summary.filledTowerSlots + summary.filledBoostSlots,
             countScale: 5,
+            loadoutSummary: summary,
             capabilityFacts: getAILoadoutCapabilityFacts(entry.loadout.towers, entry.loadout.boosts, 0),
         }, null, stateFeatures)
         entry.decision.counterLearningBonus = getAILoadoutCounterLearningBonus(entry.loadout.key, observedLoadoutSummary)
-        entry.decision.score += entry.decision.counterLearningBonus
+        entry.decision.performanceBonus = getAILoadoutPerformanceBonus(entry.loadout.key)
+        entry.decision.explorationBonus = getAILoadoutExplorationBonus(entry.loadout.key)
+        entry.decision.coverageBonus = getAILoadoutCoverageBonus(entry.loadout.key)
+        entry.decision.score += entry.decision.counterLearningBonus + entry.decision.performanceBonus + entry.decision.explorationBonus + entry.decision.coverageBonus
         if(!bestEntry || isAIDecisionScoreBetter(entry.decision, bestEntry.decision)) {
             bestEntry = entry
         }
@@ -1357,180 +862,14 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
     }
 }
 
-function getDefaultAIUpgradePriorityForTowerType(towerType) {
-    if(towerType == "farm") return [3, 2, 1]
-    if(towerType == "wizard") return [3, 2, 1]
-    if(towerType == "bomb") return [2, 3, 1]
-    if(towerType == "mortar") return [2, 1, 3]
-    if(towerType == "dartling") return [1, 2, 3]
-    if(towerType == "ninja") return [1, 3, 2]
-    if(towerType == "sniper") return [3, 2, 1]
-    if(towerType == "engi") return [1, 3, 2]
-    if(towerType == "boomer") return [1, 2, 3]
-    if(towerType == "super") return [3, 2, 1]
-    if(towerType == "cobra") return [2, 3, 1]
-    if(towerType == "tack") return [1, 2, 3]
-    if(towerType == "ice") return [1, 3, 2]
-    if(towerType == "sword") return [3, 2, 1]
-    if(towerType == "buccaneer") return [3, 2, 1]
-    if(towerType == "dart") return [1, 2, 3]
-    return [1, 2, 3]
-}
-
-function scoreAILoadoutRoleForTowerType(towerType, role) {
-    if(role == "farm") {
-        return towerType == "farm" ? 3 : -100
-    }
-    if(role == "elite") {
-        if(towerType == "super") return 3
-        if(towerType == "sword") return 2.6
-        if(towerType == "dartling") return 1.8
-    }
-    if(role == "antiMoab") {
-        if(towerType == "bomb") return 3
-        if(towerType == "sniper") return 2.7
-        if(towerType == "mortar") return 2.6
-        if(towerType == "super") return 2.5
-        if(towerType == "sword") return 2.35
-        if(towerType == "dartling") return 2.2
-        if(towerType == "boomer") return 1.7
-        if(towerType == "buccaneer") return 1.6
-    }
-    if(role == "support") {
-        if(towerType == "cobra") return 3
-        if(towerType == "engi") return 2.8
-        if(towerType == "ice") return 2.5
-        if(towerType == "ninja") return 2.2
-        if(towerType == "sniper") return 2
-        if(towerType == "wizard") return 1.8
-        if(towerType == "farm") return 1.6
-    }
-    if(role == "core") {
-        if(towerType == "dartling") return 3
-        if(towerType == "tack") return 2.8
-        if(towerType == "wizard") return 2.7
-        if(towerType == "boomer") return 2.6
-        if(towerType == "dart") return 2.2
-        if(towerType == "ninja") return 2.15
-        if(towerType == "buccaneer") return 2.1
-        if(towerType == "sword") return 2
-        if(towerType == "bomb") return 1.9
-        if(towerType == "ice") return 1.5
-        if(towerType == "sniper") return 1.45
-        if(towerType == "cobra") return 1.3
-        if(towerType == "farm") return 0.4
-    }
-    return 0
-}
-
-function buildAIPlacementRolesForLoadout(loadout) {
-    var roles = {}
-    var remainingImages = loadout.towers.slice(0)
-    for(var i = remainingImages.length - 1; i >= 0; i--) {
-        if(getTowerTypeFromImage(remainingImages[i]) == "farm") {
-            roles[remainingImages[i]] = "farm"
-            remainingImages.splice(i, 1)
-        }
-    }
-    var roleOrder = ["elite", "antiMoab", "support", "core"]
-    for(var roleIndex = 0; roleIndex < roleOrder.length; roleIndex++) {
-        var bestImage = ""
-        var bestScore = -Infinity
-        for(var imageIndex = 0; imageIndex < remainingImages.length; imageIndex++) {
-            var towerType = getTowerTypeFromImage(remainingImages[imageIndex])
-            var roleScore = scoreAILoadoutRoleForTowerType(towerType, roleOrder[roleIndex])
-            if(roleScore > bestScore) {
-                bestScore = roleScore
-                bestImage = remainingImages[imageIndex]
-            }
-        }
-        if(bestImage) {
-            roles[bestImage] = roleOrder[roleIndex]
-            remainingImages.splice(remainingImages.indexOf(bestImage), 1)
-        }
-    }
-    for(var remainingIndex = 0; remainingIndex < remainingImages.length; remainingIndex++) {
-        roles[remainingImages[remainingIndex]] = "core"
-    }
-    var hasCore = false
-    for(var image in roles) {
-        if(roles[image] == "core") {
-            hasCore = true
-            break
-        }
-    }
-    if(hasCore == false) {
-        for(var fallbackImage in roles) {
-            if(roles[fallbackImage] != "farm") {
-                roles[fallbackImage] = "core"
-                break
-            }
-        }
-    }
-    return roles
-}
-
-function createAIBuildPlanForLoadout(loadout, runtimeStrategy) {
-    var roles = runtimeStrategy.placementRoles
-    var farms = []
-    var cores = []
-    var supports = []
-    var antiMoabs = []
-    var elites = []
-    for(var i = 0; i < loadout.towers.length; i++) {
-        var image = loadout.towers[i]
-        var role = roles[image] || "core"
-        if(role == "farm") {
-            farms.push(image)
-        } else if(role == "support") {
-            supports.push(image)
-        } else if(role == "antiMoab") {
-            antiMoabs.push(image)
-        } else if(role == "elite") {
-            elites.push(image)
-        } else {
-            cores.push(image)
-        }
-    }
-    var plan = []
-    function pushStep(roundNumber, image, maxCount, role, buffer) {
-        if(!image) {
-            return
-        }
-        plan.push({ round: roundNumber, image: image, maxCount: maxCount, role: role, buffer: buffer })
-    }
-    pushStep(1, cores[0] || elites[0] || supports[0] || antiMoabs[0], 1, cores[0] ? "core" : elites[0] ? "elite" : supports[0] ? "support" : "antiMoab", 0)
-    pushStep(5, farms[0], 1, "farm", 0)
-    pushStep(9, supports[0] && supports[0] != cores[0] ? supports[0] : antiMoabs[0] && antiMoabs[0] != cores[0] ? antiMoabs[0] : elites[0] && elites[0] != cores[0] ? elites[0] : "", supports[0] ? 1 : antiMoabs[0] ? 1 : elites[0] ? 1 : 0, supports[0] ? "support" : antiMoabs[0] ? "antiMoab" : "elite", 0)
-    pushStep(10, farms[0], 2, "farm", 150)
-    pushStep(12, antiMoabs[0] && antiMoabs[0] != cores[0] && antiMoabs[0] != supports[0] ? antiMoabs[0] : "", 1, "antiMoab", 0)
-    pushStep(20, cores[0], 2, "core", 250)
-    pushStep(26, supports[0] && supports[0] != cores[0] ? supports[0] : antiMoabs[0] && antiMoabs[0] != cores[0] ? antiMoabs[0] : elites[0] && elites[0] != cores[0] ? elites[0] : "", 2, supports[0] ? "support" : antiMoabs[0] ? "antiMoab" : "elite", 350)
-    pushStep(32, elites[0] && elites[0] != cores[0] ? elites[0] : "", 2, "elite", 900)
-    pushStep(36, cores[0], 3, "core", 1100)
-    return plan
-}
-
 function createAIRuntimeStrategyForLoadout(loadout, archetype, observedLoadoutSummary) {
-    var runtimeStrategy = cloneAIStrategyVariant(archetype)
+    var runtimeStrategy = {
+        id: archetype && archetype.id ? archetype.id : loadout.key,
+    }
     runtimeStrategy.loadoutKey = loadout.key
     runtimeStrategy.loadoutSummary = loadout.summary
     runtimeStrategy.towers = loadout.towers.slice(0)
     runtimeStrategy.boosts = loadout.boosts.slice(0)
-    runtimeStrategy.placementRoles = buildAIPlacementRolesForLoadout(loadout)
-    runtimeStrategy.upgradePrefs = {}
-    for(var i = 0; i < runtimeStrategy.towers.length; i++) {
-        var image = runtimeStrategy.towers[i]
-        runtimeStrategy.upgradePrefs[image] = getDefaultAIUpgradePriorityForTowerType(getTowerTypeFromImage(image))
-    }
-    runtimeStrategy.buildPlan = createAIBuildPlanForLoadout(loadout, runtimeStrategy)
-    runtimeStrategy.rushBias = clamp(archetype.rushBias * 0.72 + loadout.summary.pressure * 0.28 + loadout.summary.offenseBoost * 0.08 - loadout.summary.eco * 0.06, 0.12, 1.15)
-    runtimeStrategy.rushRound = Math.max(10, Math.round(archetype.rushRound * 0.72 + (18 - loadout.summary.pressure * 6) * 0.28 - loadout.summary.offenseBoost * 2 + loadout.summary.late * 2))
-    runtimeStrategy.rushMoney = Math.max(1800, Math.round(archetype.rushMoney * (0.84 + loadout.summary.heavy * 0.12 + loadout.summary.late * 0.08)))
-    runtimeStrategy.ecoFloor = Math.max(1800, Math.round(archetype.ecoFloor * (0.88 + loadout.summary.eco * 0.16 + loadout.summary.support * 0.06 - loadout.summary.pressure * 0.04)))
-    if(observedLoadoutSummary && observedLoadoutSummary.hasAnySelection && observedLoadoutSummary.pressure >= 0.55 && loadout.summary.defenseBoost >= 0.35) {
-        runtimeStrategy.ecoFloor += 250
-    }
     return runtimeStrategy
 }
 
@@ -1574,6 +913,11 @@ function createDefaultAIStrategyPolicy(outputBias) {
 }
 
 function createDefaultAIDecisionPolicy() {
+    // Keep first 80 columns deterministic as in schema 12 for test stability; extra 32 for 112 are zero-started and learned.
+    var baseWState1 = aiCreateDeterministicMatrix(AI_DECISION_STATE_HIDDEN_SIZE, 80, 0.08, 11)
+    var baseWCandidate1 = aiCreateDeterministicMatrix(AI_DECISION_CANDIDATE_HIDDEN_SIZE, 80, 0.09, 37)
+    for(var r = 0; r < baseWState1.length; r++) baseWState1[r] = baseWState1[r].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 80, 0))
+    for(var r2 = 0; r2 < baseWCandidate1.length; r2++) baseWCandidate1[r2] = baseWCandidate1[r2].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 80, 0))
     return {
         stateInputSize: AI_DECISION_STATE_INPUT_SIZE,
         candidateInputSize: AI_DECISION_CANDIDATE_INPUT_SIZE,
@@ -1583,11 +927,11 @@ function createDefaultAIDecisionPolicy() {
         memorySize: AI_DECISION_MEMORY_SIZE,
         survivalClassCount: AI_DECISION_SURVIVAL_CLASS_COUNT,
         trainingSamples: aiCreateVector(AI_DECISION_FAMILY_COUNT, 0),
-        WState1: aiCreateDeterministicMatrix(AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE, 0.08, 11),
+        WState1: baseWState1,
         bState1: aiCreateVector(AI_DECISION_STATE_HIDDEN_SIZE, 0),
         WState2: aiCreateDeterministicMatrix(AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE, 0.07, 23),
         bState2: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
-        WCandidate1: aiCreateDeterministicMatrix(AI_DECISION_CANDIDATE_HIDDEN_SIZE, AI_DECISION_CANDIDATE_INPUT_SIZE, 0.09, 37),
+        WCandidate1: baseWCandidate1,
         bCandidate1: aiCreateVector(AI_DECISION_CANDIDATE_HIDDEN_SIZE, 0),
         WCandidate2: aiCreateDeterministicMatrix(AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE, 0.07, 53),
         bCandidate2: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
@@ -1728,7 +1072,7 @@ function getAIPolicyParameterCount(policy) {
 function createDefaultPolicyOutputBias() {
     var outputBias = []
     for(var i = 0; i < AI_STRATEGY_LIBRARY.length; i++) {
-        outputBias.push(AI_STRATEGY_LIBRARY[i].baseBias)
+        outputBias.push(0)
     }
     return outputBias
 }
@@ -1769,6 +1113,16 @@ function isValidAISchema11Policy(policy) {
     return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
 }
 
+function isValidAISchema12Decision(decision) {
+    return isValidAIFullDecisionForInputSizes(decision, 80, 80)
+}
+
+function isValidAISchema12Policy(policy) {
+    if(!policy || policy.formatVersion != 2 || !policy.strategy || !isValidAISchema12Decision(policy.decision)) return false
+    var strategy = policy.strategy
+    return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
+}
+
 function migrateAISchema11Decision(oldDecision) {
     var decision = createDefaultAIDecisionPolicy()
     decision.trainingSamples = oldDecision.trainingSamples.slice(0)
@@ -1780,6 +1134,33 @@ function migrateAISchema11Decision(oldDecision) {
     decision.bState2 = oldDecision.bState2.slice(0)
     for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
         decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 64, 0))
+    }
+    decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
+    decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
+    decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
+    decision.WStateToMemory = cloneAIMatrix(oldDecision.WStateToMemory)
+    decision.WMemoryToMemory = cloneAIMatrix(oldDecision.WMemoryToMemory)
+    decision.bMemory = oldDecision.bMemory.slice(0)
+    decision.WMemoryToState = cloneAIMatrix(oldDecision.WMemoryToState)
+    decision.WValue = oldDecision.WValue.slice(0)
+    decision.bValue = oldDecision.bValue
+    decision.WSurvival = cloneAIMatrix(oldDecision.WSurvival)
+    decision.bSurvival = oldDecision.bSurvival.slice(0)
+    decision.familyBias = oldDecision.familyBias.slice(0)
+    return decision
+}
+
+function migrateAISchema12Decision(oldDecision) {
+    var decision = createDefaultAIDecisionPolicy()
+    decision.trainingSamples = oldDecision.trainingSamples.slice(0)
+    for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) {
+        decision.WState1[stateRow] = oldDecision.WState1[stateRow].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 80, 0))
+    }
+    decision.bState1 = oldDecision.bState1.slice(0)
+    decision.WState2 = cloneAIMatrix(oldDecision.WState2)
+    decision.bState2 = oldDecision.bState2.slice(0)
+    for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
+        decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 80, 0))
     }
     decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
     decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
@@ -1840,6 +1221,13 @@ function migrateAIPolicy(candidatePolicy) {
     }
 
     var migrated = createDefaultAIPolicy(outputBias)
+    if(isValidAISchema12Policy(candidatePolicy)) {
+        migrated.strategyLearningRate = candidatePolicy.strategyLearningRate
+        migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
+        migrated.strategy = JSON.parse(JSON.stringify(candidatePolicy.strategy))
+        migrated.decision = migrateAISchema12Decision(candidatePolicy.decision)
+        return migrated
+    }
     if(isValidAISchema11Policy(candidatePolicy)) {
         migrated.strategyLearningRate = candidatePolicy.strategyLearningRate
         migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
@@ -2634,46 +2022,6 @@ function getStrategyPerformanceBonus(index) {
     return clamp((stats.wins - stats.losses) / Math.max(1, stats.games) * 0.18, -0.22, 0.22)
 }
 
-function getStrategyLoadoutCounterHeuristicBonus(strategy, observedLoadoutSummary) {
-    if(!observedLoadoutSummary || observedLoadoutSummary.hasAnySelection == false) {
-        return 0
-    }
-
-    var strategySummary = summarizeLoadoutSelection(strategy.towers, strategy.boosts)
-    var bonus = 0
-    bonus += observedLoadoutSummary.eco * (strategy.rushBias * 0.46 + strategySummary.pressure * 0.28 + strategySummary.offenseBoost * 0.22)
-    bonus += observedLoadoutSummary.ecoBoost * (strategy.rushBias * 0.28 + strategySummary.pressure * 0.2)
-    bonus += observedLoadoutSummary.late * (strategy.rushBias * 0.34 + strategySummary.pressure * 0.2 - strategySummary.eco * 0.1)
-    bonus += observedLoadoutSummary.pressure * (strategySummary.defenseBoost * 0.38 + strategySummary.heavy * 0.26 + strategySummary.camo * 0.08 - strategySummary.eco * 0.18)
-    bonus += observedLoadoutSummary.offenseBoost * (strategySummary.defenseBoost * 0.34 + strategySummary.heavy * 0.16 - strategySummary.eco * 0.12)
-    bonus += observedLoadoutSummary.heavy * (strategySummary.heavy * 0.36 + strategySummary.late * 0.12)
-    bonus += observedLoadoutSummary.camo * (strategySummary.camo * 0.34 + strategySummary.support * 0.08)
-    bonus += observedLoadoutSummary.support * (strategySummary.late * 0.16 + strategySummary.pressure * 0.12)
-    if(strategy.towers.indexOf("000farm.png") != -1 && observedLoadoutSummary.pressure < 0.35 && observedLoadoutSummary.offenseBoost < 0.35) {
-        bonus += 0.12
-    }
-    if(strategy.towers.indexOf("000cobra.png") != -1 && observedLoadoutSummary.eco >= 0.45) {
-        bonus += 0.18
-    }
-    if(strategy.towers.indexOf("000bomb.png") != -1 && observedLoadoutSummary.heavy >= 0.45) {
-        bonus += 0.15
-    }
-    if((strategy.towers.indexOf("000wizard.png") != -1 || strategy.towers.indexOf("000ninja.png") != -1 || strategy.towers.indexOf("000sniper.png") != -1) && observedLoadoutSummary.camo >= 0.45) {
-        bonus += 0.15
-    }
-
-    return bonus * observedLoadoutSummary.selectionRatio
-}
-
-function getLoadoutCounterLearningBonus(strategyIndex, observedLoadoutSummary) {
-    ensureAILearningLoaded()
-    if(!observedLoadoutSummary || observedLoadoutSummary.hasAnySelection == false || observedLoadoutSummary.signature == "||") {
-        return 0
-    }
-
-    return getAILearningScore(aiLearning.loadoutCounterStats, getLoadoutCounterStatKey(observedLoadoutSummary.signature, strategyIndex)) * (0.55 + observedLoadoutSummary.selectionRatio * 0.35)
-}
-
 function getAIPolicyForDecision() {
     ensureAILearningLoaded()
     if(aiProfile && isValidAIPolicy(aiProfile.policySnapshot)) {
@@ -2813,6 +2161,42 @@ function summarizeAIDecisionEntities(side) {
     ]
 }
 
+function getAISideFarmBankTotal(side) {
+    if(typeof towers == "undefined" || Array.isArray(towers) == false) return 0
+    var total = 0
+    for(var i = 0; i < towers.length; i++) {
+        var tower = towers[i]
+        if(!tower || tower.playerSide != side || tower.towerType != "farm" || tower.path2Upgrades < 3) continue
+        total += Math.max(0, Number(tower.towerVar) || 0)
+    }
+    return total
+}
+
+function getAISideBananaCashTotal(side) {
+    if(typeof bananas == "undefined" || Array.isArray(bananas) == false) return 0
+    var total = 0
+    for(var i = 0; i < bananas.length; i++) {
+        var banana = bananas[i]
+        if(!banana || banana.playerSide != side) continue
+        total += Math.max(0, Number(banana.cashGiven) || 0)
+    }
+    return total
+}
+
+function getAISideBananaExpiryAvg(side) {
+    if(typeof bananas == "undefined" || Array.isArray(bananas) == false) return 0
+    var total = 0
+    var count = 0
+    var now = typeof gameNow == "function" ? gameNow() : 0
+    for(var i = 0; i < bananas.length; i++) {
+        var banana = bananas[i]
+        if(!banana || banana.playerSide != side) continue
+        total += Math.max(0, Number(banana.lifespan) - now)
+        count++
+    }
+    return count > 0 ? total / count : 0
+}
+
 function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeatures) {
     var features = aiCreateVector(AI_DECISION_STATE_INPUT_SIZE, 0)
     if(familyIndex >= 0 && familyIndex < AI_DECISION_FAMILY_COUNT) {
@@ -2849,11 +2233,28 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         aiProfile && aiProfile.currentAction ? 1 : 0,
         clamp(aiProfile && aiProfile.tacticalTrace ? aiProfile.tacticalTrace.length / 128 : 0, 0, 1),
         clamp(typeof bananas != "undefined" && Array.isArray(bananas) ? bananas.length / 24 : 0, 0, 1),
-        clamp(typeof boostCount != "undefined" && Array.isArray(boostCount) ? boostCount.length / 12 : 0, 0, 1),
-        own.autoEco ? 1 : 0,
-        ownLives <= 0 ? 1 : 0,
-        enemyLives <= 0 ? 1 : 0,
+        matchup && matchup.dangerHigh ? 1 : 0,
+        matchup && matchup.safeToGreed ? 1 : 0,
+        typeof roundReady != "undefined" && roundReady ? 1 : 0,
+        typeof roundReady != "undefined" && roundReady && typeof endOfRoundGiven != "undefined" && endOfRoundGiven == false && typeof timeRoundEnded != "undefined" && gameNow() - timeRoundEnded >= 6000 ? 1 : 0,
     ]
+    if(familyIndex != AI_DECISION_FAMILY.loadout) {
+        // Expose stored and collectible economy that the previous state omitted.
+        var ownFarmBank = getAISideFarmBankTotal(side)
+        var enemyFarmBank = getAISideFarmBankTotal(enemySide)
+        var ownBananaCash = getAISideBananaCashTotal(side)
+        var enemyBananaCash = getAISideBananaCashTotal(enemySide)
+        var ownBananaExpiry = getAISideBananaExpiryAvg(side)
+        var economyExtras = [
+            clamp(Math.log1p(ownFarmBank) / Math.log(30001), 0, 1),
+            clamp(Math.log1p(enemyFarmBank) / Math.log(30001), 0, 1),
+            clamp(Math.log1p(ownBananaCash) / Math.log(6001), 0, 1),
+            clamp(Math.log1p(enemyBananaCash) / Math.log(6001), 0, 1),
+            clamp(ownBananaExpiry / 10000, 0, 1),
+            clamp(typeof timeRoundEnded != "undefined" && typeof gameNow == "function" ? Math.max(0, gameNow() - timeRoundEnded) / 6000 : 0, 0, 1),
+        ]
+        for(var economyIndex = 0; economyIndex < economyExtras.length; economyIndex++) values.push(economyExtras[economyIndex])
+    }
     var supplied = Array.isArray(contextFeatures) ? contextFeatures : []
     for(var suppliedIndex = 0; suppliedIndex < supplied.length && suppliedIndex < 13; suppliedIndex++) {
         values.push(clamp(Number(supplied[suppliedIndex]) || 0, 0, 1))
@@ -2863,21 +2264,16 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
     }
     var entityFeatures = summarizeAIDecisionEntities(side).concat(summarizeAIDecisionEntities(enemySide))
     for(var entityIndex = 0; entityIndex < entityFeatures.length; entityIndex++) features[48 + entityIndex] = clampAIDecisionFeature(entityFeatures[entityIndex])
-    var intentFeatures = getAIStrategyIntentFeatures(aiCurrentStrategy)
-    for(var intentIndex = 0; intentIndex < intentFeatures.length; intentIndex++) features[72 + intentIndex] = intentFeatures[intentIndex]
-    return features
-}
-
-function getAIStrategyIntentFeatures(strategy) {
-    var features = aiCreateVector(8, 0)
-    if(!strategy) return features
-    features[0] = clamp((Number(strategy.rushRound) || 0) / 50, 0, 1)
-    features[1] = clamp((Number(strategy.rushMoney) || 0) / 10000, 0, 1)
-    features[2] = clamp((Number(strategy.ecoFloor) || 0) / 10000, 0, 1)
-    features[3] = clamp((Number(strategy.rushBias) || 0) / 1.15, 0, 1)
-    var profiles = ["balanced", "spread", "safe", "aggressive"]
-    var profileIndex = profiles.indexOf(String(strategy.placementProfile || ""))
-    if(profileIndex != -1) features[4 + profileIndex] = 1
+    // 112-dim extension: per-tower-type composition for both sides (32 dims at 80-111) for bit-perfect loadout/tower awareness.
+    var towerTypesForState = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
+    var perTypeBase = 80
+    for(var typeIdx = 0; typeIdx < towerTypesForState.length; typeIdx++) {
+        var towerType = towerTypesForState[typeIdx]
+        var ownTypeCount = typeof getSideTowersByType == "function" ? getSideTowersByType(side, towerType).length : 0
+        var enemyTypeCount = typeof getSideTowersByType == "function" ? getSideTowersByType(enemySide, towerType).length : 0
+        if(perTypeBase + typeIdx < features.length) features[perTypeBase + typeIdx] = clamp(ownTypeCount / 6, 0, 1)
+        if(perTypeBase + 16 + typeIdx < features.length) features[perTypeBase + 16 + typeIdx] = clamp(enemyTypeCount / 6, 0, 1)
+    }
     return features
 }
 
@@ -2961,11 +2357,22 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     }
     while(semanticFeatures.length < AI_CAPABILITY_KEYS.length) semanticFeatures.push(0)
     for(var semanticIndex = 0; semanticIndex < AI_CAPABILITY_KEYS.length; semanticIndex++) features[32 + semanticIndex] = clampAIDecisionFeature(semanticFeatures[semanticIndex])
-    if(familyIndex == AI_DECISION_FAMILY.strategy && metadata.strategyIntent) {
-        var strategyIntent = getAIStrategyIntentFeatures(metadata.strategyIntent)
-        for(var strategyIntentIndex = 0; strategyIntentIndex < strategyIntent.length; strategyIntentIndex++) features[64 + strategyIntentIndex] = strategyIntent[strategyIntentIndex]
-    }
-    if(metadata.placementGeometry === true && hasPosition) {
+    if(metadata.loadoutSummary && metadata.placementGeometry !== true) {
+        var loadoutSummary = metadata.loadoutSummary
+        var loadoutFeatures = [
+            loadoutSummary.eco,
+            loadoutSummary.pressure,
+            loadoutSummary.heavy,
+            loadoutSummary.camo,
+            loadoutSummary.support,
+            loadoutSummary.late,
+            loadoutSummary.ecoBoost,
+            (Number(loadoutSummary.defenseBoost) + Number(loadoutSummary.offenseBoost)) / 2,
+        ]
+        for(var loadoutFeatureIndex = 0; loadoutFeatureIndex < loadoutFeatures.length; loadoutFeatureIndex++) {
+            features[72 + loadoutFeatureIndex] = clampAIDecisionFeature(loadoutFeatures[loadoutFeatureIndex])
+        }
+    } else if(metadata.placementGeometry === true && hasPosition) {
         var coverage = getPlacementCoverageStats(side, candidateX, candidateY, Number(metadata.range) || 0)
         var sidePathCount = Math.max(1, getSidePathObjectCount(side))
         var placementFeatures = [
@@ -2980,6 +2387,20 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
         ]
         for(var placementIndex = 0; placementIndex < placementFeatures.length; placementIndex++) features[72 + placementIndex] = placementFeatures[placementIndex]
     }
+    // 112-dim extension: tower-type one-hot (16 dims at 80-95) and detailed tier/cost context at 96-111 for bit-perfect quirk separation.
+    var towerTypesForCandidate = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
+    var rawType = String(metadata.type || metadata.towerType || "").split("|")[0].split(",")[0]
+    for(var typeIdx = 0; typeIdx < towerTypesForCandidate.length; typeIdx++) {
+        if(rawType === towerTypesForCandidate[typeIdx] && 80 + typeIdx < features.length) features[80 + typeIdx] = 1
+    }
+    if(Number.isFinite(Number(metadata.tier1)) && 96 < features.length) features[96] = clamp(Number(metadata.tier1) / 5, 0, 1)
+    if(Number.isFinite(Number(metadata.tier2)) && 97 < features.length) features[97] = clamp(Number(metadata.tier2) / 5, 0, 1)
+    if(Number.isFinite(Number(metadata.tier3)) && 98 < features.length) features[98] = clamp(Number(metadata.tier3) / 5, 0, 1)
+    if(typeof metadata.cost == "number" && 99 < features.length) features[99] = clamp(Math.log1p(Math.max(0, Number(metadata.cost))) / Math.log(100001), 0, 1)
+    if(typeof metadata.money == "number" && 100 < features.length) features[100] = clamp(Math.log1p(Math.max(0, Number(metadata.money))) / Math.log(100001), 0, 1)
+    if(typeof metadata.count == "number" && 101 < features.length) features[101] = clamp(Number(metadata.count) / Math.max(1, Number(metadata.countScale) || 16), 0, 1)
+    if(metadata.send && 102 < features.length) features[102] = clamp(Math.log1p(Math.max(0, Number(metadata.send.health) || 0)) / Math.log(100001), 0, 1)
+    if(metadata.boostType && 103 < features.length) features[103] = 1
     return features
 }
 
@@ -3321,11 +2742,10 @@ function chooseAIStrategyFromFeaturesWithObservation(features, observedLoadoutSu
         var decision = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.strategy, {
             id: strategy.id,
             type: strategy.id,
-            role: strategy.placementProfile,
+            role: "strategy",
             actionKey: "strategy|" + strategy.id,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
-            strategyIntent: strategy,
             capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof round == "undefined" ? 0 : round),
         }, null, decisionState)
         var adjustedScore = pass.outputs[scoreIndex] + decision.score
@@ -3384,11 +2804,10 @@ function chooseAIArchetypeFromFeatures(features, excludedStrategyIndex, loadoutK
         var decision = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.strategy, {
             id: strategy.id,
             type: strategy.id,
-            role: strategy.placementProfile,
+            role: "strategy",
             actionKey: "strategy|" + strategy.id,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
-            strategyIntent: strategy,
             capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof round == "undefined" ? 0 : round),
         }, null, decisionState)
         var adjustedScore = pass.outputs[scoreIndex] + decision.score
@@ -3738,19 +3157,46 @@ function getAIFactualDecisionOutcomeSnapshot(side) {
     var enemySide = side == PLAYER_SIDE.left ? PLAYER_SIDE.right : PLAYER_SIDE.left
     var ownPops = side == PLAYER_SIDE.left ? typeof p1TotalPopCount == "undefined" ? 0 : p1TotalPopCount : typeof p2TotalPopCount == "undefined" ? 0 : p2TotalPopCount
     var enemyPops = enemySide == PLAYER_SIDE.left ? typeof p1TotalPopCount == "undefined" ? 0 : p1TotalPopCount : typeof p2TotalPopCount == "undefined" ? 0 : p2TotalPopCount
+    var ownLives = players[side].lives == Infinity ? 150 : Math.max(0, Number(players[side].lives) || 0)
+    if(aiProfile) {
+        if(!aiProfile.observedLivesBySide) aiProfile.observedLivesBySide = {}
+        if(!aiProfile.observedLivesLostBySide) aiProfile.observedLivesLostBySide = {}
+        var previousLives = Number(aiProfile.observedLivesBySide[side])
+        if(Number.isFinite(previousLives) && ownLives < previousLives) {
+            aiProfile.observedLivesLostBySide[side] = Math.max(0, Number(aiProfile.observedLivesLostBySide[side]) || 0) + previousLives - ownLives
+        }
+        aiProfile.observedLivesBySide[side] = ownLives
+    }
     return {
-        ownLives: players[side].lives == Infinity ? 150 : Math.max(0, Number(players[side].lives) || 0),
+        ownLives: ownLives,
         enemyLives: players[enemySide].lives == Infinity ? 150 : Math.max(0, Number(players[enemySide].lives) || 0),
+        ownMoney: Math.max(0, Number(players[side].money) || 0),
         ownPops: Math.max(0, Number(ownPops) || 0),
         enemyPops: Math.max(0, Number(enemyPops) || 0),
+        ownLivesLost: aiProfile ? Math.max(0, Number(aiProfile.observedLivesLostBySide[side]) || 0) : 0,
     }
 }
 
-function getAIFactualDecisionLocalReward(before, after) {
+function getAIFactualDecisionMoneyOutcome(before, after, actionContext) {
+    var moneyDelta = (Number(after.ownMoney) || 0) - (Number(before.ownMoney) || 0)
+    if(!actionContext || actionContext.kind == "income") {
+        return moneyDelta
+    }
+    if(actionContext.kind == "spend") {
+        return moneyDelta + Math.max(0, Number(actionContext.expectedCost) || 0)
+    }
+    if(actionContext.kind == "liquidate") {
+        return moneyDelta - Math.max(0, Number(actionContext.proceeds) || 0) - Math.max(0, Number(actionContext.liquidationLoss) || 0)
+    }
+    return 0
+}
+
+function getAIFactualDecisionLocalReward(before, after, actionContext) {
     if(!before || !after) return 0
-    var lifeOutcome = after.ownLives - before.ownLives + before.enemyLives - after.enemyLives
-    var popOutcome = after.ownPops - before.ownPops - (after.enemyPops - before.enemyPops)
-    return clamp(lifeOutcome / 30 + popOutcome / 5000, -1, 1)
+    var lifeOutcome = (Number(after.ownLives) || 0) - (Number(before.ownLives) || 0) + (Number(before.enemyLives) || 0) - (Number(after.enemyLives) || 0)
+    var popOutcome = (Number(after.ownPops) || 0) - (Number(before.ownPops) || 0) - ((Number(after.enemyPops) || 0) - (Number(before.enemyPops) || 0))
+    var moneyOutcome = getAIFactualDecisionMoneyOutcome(before, after, actionContext)
+    return clamp(lifeOutcome / 30 + popOutcome / 5000 + moneyOutcome / 2000, -1, 1)
 }
 
 function settleAITacticalDecision(side, successorDecisionSample, terminal) {
@@ -3759,7 +3205,7 @@ function settleAITacticalDecision(side, successorDecisionSample, terminal) {
     }
     var decision = aiProfile.pendingTacticalDecision
     var settledAt = Math.max(decision.startedAtMs, gameNow())
-    decision.intervalReward = clamp((Number(decision.initialReward) || 0) + getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, getAIFactualDecisionOutcomeSnapshot(side)), -1, 1)
+    decision.intervalReward = clamp((Number(decision.initialReward) || 0) + getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, getAIFactualDecisionOutcomeSnapshot(side), decision.actionContext), -1, 1)
     decision.settledAtMs = settledAt
     decision.terminal = terminal === true
     if(successorDecisionSample && Array.isArray(successorDecisionSample.stateFeatures) && Array.isArray(successorDecisionSample.memoryIn)) {
@@ -3771,6 +3217,7 @@ function settleAITacticalDecision(side, successorDecisionSample, terminal) {
     }
     delete decision.factualOutcomeBefore
     delete decision.initialReward
+    delete decision.actionContext
     appendAIDecisionTraceEntry(decision)
     aiProfile.pendingTacticalDecision = null
     return true
@@ -3786,16 +3233,16 @@ function getAIDecisionFamilyForLegacyAction(family, actionKey) {
     return AI_DECISION_FAMILY.placement
 }
 
-function recordAITacticalDecision(side, family, actionKey, matchup, decisionSample) {
+function recordAITacticalDecision(side, family, actionKey, matchup, decisionSample, factualOutcomeBefore, actionContext) {
     if(!aiProfile) {
         return
     }
     var familyIndex = decisionSample ? decisionSample.familyIndex : getAIDecisionFamilyForLegacyAction(family, actionKey)
     var resolvedDecisionSample = decisionSample || scoreAIDecisionCandidate(side, familyIndex, { id: actionKey, type: family, actionKey: actionKey }, matchup)
-    return beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDecisionSample, 0)
+    return beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDecisionSample, 0, factualOutcomeBefore, actionContext)
 }
 
-function beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDecisionSample, initialReward) {
+function beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDecisionSample, initialReward, factualOutcomeBefore, actionContext) {
     if(!aiProfile || !resolvedDecisionSample || !Array.isArray(resolvedDecisionSample.stateFeatures) || !Array.isArray(resolvedDecisionSample.candidateFeatures) || !Array.isArray(resolvedDecisionSample.memoryIn)) return false
     settleAITacticalDecision(side, resolvedDecisionSample, false)
     commitAIDecisionMemory(resolvedDecisionSample)
@@ -3809,11 +3256,112 @@ function beginAIDecisionTransition(side, family, actionKey, matchup, resolvedDec
         stateFeatures: resolvedDecisionSample.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
         chosenCandidateFeatures: resolvedDecisionSample.candidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
         memoryIn: resolvedDecisionSample.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE),
-        factualOutcomeBefore: getAIFactualDecisionOutcomeSnapshot(side),
+        factualOutcomeBefore: factualOutcomeBefore || getAIFactualDecisionOutcomeSnapshot(side),
         initialReward: clamp(Number(initialReward) || 0, -1, 1),
+        actionContext: actionContext || null,
         startedAtMs: Math.max(0, gameNow()),
     }
     return true
+}
+
+function getAITowerPlacementOutputValue(tower) {
+    if(!tower) return 0
+    var output = Math.max(0, Number(tower.popCount) || 0) + Math.max(0, Number(tower.cashGenerated) || 0)
+    if(tower.towerType == "farm") output += Math.max(0, Number(tower.towerVar) || 0)
+    return output
+}
+
+function doesAITowerHaveCombatOutput(tower) {
+    if(!tower || tower.towerType == "farm" || tower.towerType == "farmer" || typeof getAITowerCapabilityFacts != "function") return false
+    var facts = getAITowerCapabilityFacts(tower)
+    return Number(facts.directDamage) > 0 || Number(facts.secondaryDamage) > 0 || Number(facts.dotDamage) > 0 || Number(facts.trapCapacity) > 0
+}
+
+function createAIPlacementOutcomeSample(decision) {
+    return {
+        creditVersion: AI_DECISION_CREDIT_VERSION,
+        familyIndex: decision.familyIndex,
+        stateFeatures: decision.stateFeatures.slice(0, AI_DECISION_STATE_INPUT_SIZE),
+        chosenCandidateFeatures: decision.chosenCandidateFeatures.slice(0, AI_DECISION_CANDIDATE_INPUT_SIZE),
+        memoryIn: decision.memoryIn.slice(0, AI_DECISION_MEMORY_SIZE),
+        startedAtMs: Math.max(0, Math.floor(Number(decision.startedAtMs) || 0)),
+        settledAtMs: 0,
+        intervalReward: 0,
+    }
+}
+
+function bindAITowerPlacementOutcome(tower) {
+    if(!aiProfile || !tower || !aiProfile.pendingTacticalDecision || aiProfile.pendingTacticalDecision.familyIndex != AI_DECISION_FAMILY.placement) return false
+    if(!aiProfile.placementOutcomes) aiProfile.placementOutcomes = {}
+    var factualBefore = getAIFactualDecisionOutcomeSnapshot(tower.playerSide)
+    aiProfile.placementOutcomes[tower.towerID] = {
+        towerID: tower.towerID,
+        sample: createAIPlacementOutcomeSample(aiProfile.pendingTacticalDecision),
+        initialReward: clamp(Number(aiProfile.pendingTacticalDecision.initialReward) || 0, -1, 1),
+        outputBefore: getAITowerPlacementOutputValue(tower),
+        ownPopsBefore: factualBefore.ownPops,
+        ownLivesBefore: factualBefore.ownLives,
+        ownLivesLostBefore: factualBefore.ownLivesLost,
+        placementCost: Math.max(1, Number(tower.totalCost) || getBaseTowerPriceByType(tower.towerType)),
+        expectsCombatOutput: doesAITowerHaveCombatOutput(tower),
+    }
+    return true
+}
+
+function captureAITowerPlacementOutcome(tower) {
+    if(!tower) return null
+    var factualAfter = getAIFactualDecisionOutcomeSnapshot(tower.playerSide)
+    return {
+        outputAfter: getAITowerPlacementOutputValue(tower),
+        ownPopsAfter: factualAfter.ownPops,
+        ownLivesAfter: factualAfter.ownLives,
+        ownLivesLostAfter: factualAfter.ownLivesLost,
+    }
+}
+
+function finalizeAITowerPlacementOutcome(tower, outcome) {
+    if(!aiProfile || !aiProfile.placementOutcomes || !tower) return false
+    var placement = aiProfile.placementOutcomes[tower.towerID]
+    if(!placement) return false
+    delete aiProfile.placementOutcomes[tower.towerID]
+
+    outcome = outcome || captureAITowerPlacementOutcome(tower)
+    if(!outcome) return false
+    var output = Math.max(0, (Number(outcome.outputAfter) || 0) - placement.outputBefore)
+    var reward = placement.initialReward
+    if(output > 0) {
+        reward = clamp(Math.log1p(output) / Math.log1p(placement.placementCost), 0, 1)
+    } else if(placement.expectsCombatOutput && ((Number(outcome.ownPopsAfter) || 0) > placement.ownPopsBefore || (Number(outcome.ownLivesLostAfter) || 0) > placement.ownLivesLostBefore)) {
+        reward = -1
+    }
+    if(!placement.sample) return false
+    placement.sample.settledAtMs = Math.max(placement.sample.startedAtMs, Math.floor(gameNow()))
+    placement.sample.intervalReward = clamp(reward, -1, 1)
+    if(!aiProfile.placementSamples) aiProfile.placementSamples = []
+    aiProfile.placementSamples.push(placement.sample)
+    while(aiProfile.placementSamples.length > AI_MAX_PLACEMENT_SAMPLES) aiProfile.placementSamples.shift()
+    return true
+}
+
+function finalizeAIPlacementOutcomesForSide(side) {
+    if(!aiProfile || !aiProfile.placementOutcomes) return 0
+    var towerIDs = Object.keys(aiProfile.placementOutcomes)
+    var finalized = 0
+    for(var i = 0; i < towerIDs.length; i++) {
+        var placement = aiProfile.placementOutcomes[towerIDs[i]]
+        var tower = placement ? getAITowerByID(placement.towerID) : null
+        if(tower && tower.playerSide == side && finalizeAITowerPlacementOutcome(tower)) finalized++
+    }
+    return finalized
+}
+
+function collectAIPlacementSamples(maximumSamples) {
+    if(!aiProfile || !Array.isArray(aiProfile.placementSamples)) return []
+    var available = aiProfile.placementSamples.slice(0)
+    var maximum = maximumSamples == null ? available.length : Math.max(0, Math.floor(maximumSamples))
+    if(maximum <= 0) return []
+    if(available.length <= maximum) return available
+    return available.slice(0, maximum)
 }
 
 function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
@@ -3886,7 +3434,11 @@ function trainAIDecisionsFromMatch(side, terminalReward) {
     for(var i = 0; i < samples.length; i++) {
         trainAIDecision(samples[i], targets[i], survivalClass, aiLearning.policy)
     }
-    return samples.length
+    var placementSamples = collectAIPlacementSamples()
+    for(var placementIndex = 0; placementIndex < placementSamples.length; placementIndex++) {
+        trainAIDecision(placementSamples[placementIndex], placementSamples[placementIndex].intervalReward, survivalClass, aiLearning.policy)
+    }
+    return samples.length + placementSamples.length
 }
 
 function collectAITacticalLearningObservations(side, terminalReward, maximumDecisions) {
@@ -4148,53 +3700,6 @@ function getAIFarmPerformanceReward(tower, matchReward) {
     return clamp(normalized - 0.3, -0.9, 1.5)
 }
 
-function getAITowerPlacementFitReward(tower) {
-    if(!tower || tower.towerType == "farm" || tower.towerType == "farmer" || tower.range == Infinity && tower.towerType != "sniper" && tower.towerType != "mortar") {
-        return 0
-    }
-
-    var role = tower.aiPlacementRole || getStrategyPlacementRoleForTowerType(tower.towerType)
-    var coverage = getPlacementCoverageStats(tower.playerSide, tower.x, tower.y, tower.range)
-    var bonus = 0
-    if(tower.towerType == "dartling" || tower.towerType == "mortar" || tower.towerType == "dart") {
-        bonus += coverage.lineAimScore * 0.16 + coverage.straightRun * 0.14
-    } else if(tower.towerType == "bomb" || tower.towerType == "wizard" || tower.towerType == "boomer") {
-        bonus += coverage.span * 0.16 + coverage.longestRun * 0.12 + coverage.coverageCount * 0.01
-    } else if(tower.towerType == "tack" || tower.towerType == "ice" || tower.towerType == "sword") {
-        bonus += clamp((170 - coverage.nearestTrackDistance) / 170, 0, 1) * 0.18 + coverage.earlyCount * 0.01
-    } else if(tower.towerType == "sniper" || tower.towerType == "cobra") {
-        bonus += clamp((coverage.nearestTrackDistance - 80) / 180, 0, 1) * 0.16 + coverage.lateCount * 0.01
-    } else {
-        bonus += coverage.coverageCount * 0.01 + coverage.longestRun * 0.1 + coverage.span * 0.08
-    }
-    if(role == "antiMoab" || role == "elite") {
-        bonus += coverage.lateCount * 0.012
-    }
-    bonus -= getPlacementCrowdingPenalty(tower.playerSide, tower.x, tower.y, tower.towerType) * 0.003
-    return clamp(bonus - 0.04, -0.12, 0.24)
-}
-
-function getAITowerCrosspathFitReward(tower) {
-    if(!tower || tower.towerType == "farmer" || getTowerTotalTier(tower) <= 0) {
-        return 0
-    }
-
-    var matchup = getCurrentPlayerMatchupStyle(tower.playerSide)
-    var current = [tower.path1Upgrades, tower.path2Upgrades, tower.path3Upgrades]
-    var targets = getCrosspathCandidatesForTowerType(tower.towerType)
-    var bestFit = -Infinity
-    for(var i = 0; i < targets.length; i++) {
-        var target = targets[i]
-        var distance = Math.abs(target[0] - current[0]) + Math.abs(target[1] - current[1]) + Math.abs(target[2] - current[2])
-        var fit = getTowerStrategicTargetWeight(tower, target, matchup) - distance * 0.14
-        if(fit > bestFit) {
-            bestFit = fit
-        }
-    }
-
-    return clamp((bestFit - 0.95) * 0.14, -0.12, 0.26)
-}
-
 function getAITowerPerformanceReward(tower, matchReward) {
     if(tower.towerType == "farm") {
         return getAIFarmPerformanceReward(tower, matchReward)
@@ -4210,10 +3715,6 @@ function getAITowerPerformanceReward(tower, matchReward) {
     normalized += Math.min(0.45, getTowerTotalTier(tower) * 0.04)
     if(tower.towerType == "farmer") {
         normalized += getFarmerServicedFarmCount(tower) * 0.32
-    }
-    if(tower.towerType != "farmer") {
-        normalized += getAITowerPlacementFitReward(tower)
-        normalized += getAITowerCrosspathFitReward(tower)
     }
     normalized += clamp((Number(matchReward) || 0) * 0.22, -0.32, 0.24)
     if(aiMatchTelemetry && (tower.towerType == "farm" || tower.towerType == "farmer")) {
@@ -4333,6 +3834,18 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
             terminal: sample.terminal,
         }
     })
+    var placementSamples = collectAIPlacementSamples(AI_MAX_PUBLIC_PLACEMENT_SAMPLES).map(function(sample) {
+        return {
+            creditVersion: sample.creditVersion,
+            familyIndex: sample.familyIndex,
+            stateFeatures: sample.stateFeatures,
+            chosenCandidateFeatures: sample.chosenCandidateFeatures,
+            memoryIn: sample.memoryIn,
+            startedAtMs: sample.startedAtMs,
+            settledAtMs: sample.settledAtMs,
+            intervalReward: sample.intervalReward,
+        }
+    })
     var contribution = {
         protocolVersion: 1,
         contributionId: createAIContributionId(),
@@ -4346,10 +3859,12 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
         loadoutKey: aiMatchTelemetry.aiLoadoutKey || "",
         observations: observations,
         decisionSamples: decisionSamples,
+        placementSamples: placementSamples,
         selfPlay: selfPlayActive,
     }
     while(getAIUTF8ByteLength(JSON.stringify(contribution)) > AI_MAX_PUBLIC_CONTRIBUTION_BYTES && contribution.observations.length > 0) contribution.observations.pop()
     while(getAIUTF8ByteLength(JSON.stringify(contribution)) > AI_MAX_PUBLIC_CONTRIBUTION_BYTES && contribution.decisionSamples.length > 0) contribution.decisionSamples.pop()
+    while(getAIUTF8ByteLength(JSON.stringify(contribution)) > AI_MAX_PUBLIC_CONTRIBUTION_BYTES && contribution.placementSamples.length > 0) contribution.placementSamples.pop()
     return getAIUTF8ByteLength(JSON.stringify(contribution)) <= AI_MAX_PUBLIC_CONTRIBUTION_BYTES ? contribution : null
 }
 
@@ -4373,8 +3888,11 @@ function finalizeAIMatchLearning() {
     if(learningAllowed == false) {
         aiProfile.tacticalTrace = []
         aiProfile.pendingTacticalDecision = null
+        aiProfile.placementOutcomes = {}
+        aiProfile.placementSamples = []
         return
     }
+    finalizeAIPlacementOutcomesForSide(aiSide)
     var matchFeatures = computeMatchFeatureVector()
     var publicContribution = createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatures, selfPlayActive)
     trainAIPolicy(aiMatchTelemetry.selectionFeatures, aiMatchTelemetry.strategyIndex, reward, aiLearning.policy)
@@ -4650,11 +4168,13 @@ function normalizeAITrainerStatusCurrent(value) {
 }
 
 function normalizeAITrainerStatusEvaluation(value) {
-    var keys = ["runId", "runNumber", "runAttempt", "aggregateId", "candidateCheckpointId", "baselineCheckpointId", "passed", "games", "wins", "losses", "ties", "score", "minimumScore", "minimumGames", "minimumBucketScore", "worstBucketScore", "survivalRate", "minimumSurvivalRate", "severeCollapseRate", "maximumSevereCollapseRate"]
+    var legacyKeys = ["runId", "runNumber", "runAttempt", "aggregateId", "candidateCheckpointId", "baselineCheckpointId", "passed", "games", "wins", "losses", "ties", "score", "minimumScore", "minimumGames", "minimumBucketScore", "worstBucketScore", "survivalRate", "minimumSurvivalRate", "severeCollapseRate", "maximumSevereCollapseRate"]
+    var currentKeys = legacyKeys.concat(["defensiveGames", "defensiveProtectedGames", "defensiveProtectionRate", "minimumDefensiveRate", "minimumDefensiveLives", "minimumDefensiveFloorLives", "minimumDefensiveObservedLives"])
     if(value === null) {
         return null
     }
-    if(aiTrainerStatusHasExactKeys(value, keys) == false
+    var current = Object.prototype.hasOwnProperty.call(value, "defensiveGames")
+    if(aiTrainerStatusHasExactKeys(value, current ? currentKeys : legacyKeys) == false
         || isAITrainerStatusInteger(value.runId, 1) == false
         || isAITrainerStatusInteger(value.runNumber, 1) == false
         || isAITrainerStatusInteger(value.runAttempt, 1) == false
@@ -4668,6 +4188,17 @@ function normalizeAITrainerStatusEvaluation(value) {
         || Number.isFinite(value.minimumScore) == false || value.minimumScore < 0 || value.minimumScore > 1
         || [value.minimumBucketScore, value.worstBucketScore, value.survivalRate, value.minimumSurvivalRate, value.severeCollapseRate, value.maximumSevereCollapseRate].some(function(number) { return Number.isFinite(number) == false || number < 0 || number > 1 })
         || isAITrainerStatusInteger(value.minimumGames, 1) == false) {
+        return null
+    }
+    if(current && (
+        [value.defensiveGames, value.defensiveProtectedGames].some(function(number) { return isAITrainerStatusInteger(number, 0) == false })
+        || value.defensiveProtectedGames > value.defensiveGames
+        || value.defensiveGames > value.games
+        || [value.defensiveProtectionRate, value.minimumDefensiveRate].some(function(number) { return Number.isFinite(number) == false || number < 0 || number > 1 })
+        || [value.minimumDefensiveLives, value.minimumDefensiveFloorLives].some(function(number) { return isAITrainerStatusInteger(number, 0) == false })
+        || Number.isFinite(value.minimumDefensiveObservedLives) == false || value.minimumDefensiveObservedLives < 0
+        || Math.abs(value.defensiveProtectionRate - (value.defensiveGames ? value.defensiveProtectedGames / value.defensiveGames : 0)) > 1e-12
+    )) {
         return null
     }
     return Object.assign({}, value)
@@ -4951,6 +4482,9 @@ function getAITrainerStatusMetrics() {
         }
     }
     var evaluationValue = status.latestEvaluation ? Math.round(status.latestEvaluation.score * 1000) / 10 + "% / S" + Math.round(status.latestEvaluation.survivalRate * 1000) / 10 + "% / " + status.latestEvaluation.games : "Pending"
+    if(status.latestEvaluation && status.latestEvaluation.defensiveProtectionRate != null) {
+        evaluationValue += " / D" + Math.round(status.latestEvaluation.defensiveProtectionRate * 1000) / 10 + "%@" + status.latestEvaluation.minimumDefensiveLives
+    }
     var evaluationColor = !status.latestEvaluation ? "#8f9bb5" : status.latestEvaluation.passed ? "#7fe0a2" : "#ff9f8f"
     var promotionValue = status.latestPromotion ? "Champion v" + status.latestPromotion.championGeneration : status.latestEvaluation && status.latestEvaluation.passed ? "Pending" : "None"
     var promotionColor = status.latestPromotion ? "#7fe0a2" : status.latestEvaluation && status.latestEvaluation.passed ? "#f7c76d" : "#8f9bb5"
@@ -5667,399 +5201,12 @@ function getPlacementCoverageStats(side, x, y, range) {
     return stats
 }
 
-function getRolePlacementProgressTarget(role) {
-    if(role == "farm") {
-        return 0.1
-    }
-    if(role == "farmer") {
-        return 0.14
-    }
-    if(role == "antiMoab") {
-        return 0.68
-    }
-    if(role == "support") {
-        return 0.42
-    }
-    if(role == "elite") {
-        return 0.58
-    }
-    return 0.5
-}
-
-function getTowerPlacementHeuristicProfile(towerType, role) {
-    var profile = {
-        coverage: 1.3,
-        span: 92,
-        mid: 0.9,
-        late: role == "antiMoab" ? 1.5 : 0.9,
-        early: role == "core" ? 0.75 : 0.35,
-        progressPenalty: 56,
-        preferredYPenalty: 0.16,
-        longestRun: 44,
-        straightRun: 30,
-        lineAim: 16,
-        closeTrack: 0.08,
-        farTrack: 0,
-    }
-
-    if(towerType == "bomb" || towerType == "wizard" || towerType == "boomer") {
-        profile.coverage += 0.2
-        profile.span += 18
-        profile.longestRun += 12
-        profile.straightRun += 8
-        profile.lineAim += 6
-        profile.closeTrack = 0.12
-    } else if(towerType == "dartling" || towerType == "mortar") {
-        profile.coverage = 1.05
-        profile.span = 74
-        profile.mid = 1.15
-        profile.late = towerType == "mortar" ? 1.35 : 1.2
-        profile.early = 0.45
-        profile.progressPenalty = 44
-        profile.longestRun = 70
-        profile.straightRun = 86
-        profile.lineAim = 92
-        profile.closeTrack = 0.06
-    } else if(towerType == "sniper" || towerType == "cobra") {
-        profile.coverage = 0.35
-        profile.span = 16
-        profile.mid = 0.75
-        profile.late = towerType == "sniper" ? 1.4 : 0.8
-        profile.early = 0.2
-        profile.progressPenalty = 34
-        profile.longestRun = 20
-        profile.straightRun = 24
-        profile.lineAim = towerType == "sniper" ? 42 : 8
-        profile.closeTrack = 0
-        profile.farTrack = towerType == "sniper" ? 0.18 : 0.14
-    } else if(towerType == "tack" || towerType == "ice" || towerType == "sword") {
-        profile.coverage = towerType == "ice" ? 0.95 : 1.05
-        profile.span = towerType == "sword" ? 72 : 60
-        profile.mid = towerType == "ice" ? 0.95 : 0.82
-        profile.late = towerType == "ice" ? 0.65 : 0.45
-        profile.early = towerType == "sword" ? 1.15 : 1.3
-        profile.progressPenalty = 48
-        profile.longestRun = 26
-        profile.straightRun = towerType == "sword" ? 24 : 14
-        profile.lineAim = towerType == "sword" ? 18 : 6
-        profile.closeTrack = towerType == "ice" ? 0.32 : towerType == "sword" ? 0.26 : 0.36
-    } else if(towerType == "dart" || towerType == "ninja" || towerType == "engi" || towerType == "buccaneer" || towerType == "super") {
-        profile.coverage = towerType == "super" ? 1.45 : 1.1
-        profile.span = towerType == "super" ? 84 : 72
-        profile.mid = towerType == "engi" ? 0.95 : 1
-        profile.late = towerType == "super" ? 1.25 : towerType == "buccaneer" ? 1.05 : 0.82
-        profile.early = towerType == "dart" ? 1.05 : 0.72
-        profile.progressPenalty = towerType == "super" ? 46 : 52
-        profile.longestRun = towerType == "dart" ? 52 : 38
-        profile.straightRun = towerType == "dart" ? 46 : 26
-        profile.lineAim = towerType == "dart" ? 24 : towerType == "buccaneer" ? 22 : 18
-        profile.closeTrack = towerType == "super" ? 0.14 : towerType == "buccaneer" ? 0.12 : 0.1
-    }
-
-    return profile
-}
-
-function getTowerPlacementStrategicBonus(towerType, role, coverage, matchup) {
-    if(!matchup) {
-        return 0
-    }
-
-    var bonus = 0
-    if(matchup.playerThreat.heavyCount >= 1) {
-        if(towerType == "sniper" || towerType == "bomb" || towerType == "mortar" || towerType == "dartling" || towerType == "super" || towerType == "sword") {
-            bonus += coverage.lateCount * 0.85 + coverage.longestRun * 10
-        }
-        if(towerType == "dartling" || towerType == "mortar") {
-            bonus += coverage.lineAimScore * 16 + coverage.straightRun * 12
-        }
-        if(towerType == "tack" || towerType == "ice") {
-            bonus -= coverage.lateCount * 0.22
-        }
-    }
-    if(matchup.playerThreat.count >= 12 || matchup.playerThreat.score >= 15) {
-        if(towerType == "wizard" || towerType == "tack" || towerType == "boomer" || towerType == "bomb" || towerType == "ice") {
-            bonus += coverage.span * 14 + coverage.coverageCount * 0.22 + coverage.longestRun * 10
-        }
-        if(towerType == "dartling" || towerType == "mortar") {
-            bonus += coverage.straightRun * 18 + coverage.lineAimScore * 8
-        }
-    }
-    if(matchup.enemyVulnerable) {
-        if(towerType == "dartling" || towerType == "mortar" || towerType == "dart" || towerType == "sniper") {
-            bonus += coverage.lineAimScore * 10 + coverage.straightRun * 8
-        }
-        if(towerType == "cobra") {
-            bonus += coverage.nearestTrackDistance * 0.05
-        }
-    }
-    if(matchup.safeToGreed) {
-        if(towerType == "sniper" || towerType == "cobra" || towerType == "buccaneer") {
-            bonus += coverage.midCount * 0.4 + coverage.lateCount * 0.35
-        }
-    }
-    if(matchup.dangerHigh && (role == "antiMoab" || role == "elite")) {
-        bonus += coverage.lateCount * 0.75 + coverage.longestRun * 12
-    }
-    return bonus
-}
-
-var AI_CROSSPATH_INTENT_WEIGHTS = {
-    balanced: { damage: 1.15, splash: 1, speed: 0.9, coverage: 0.8, control: 0.6, eco: 0.2, utility: 0.35, range: 0.35 },
-    swarm: { damage: 0.8, splash: 1.55, speed: 1.12, coverage: 1.22, control: 0.95, eco: 0.08, utility: 0.34, range: 0.3 },
-    heavy: { damage: 1.6, splash: 0.55, speed: 0.86, coverage: 0.45, control: 0.54, eco: 0.05, utility: 0.24, range: 0.78 },
-    pressure: { damage: 1.12, splash: 0.86, speed: 1.32, coverage: 0.9, control: 0.38, eco: 0.04, utility: 0.28, range: 0.42 },
-    greed: { damage: 0.3, splash: 0.3, speed: 0.25, coverage: 0.2, control: 0.32, eco: 1.78, utility: 1.08, range: 0.2 },
-}
-
-var AI_TOWER_PATH_TRAITS = {
-    dart: [{ damage: 1.26, coverage: 1.06 }, { speed: 1.42, coverage: 1.04 }, { damage: 1.16, range: 1.1 }],
-    tack: [{ damage: 1.2, splash: 1.1, speed: 1.08 }, { utility: 1.05, coverage: 1.14, range: 1.08 }, { speed: 1.46, coverage: 1.2 }],
-    bomb: [{ damage: 1.34, splash: 1.04 }, { damage: 1.24, control: 1.2 }, { splash: 1.58, coverage: 1.18 }],
-    ice: [{ splash: 1.3, coverage: 1.14 }, { control: 1.62, utility: 1.08 }, { damage: 1.16, range: 1.2 }],
-    super: [{ damage: 1.46, coverage: 1.08 }, { speed: 1.2, damage: 1.12 }, { damage: 1.24, control: 1.08 }],
-    farm: [{ eco: 1.34, utility: 0.55 }, { eco: 1.6, utility: 1.1 }, { eco: 1.42, speed: 0.35 }],
-    ninja: [{ utility: 1.12, coverage: 1.02 }, { speed: 1.34, splash: 0.94 }, { damage: 1.18, control: 1.1 }],
-    dartling: [{ damage: 1.42, range: 1.1 }, { speed: 1.28, splash: 1.08 }, { control: 1.1, coverage: 1.14 }],
-    wizard: [{ damage: 1.34, coverage: 1.1 }, { splash: 1.42, speed: 1.14 }, { control: 1.26, utility: 1.04 }],
-    cobra: [{ utility: 1.12, range: 0.95 }, { eco: 1.16, utility: 1.3 }, { damage: 0.9, speed: 1.08 }],
-    boomer: [{ damage: 1.2, coverage: 1.02 }, { control: 1.26, speed: 1.08 }, { splash: 1.42, coverage: 1.24 }],
-    sniper: [{ damage: 1.58, range: 1.08 }, { eco: 1.46, utility: 1.24 }, { speed: 1.22, damage: 1.1 }],
-    engi: [{ damage: 1.3, coverage: 1.08 }, { utility: 1.18, range: 1.12 }, { control: 1.18, speed: 1.08 }],
-    buccaneer: [{ speed: 1.26, damage: 1.12 }, { splash: 1.2, damage: 1.18 }, { eco: 1.38, utility: 1.08 }],
-    mortar: [{ splash: 1.48, coverage: 1.14 }, { damage: 1.36, speed: 1.18 }, { control: 1.26, utility: 1.08 }],
-    sword: [{ damage: 1.38, splash: 0.82 }, { speed: 1.28, coverage: 1.04 }, { coverage: 1.22, range: 1.08 }],
-}
-
-function cloneAICrosspathIntentWeights(contextKey) {
-    var base = AI_CROSSPATH_INTENT_WEIGHTS[contextKey] || AI_CROSSPATH_INTENT_WEIGHTS.balanced
-    var weights = {}
-    for(var trait in base) {
-        weights[trait] = base[trait]
-    }
-    return weights
-}
-
-function getTowerCrosspathIntentWeights(tower, matchup) {
-    var weights = cloneAICrosspathIntentWeights(getCrosspathContextKeyForMatchup(tower.towerType, matchup))
-    var role = getStrategyPlacementRoleForTowerType(tower.towerType)
-    if(role == "support") {
-        weights.control += 0.42
-        weights.utility += 0.35
-        weights.coverage += 0.14
-    } else if(role == "antiMoab" || role == "elite") {
-        weights.damage += 0.46
-        weights.range += 0.18
-    } else if(role == "core") {
-        weights.splash += 0.16
-        weights.speed += 0.1
-    }
-    if(matchup.enemyVulnerable) {
-        weights.speed += 0.1
-        weights.damage += 0.08
-    }
-    return weights
-}
-
-function getTowerSpecificCrosspathAdjustment(tower, target, matchup) {
-    var p1 = target[0]
-    var p2 = target[1]
-    var p3 = target[2]
-    var bonus = 0
-
-    if(tower.towerType == "dart") {
-        if(matchup.playerThreat.heavyCount >= 1 && p1 >= 3) bonus += 0.24
-        if((matchup.playerThreat.count >= 12 || matchup.enemyVulnerable) && p2 >= 2) bonus += 0.18
-        if(matchup.enemyVulnerable && p3 >= 2) bonus += 0.12
-    } else if(tower.towerType == "tack") {
-        if(matchup.playerThreat.count >= 12 && p1 >= 3) bonus += 0.26
-        if(matchup.enemyVulnerable && p3 >= 3) bonus += 0.22
-        if(matchup.dangerHigh && p2 >= 2) bonus += 0.1
-    } else if(tower.towerType == "bomb") {
-        if(matchup.playerThreat.heavyCount >= 1 && p2 >= 3) bonus += 0.28
-        if(matchup.playerThreat.count >= 12 && p3 >= 3) bonus += 0.24
-        if(matchup.dangerHigh && p1 >= 3) bonus += 0.12
-    } else if(tower.towerType == "ice") {
-        if(matchup.playerThreat.count >= 12 && p1 >= 3) bonus += 0.24
-        if((matchup.dangerHigh || matchup.playerThreat.heavyCount >= 1) && p2 >= 3) bonus += 0.22
-        if(matchup.playerThreat.heavyCount >= 1 && p3 >= 3) bonus += 0.16
-    } else if(tower.towerType == "super") {
-        if(matchup.playerThreat.heavyCount >= 1 && p1 >= 3) bonus += 0.26
-        if(matchup.enemyVulnerable && p2 >= 3) bonus += 0.18
-        if(matchup.dangerHigh && p3 >= 3) bonus += 0.16
-    } else if(tower.towerType == "farm") {
-        if(matchup.safeToGreed && p2 >= 3) bonus += 0.24
-        if(matchup.safeToGreed && p3 >= 3) bonus += 0.18
-        if(matchup.safeToGreed == false && p1 >= 3) bonus += 0.18
-    } else if(tower.towerType == "ninja") {
-        if(matchup.enemyVulnerable && p2 >= 3) bonus += 0.16
-        if(matchup.playerThreat.heavyCount >= 1 && p3 >= 2) bonus += 0.14
-        if(matchup.dangerHigh && p1 >= 2) bonus += 0.1
-    } else if(tower.towerType == "dartling") {
-        if(matchup.playerThreat.heavyCount >= 1 && p1 >= 3) bonus += 0.28
-        if(matchup.playerThreat.count >= 12 && p2 >= 3) bonus += 0.24
-        if(matchup.dangerHigh && p3 >= 3) bonus += 0.18
-    } else if(tower.towerType == "wizard") {
-        if(matchup.playerThreat.heavyCount >= 1 && p1 >= 3) bonus += 0.24
-        if(matchup.playerThreat.count >= 12 && p2 >= 3) bonus += 0.26
-        if(matchup.dangerHigh && p3 >= 2) bonus += 0.14
-    } else if(tower.towerType == "cobra") {
-        if(matchup.safeToGreed && p2 >= 3) bonus += 0.3
-        if(matchup.enemyVulnerable && p3 >= 3) bonus += 0.26
-    } else if(tower.towerType == "boomer") {
-        if(matchup.playerThreat.count >= 12 && p3 >= 3) bonus += 0.26
-        if(matchup.playerThreat.heavyCount >= 1 && p2 >= 3) bonus += 0.22
-        if(matchup.dangerHigh && p1 >= 3) bonus += 0.12
-    } else if(tower.towerType == "sniper") {
-        if(matchup.playerThreat.heavyCount >= 1 && p1 >= 3) bonus += 0.3
-        if(matchup.safeToGreed && p2 >= 3) bonus += 0.28
-        if(matchup.enemyVulnerable && p3 >= 2) bonus += 0.14
-    } else if(tower.towerType == "engi") {
-        if(matchup.dangerHigh && p1 >= 3) bonus += 0.2
-        if(matchup.safeToGreed && p2 >= 2) bonus += 0.14
-        if(matchup.playerThreat.count >= 12 && p3 >= 3) bonus += 0.22
-    } else if(tower.towerType == "buccaneer") {
-        if(matchup.safeToGreed && p3 >= 3) bonus += 0.3
-        if(matchup.playerThreat.heavyCount >= 1 && p2 >= 3) bonus += 0.24
-        if(matchup.playerThreat.count >= 12 && p1 >= 3) bonus += 0.18
-    } else if(tower.towerType == "mortar") {
-        if(matchup.playerThreat.count >= 12 && p1 >= 3) bonus += 0.24
-        if(matchup.playerThreat.heavyCount >= 1 && p2 >= 3) bonus += 0.26
-        if(matchup.dangerHigh && p3 >= 3) bonus += 0.2
-    } else if(tower.towerType == "sword") {
-        if(matchup.playerThreat.heavyCount >= 1 && p1 >= 3) bonus += 0.24
-        if(matchup.enemyVulnerable && p2 >= 3) bonus += 0.22
-        if(matchup.playerThreat.count >= 12 && p3 >= 3) bonus += 0.2
-    }
-
-    return bonus
-}
-
-function getTowerStrategicTargetWeight(tower, target, matchup) {
-    var pathTraits = AI_TOWER_PATH_TRAITS[tower.towerType]
-    if(!pathTraits) {
-        return 1
-    }
-
-    var weights = getTowerCrosspathIntentWeights(tower, matchup)
-    var score = 0
-    for(var pathIndex = 0; pathIndex < 3; pathIndex++) {
-        var tiers = target[pathIndex]
-        var traits = pathTraits[pathIndex] || {}
-        for(var trait in traits) {
-            score += tiers * traits[trait] * (weights[trait] || 0)
-        }
-    }
-
-    var dominantPath = getDominantTowerPath(tower) - 1
-    if(target[dominantPath] >= Math.max(2, tower["path" + (dominantPath + 1) + "Upgrades"])) {
-        score += 0.9
-    }
-    return 0.82 + score * 0.1 + getTowerSpecificCrosspathAdjustment(tower, target, matchup)
-}
-
-function getPlacementCrowdingPenalty(side, x, y, towerType) {
-    var penalty = 0
-    for(var i = 0; i < towers.length; i++) {
-        if(!towers[i]) {
-            continue
-        }
-        if(towers[i].playerSide != side) {
-            continue
-        }
-
-        var dx = x - towers[i].x
-        var dy = y - towers[i].y
-        var distance = Math.sqrt(dx * dx + dy * dy)
-        if(distance < 95) {
-            penalty += (95 - distance) * 0.2
-            if(towers[i].towerType == towerType) {
-                penalty += (95 - distance) * 0.18
-            }
-        }
-    }
-
-    return penalty
-}
-
-function findValidSpotNear(side, radius, centerX, centerY, maxSearchRadius) {
-    var searchStep = 24
-    var bounds = getSideBounds(side, radius)
-
-    for(var distance = 0; distance <= maxSearchRadius; distance += searchStep) {
-        for(var dx = -distance; dx <= distance; dx += searchStep) {
-            for(var dy = -distance; dy <= distance; dy += searchStep) {
-                if(distance > 0 && Math.max(Math.abs(dx), Math.abs(dy)) != distance) {
-                    continue
-                }
-
-                var x = clamp(centerX + dx, bounds.minX, bounds.maxX)
-                var y = clamp(centerY + dy, bounds.minY, bounds.maxY)
-                if(canPlaceTowerAt(side, x, y, radius)) {
-                    return { x: x, y: y }
-                }
-            }
-        }
-    }
-
-    return null
-}
-
-function getAIFarmAnchor(side) {
-    var placementProfile = AI_PLACEMENT_PROFILES[getCurrentAIStrategy().placementProfile] || AI_PLACEMENT_PROFILES.balanced
-    return {
-        x: side == PLAYER_SIDE.left ? canvas.width * 0.2 : canvas.width * 0.8,
-        y: canvas.height * placementProfile.farmAnchorY,
-    }
-}
-
-function findAIFarmSpot(side, radius, offsetIndex) {
-    return findAISpot(side, radius, 200, "farm", offsetIndex || 0, "farm")
-}
-
 function findAIFarmerSpot(side) {
     return findAISpot(side, 30, 250, "farmer", getSideTowersByType(side, "farmer").length, "farmer")
 }
 
-function findAIFarmerSpotForFarm(farm) {
-    ensureAILearningLoaded()
-    var bestSpot = null
-    var bestScore = -Infinity
-    var step = 24
-    for(var distance = 0; distance <= 140; distance += step) {
-        for(var dx = -distance; dx <= distance; dx += step) {
-            for(var dy = -distance; dy <= distance; dy += step) {
-                if(distance > 0 && Math.max(Math.abs(dx), Math.abs(dy)) != distance) {
-                    continue
-                }
-
-                var x = farm.x + dx
-                var y = farm.y + dy
-                if(canPlaceTowerAt(farm.playerSide, x, y, 30) == false) {
-                    continue
-                }
-
-                var bucket = getAIPlacementBucket(farm.playerSide, x, y)
-                var key = getAIPlacementStatKey(mapNumber, "farmer", "farmer", bucket)
-                var score = getAILearningScore(aiLearning.placementStats, key) * 48
-                score += Math.max(0, 240 - Math.sqrt((x - farm.x) ** 2 + (y - farm.y) ** 2)) * 0.24
-                score += getSideTrackDistance(farm.playerSide, x, y) * 0.14
-                score -= getPlacementCrowdingPenalty(farm.playerSide, x, y, "farmer")
-                if(score > bestScore) {
-                    bestScore = score
-                    bestSpot = { x: x, y: y }
-                }
-            }
-        }
-    }
-
-    return bestSpot
-}
-
 function getAISpotScore(side, x, y, radius, range, role, offsetIndex, towerType, matchup) {
     ensureAILearningLoaded()
-    var placementProfile = AI_PLACEMENT_PROFILES[getCurrentAIStrategy().placementProfile] || AI_PLACEMENT_PROFILES.balanced
-    var roleTargets = placementProfile.roleY[role] || placementProfile.roleY.core
-    var preferredY = canvas.height * roleTargets[(offsetIndex || 0) % roleTargets.length]
     var bucket = getAIPlacementBucket(side, x, y)
     var learningKey = getAIPlacementStatKey(mapNumber, towerType, role, bucket)
     var score = getAILearningScore(aiLearning.placementStats, learningKey) * 48
@@ -6069,56 +5216,6 @@ function getAISpotScore(side, x, y, radius, range, role, offsetIndex, towerType,
         score += getAILearningScore(aiLearning.loadoutPlacementStats, getAILoadoutPlacementStatKey(loadoutKey, strategyId, mapNumber, towerType, role, bucket)) * 58
     }
 
-    if(role == "farm") {
-        var anchor = getAIFarmAnchor(side)
-        var trackDistance = getSideTrackDistance(side, x, y)
-        score += Math.max(0, 260 - Math.sqrt((x - anchor.x) ** 2 + (y - anchor.y) ** 2)) * 0.42
-        score += trackDistance * 0.28
-    } else if(role == "farmer") {
-        var farms = getSideTowersByType(side, "farm")
-        if(farms.length == 0) {
-            return -Infinity
-        }
-
-        var farmsCovered = 0
-        var totalFarmDistance = 0
-        for(var farmIndex = 0; farmIndex < farms.length; farmIndex++) {
-            var farmDistance = Math.sqrt((x - farms[farmIndex].x) ** 2 + (y - farms[farmIndex].y) ** 2)
-            totalFarmDistance += farmDistance
-            if(farmDistance <= 230) {
-                farmsCovered++
-            }
-        }
-        score += farmsCovered * 36
-        score += Math.max(0, 260 - totalFarmDistance / farms.length) * 0.26
-        score += getSideTrackDistance(side, x, y) * 0.14
-    } else {
-        var coverage = getPlacementCoverageStats(side, x, y, range)
-        var progressTarget = getRolePlacementProgressTarget(role)
-        var profile = getTowerPlacementHeuristicProfile(towerType, role)
-        score += coverage.coverageCount * profile.coverage
-        score += coverage.span * profile.span
-        score += coverage.midCount * profile.mid
-        score += coverage.lateCount * profile.late
-        score += coverage.earlyCount * profile.early
-        score += coverage.longestRun * profile.longestRun
-        score += coverage.straightRun * profile.straightRun
-        score += coverage.lineAimScore * profile.lineAim
-        score -= Math.abs(coverage.averageProgress - progressTarget) * profile.progressPenalty
-        score -= Math.abs(y - preferredY) * profile.preferredYPenalty
-        score += Math.max(0, 220 - coverage.nearestTrackDistance) * profile.closeTrack
-        score += coverage.nearestTrackDistance * profile.farTrack
-        score += getTowerPlacementStrategicBonus(towerType, role, coverage, matchup)
-
-        if(towerType == "bomb" || towerType == "boomer" || towerType == "tack" || towerType == "mortar" || towerType == "wizard") {
-            score += coverage.span * 18 + coverage.coverageCount * 0.35
-        }
-        if(towerType == "dartling" || towerType == "mortar" || towerType == "dart") {
-            score += coverage.lineAimScore * 18
-        }
-    }
-
-    score -= getPlacementCrowdingPenalty(side, x, y, towerType)
     return score
 }
 
@@ -6126,33 +5223,12 @@ function findAISpot(side, radius, range, role, offsetIndex, towerType) {
     var bounds = getSideBounds(side, radius)
     var step = role == "farm" || role == "farmer" ? 28 : 32
     var matchup = role == "farm" || role == "farmer" ? null : getCurrentPlayerMatchupStyle(side)
-    var farmerTargets = []
-    if(role == "farmer") {
-        var farms = getSideTowersByType(side, "farm")
-        for(var farmIndex = 0; farmIndex < farms.length; farmIndex++) {
-            if(!isFarmServicedByFarmer(farms[farmIndex])) farmerTargets.push(farms[farmIndex])
-        }
-        if(farmerTargets.length == 0) return null
-    }
     var candidates = []
     for(var y = bounds.minY; y <= bounds.maxY; y += step) {
         for(var x = bounds.minX; x <= bounds.maxX; x += step) {
             if(canPlaceTowerAt(side, x, y, radius) == false) {
                 continue
             }
-            if(role == "farmer") {
-                var servicesTarget = false
-                for(var targetIndex = 0; targetIndex < farmerTargets.length; targetIndex++) {
-                    var targetFarm = farmerTargets[targetIndex]
-                    var serviceRange = Math.max(90, range - targetFarm.range * 0.6)
-                    if(Math.sqrt((x - targetFarm.x) ** 2 + (y - targetFarm.y) ** 2) <= serviceRange) {
-                        servicesTarget = true
-                        break
-                    }
-                }
-                if(!servicesTarget) continue
-            }
-
             candidates.push({
                 x: x,
                 y: y,
@@ -6192,21 +5268,12 @@ function tagAITowerPlacement(tower, role) {
     tower.aiPlacementBucket = getAIPlacementBucket(tower.playerSide, tower.x, tower.y)
     tower.aiPlacedAt = gameNow()
     tower.aiPlacedRound = getCurrentVisibleRound()
-    tower.aiLastInvestmentRound = tower.aiPlacedRound
     tower.aiLoadoutKey = getCurrentAILoadoutKey()
     tower.aiStrategyId = getCurrentAIStrategyId()
     tower.aiCrosspathContexts = tower.aiCrosspathContexts || {}
     if(gameStarted && tower.playerSide == aiSide) {
         noteAITowerCrosspathContext(tower, getCurrentPlayerMatchupStyle(tower.playerSide))
     }
-}
-
-function isAITowerSaleProtected(tower) {
-    if(!tower) {
-        return false
-    }
-    var lastInvestmentRound = Number.isFinite(tower.aiLastInvestmentRound) ? tower.aiLastInvestmentRound : tower.aiPlacedRound
-    return Number.isFinite(lastInvestmentRound) && getCurrentVisibleRound() - lastInvestmentRound < AI_TOWER_MINIMUM_HOLD_ROUNDS
 }
 
 function aiPlaceTower(side, slotIndex, x, y, role) {
@@ -6243,7 +5310,7 @@ function aiPlaceTowerInRole(side, slotIndex, role, spotIndex) {
 }
 
 function aiPlaceFarmer(side, x, y) {
-    if(getSideTowersByType(side, "farm").length == 0 || players[side].money < baseFarmerPrice || canPlaceTowerAt(side, x, y, 30) == false) {
+    if(players[side].money < baseFarmerPrice || canPlaceTowerAt(side, x, y, 30) == false) {
         return null
     }
 
@@ -6290,18 +5357,13 @@ function getSideTowersByImage(side, image) {
 }
 
 function getStrategyPlacementRoleForImage(image) {
-    var strategy = getCurrentAIStrategy()
-    return strategy.placementRoles[image] || "core"
+    var towerType = getTowerTypeFromImage(image)
+    if(towerType == "farm") return "farm"
+    if(towerType == "farmer") return "farmer"
+    return "tower"
 }
 
 function getStrategyPlacementRoleForTowerType(towerType) {
-    var strategy = getCurrentAIStrategy()
-    for(var i = 0; i < strategy.towers.length; i++) {
-        if(getTowerTypeFromImage(strategy.towers[i]) == towerType) {
-            return getStrategyPlacementRoleForImage(strategy.towers[i])
-        }
-    }
-
     if(towerType == "farmer") {
         return "farmer"
     }
@@ -6309,17 +5371,7 @@ function getStrategyPlacementRoleForTowerType(towerType) {
         return "farm"
     }
 
-    return "core"
-}
-
-function getSideTowersByStrategyRole(side, role) {
-    var sideTowers = []
-    for(var i = 0; i < towers.length; i++) {
-        if(towers[i].playerSide == side && getStrategyPlacementRoleForTowerType(towers[i].towerType) == role) {
-            sideTowers.push(towers[i])
-        }
-    }
-    return sideTowers
+    return "tower"
 }
 
 function getSideTowerCountExcluding(side, excludedTypes) {
@@ -6798,7 +5850,7 @@ function aiRequestPlaceTowerImage(side, image, priority, decisionSample, targetX
             decisionSample: decisionSample || null,
         })
     }
-    var spotIndex = getSideTowersByStrategyRole(side, role).length
+    var spotIndex = getSideTowersByType(side, getTowerTypeFromImage(image)).length
     return aiRequestPlaceTowerInRole(side, slotIndex, role, spotIndex, priority, decisionSample)
 }
 
@@ -6847,7 +5899,6 @@ function aiTryUpgradeTower(side, tower, pathNumber) {
     }
     var upgraded = tower[upgradeProp] > beforeUpgradeCount
     if(upgraded) {
-        tower.aiLastInvestmentRound = getCurrentVisibleRound()
         noteAITowerCrosspathContext(tower, getCurrentPlayerMatchupStyle(side))
     }
     return upgraded
@@ -6862,13 +5913,16 @@ function aiTryCollectFarm(side, tower) {
 }
 
 function aiTrySellTower(side, tower) {
-    if(!tower || tower.playerSide != side || isAITowerSaleProtected(tower)) {
+    if(!tower || tower.playerSide != side) {
         return false
     }
     if(typeof sellTowerInstance != "function") {
         return false
     }
-    return sellTowerInstance(tower)
+    var placementOutcome = captureAITowerPlacementOutcome(tower)
+    var sold = sellTowerInstance(tower)
+    if(sold) finalizeAITowerPlacementOutcome(tower, placementOutcome)
+    return sold
 }
 
 function moveAICursorToward(side, targetX, targetY) {
@@ -6940,6 +5994,7 @@ function startAIManualAimAction(side, type, aimTowers, targetX, targetY, decisio
         return false
     }
 
+    settleAITacticalDecision(side, decisionSample, false)
     aiProfile.manualAimAction = {
         side: side,
         type: type,
@@ -6950,6 +6005,8 @@ function startAIManualAimAction(side, type, aimTowers, targetX, targetY, decisio
         targetY: targetY,
         readyAt: 0,
         decisionSample: decisionSample || null,
+        factualOutcomeBefore: getAIFactualDecisionOutcomeSnapshot(side),
+        actionContext: { kind: "neutral" },
     }
     aiProfile.aimLocked = false
     return true
@@ -7056,7 +6113,7 @@ function advanceAIManualAimAction(side) {
         return true
     }
 
-    if(action.decisionSample) recordAITacticalDecision(side, "aim", "aim|" + action.type, getCurrentPlayerMatchupStyle(side), action.decisionSample)
+    if(action.decisionSample) recordAITacticalDecision(side, "aim", "aim|" + action.type, getCurrentPlayerMatchupStyle(side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)
     aiProfile.manualAimAction = null
     var aimTowers = getManualAimTowers(side)
     aiProfile.aimLocked = aimTowers.length > 0 && aimTowers.every(isManualAimTowerLocked)
@@ -7116,6 +6173,47 @@ function clearAIAction() {
     aiProfile.currentAction = null
 }
 
+function getAIActionRewardContext(action) {
+    if(!action) {
+        return null
+    }
+
+    if(action.type == "placeTower") {
+        var towerImage = players[action.side].towers[action.slotIndex]
+        var towerConfig = LOADOUT_TOWER_CONFIG[towerImage]
+        return { kind: "spend", expectedCost: towerConfig ? towerConfig.price() : 0 }
+    }
+    if(action.type == "placeFarmer") {
+        return { kind: "spend", expectedCost: baseFarmerPrice }
+    }
+    if(action.type == "upgradeTower") {
+        var upgradeTower = action.tower
+        var upgradeCost = upgradeTower ? upgradeTower["path" + action.pathNumber + "Cost"][upgradeTower["path" + action.pathNumber + "Upgrades"]] : 0
+        return { kind: "spend", expectedCost: typeof upgradeCost == "number" ? upgradeCost : 0 }
+    }
+    if(action.type == "sellTower") {
+        var sellTower = action.tower
+        var sellValue = getAITowerSellValueEstimate(sellTower)
+        var bankValue = sellTower && sellTower.towerType == "farm" && sellTower.path2Upgrades >= 3 ? Math.max(0, Number(sellTower.towerVar) || 0) : 0
+        var totalCost = sellTower ? Math.max(0, Number(sellTower.totalCost) || 0) : 0
+        return {
+            kind: "liquidate",
+            proceeds: sellValue + bankValue,
+            liquidationLoss: Math.max(0, totalCost - sellValue),
+        }
+    }
+    if(action.type == "collectFarm") {
+        return { kind: "income", expectedIncome: action.tower ? Math.max(0, Number(action.tower.towerVar) || 0) : 0 }
+    }
+    if(action.type == "collectBanana") {
+        return { kind: "income", expectedIncome: action.banana ? Math.max(0, Number(action.banana.cashGiven) || 0) : 0 }
+    }
+    if(action.type == "aim") {
+        return { kind: "neutral" }
+    }
+    return null
+}
+
 function setAIAction(action) {
     if(!action) {
         return false
@@ -7135,6 +6233,11 @@ function setAIAction(action) {
     }
 
     action.attempts = 0
+    if(action.side != null && action.decisionSample) {
+        settleAITacticalDecision(action.side, action.decisionSample, false)
+        action.factualOutcomeBefore = getAIFactualDecisionOutcomeSnapshot(action.side)
+        action.actionContext = getAIActionRewardContext(action)
+    }
     aiProfile.currentAction = action
     return true
 }
@@ -7179,22 +6282,6 @@ function aiRequestPlaceFarmer(side, priority, decisionSample) {
     })
 }
 
-function aiRequestPlaceFarmerForFarm(farm, priority, decisionSample) {
-    var spot = findAIFarmerSpotForFarm(farm)
-    if(!spot) {
-        return false
-    }
-
-    return setAIAction({
-        type: "placeFarmer",
-        side: farm.playerSide,
-        targetX: spot.x,
-        targetY: spot.y,
-        priority: priority,
-        decisionSample: decisionSample || null,
-    })
-}
-
 function aiRequestUpgradeTower(side, tower, pathNumber, priority, decisionSample) {
     if(!tower) {
         return false
@@ -7214,7 +6301,7 @@ function aiRequestUpgradeTower(side, tower, pathNumber, priority, decisionSample
 }
 
 function aiRequestSellTower(side, tower, priority, decisionSample) {
-    if(!tower || tower.playerSide != side || isAITowerSaleProtected(tower)) {
+    if(!tower || tower.playerSide != side) {
         return false
     }
 
@@ -7282,13 +6369,17 @@ function executeAIAction(action) {
     } else if(action.type == "placeTower") {
         var placedTower = aiPlaceTower(action.side, action.slotIndex, players[action.side].cursor.x, players[action.side].cursor.y, action.role)
         if(placedTower) {
-            recordAITacticalDecision(action.side, placedTower.towerType == "farm" ? "farm" : "development", "place|" + placedTower.towerType + "|" + (action.role || "core"), getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+            if(recordAITacticalDecision(action.side, placedTower.towerType == "farm" ? "farm" : "development", "place|" + placedTower.towerType + "|" + (action.role || "core"), getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)) {
+                bindAITowerPlacementOutcome(placedTower)
+            }
         }
         return placedTower != null
     } else if(action.type == "placeFarmer") {
         var placedFarmer = aiPlaceFarmer(action.side, players[action.side].cursor.x, players[action.side].cursor.y)
         if(placedFarmer) {
-            recordAITacticalDecision(action.side, "farm", "place|farmer", getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+            if(recordAITacticalDecision(action.side, "farm", "place|farmer", getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)) {
+                bindAITowerPlacementOutcome(placedFarmer)
+            }
         }
         return placedFarmer != null
     } else if(action.type == "upgradeTower") {
@@ -7307,24 +6398,24 @@ function executeAIAction(action) {
         }
         var upgradeSucceeded = aiTryUpgradeTower(action.side, action.tower, action.pathNumber)
         if(upgradeSucceeded) {
-            recordAITacticalDecision(action.side, action.tower.towerType == "farm" ? "farm" : "development", "upgrade|" + action.tower.towerType + "|" + action.pathNumber, getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+            recordAITacticalDecision(action.side, action.tower.towerType == "farm" ? "farm" : "development", "upgrade|" + action.tower.towerType + "|" + action.pathNumber, getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)
         }
         return upgradeSucceeded
     } else if(action.type == "collectFarm") {
         action.tower = getAITowerByID(action.towerID)
         var collectedFarm = aiTryCollectFarm(action.side, action.tower)
-        if(collectedFarm) recordAITacticalDecision(action.side, "farm", "collect|farm", getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+        if(collectedFarm) recordAITacticalDecision(action.side, "farm", "collect|farm", getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)
         return collectedFarm
     } else if(action.type == "sellTower") {
         action.tower = getAITowerByID(action.towerID)
         var soldTowerType = action.tower ? action.tower.towerType : "missing"
         var sellSucceeded = aiTrySellTower(action.side, action.tower)
         if(sellSucceeded) {
-            recordAITacticalDecision(action.side, soldTowerType == "farm" ? "farm" : "development", "sell|" + soldTowerType, getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+            recordAITacticalDecision(action.side, soldTowerType == "farm" ? "farm" : "development", "sell|" + soldTowerType, getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)
         }
         return sellSucceeded
     } else if(action.type == "collectBanana") {
-        recordAITacticalDecision(action.side, "farm", "collect|banana", getCurrentPlayerMatchupStyle(action.side), action.decisionSample)
+        recordAITacticalDecision(action.side, "farm", "collect|banana", getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)
         return true
     } else if(action.type == "deselectTower") {
         selectTowerAt(action.side, players[action.side].cursor.x, players[action.side].cursor.y)
@@ -7488,6 +6579,7 @@ function runAIAiming(side) {
 }
 
 function aiSelectEcoSend(side, matchup) {
+    var factualOutcomeBefore = getAIFactualDecisionOutcomeSnapshot(side)
     var startIndex = side == PLAYER_SIDE.left ? 0 : 10
     var endIndex = side == PLAYER_SIDE.left ? 9 : 19
     var currentLocalIndex = clamp(players[side].selectedBloon - startIndex, 0, endIndex - startIndex)
@@ -7541,7 +6633,7 @@ function aiSelectEcoSend(side, matchup) {
         players[side].autoEco = true
         aiProfile.startedAutoEcoAt = true
         if(previousIndex != bestIndex || wasAutoEco == false) {
-            recordAITacticalDecision(side, "eco", "send|" + (bestIndex - startIndex), matchup, bestDecision)
+            recordAITacticalDecision(side, "eco", "send|" + (bestIndex - startIndex), matchup, bestDecision, factualOutcomeBefore, { kind: "spend", expectedCost: displayBloons[bestIndex].cost })
         }
     }
 }
@@ -7593,11 +6685,13 @@ function getBestRushPlan(side, matchup) {
 }
 
 function aiQueueRush(side, matchup) {
+    var factualOutcomeBefore = getAIFactualDecisionOutcomeSnapshot(side)
     var plan = getBestRushPlan(side, matchup)
     if(!plan || plan.noop) {
         if(plan) recordAINoOpDecision(plan.decisionSample)
         return false
     }
+    settleAITacticalDecision(side, plan.decisionSample, false)
     players[side].autoEco = false
     players[side].selectedBloon = plan.index
     var queuedAny = false
@@ -7615,7 +6709,7 @@ function aiQueueRush(side, matchup) {
     if(queuedAny == false) {
         return false
     }
-    recordAITacticalDecision(side, "rush", plan.decisionSample.id, matchup, plan.decisionSample)
+    recordAITacticalDecision(side, "rush", plan.decisionSample.id, matchup, plan.decisionSample, factualOutcomeBefore, { kind: "spend", expectedCost: Math.max(0, factualOutcomeBefore.ownMoney - players[side].money) })
     return true
 }
 
@@ -7645,10 +6739,12 @@ function aiTryUseBoostType(side, boostType, decisionSample) {
         return false
     }
 
+    var factualOutcomeBefore = getAIFactualDecisionOutcomeSnapshot(side)
+    settleAITacticalDecision(side, decisionSample, false)
     var used = aiTryUseBoost(side, slot)
     if(used) {
         var family = boostType == "bloonboost.png" || boostType == "slowboost.png" ? "offenseBoost" : boostType == "ecoboost.png" ? "eco" : "defenseBoost"
-        recordAITacticalDecision(side, family, "boost|" + boostType.replace(".png", ""), getCurrentPlayerMatchupStyle(side), decisionSample)
+        recordAITacticalDecision(side, family, "boost|" + boostType.replace(".png", ""), getCurrentPlayerMatchupStyle(side), decisionSample, factualOutcomeBefore, { kind: "neutral" })
     }
     return used
 }
@@ -7954,190 +7050,6 @@ function canTowerUpgradePathNow(side, tower, pathNumber) {
     return true
 }
 
-function canAIUpgradeToHandleThreat(side, matchup, defenseMath) {
-    var option = getBestTowerUpgradeOption(side, matchup, defenseMath || matchup.defenseMath)
-    if(!option) {
-        return false
-    }
-
-    var relevantMath = defenseMath || matchup.defenseMath
-    if(!relevantMath || relevantMath.requiredDps <= 0) {
-        return true
-    }
-
-    return option.projectedDps >= relevantMath.requiredDps * 0.94 || option.dpsGain >= Math.max(6, relevantMath.requiredDps - relevantMath.currentDps)
-}
-
-function canAIPlaceExtraDefenseNow(side, matchup, defenseMath) {
-    var option = getBestPlacementOption(side, matchup, defenseMath || matchup.defenseMath, true)
-    if(!option) {
-        return false
-    }
-
-    var relevantMath = defenseMath || matchup.defenseMath
-    if(!relevantMath || relevantMath.requiredDps <= 0) {
-        return true
-    }
-
-    return option.projectedDps >= relevantMath.requiredDps * 0.9 || option.dpsGain >= Math.max(8, relevantMath.requiredDps - relevantMath.currentDps)
-}
-
-function isAIDefenseActionPending() {
-    return aiProfile.currentAction && (aiProfile.currentAction.type == "upgradeTower" || aiProfile.currentAction.type == "placeTower")
-}
-
-function shouldAITowerBoost(side) {
-    var threat = getBloonThreatSnapshot(side, false)
-    var boostWindow = getTowerBoostThreatSnapshot(side)
-    var matchup = getCurrentPlayerMatchupStyle(side)
-    var defenseMath = matchup.defenseMath
-    var lives = players[side].lives == Infinity ? 150 : players[side].lives
-    var actionPending = isAIDefenseActionPending()
-    var canStillDefendWithoutBoost = canAIUpgradeToHandleThreat(side, matchup, defenseMath) || canAIPlaceExtraDefenseNow(side, matchup, defenseMath)
-
-    if(threat.count == 0) {
-        return false
-    }
-    if(defenseMath.closeRequiredDps <= defenseMath.currentDps * 1.06 && threat.nearExitScore < 18 && boostWindow.heavyCount == 0) {
-        return false
-    }
-    if(boostWindow.count == 0) {
-        return false
-    }
-    if(boostWindow.closeScore < 7 && boostWindow.heavyCount == 0) {
-        return false
-    }
-    if(boostWindow.score < threat.score * 0.34 && threat.nearExitScore < 18) {
-        return false
-    }
-    if((actionPending || canStillDefendWithoutBoost) && defenseMath.minTimeToExitSec > 2.8 && defenseMath.requiredDps <= defenseMath.currentDps * 1.22 && boostWindow.closeScore < 16 && threat.maxPathPos < 64) {
-        return false
-    }
-
-    return defenseMath.boostedDps >= Math.max(defenseMath.closeRequiredDps, defenseMath.requiredDps * 0.88) * 0.94 && (defenseMath.minTimeToExitSec <= 4.5 || boostWindow.closeScore >= 14 || threat.nearExitScore >= 18 || boostWindow.heavyCount >= 1) || defenseMath.minTimeToExitSec <= 2.2 && defenseMath.currentDps < defenseMath.requiredDps
-}
-
-function shouldAIBloonBoost(side) {
-    var enemySide = side == PLAYER_SIDE.left ? PLAYER_SIDE.right : PLAYER_SIDE.left
-    var pressure = getBloonThreatSnapshot(enemySide, true)
-    var offenseWindow = getOffensiveBoostSnapshot(side)
-    var matchup = getCurrentPlayerMatchupStyle(side)
-    var offenseMath = matchup.offenseMath
-    var enemyLiquidity = matchup.enemyLiquidity
-    var enemyLives = players[enemySide].lives == Infinity ? 150 : players[enemySide].lives
-    var actionPending = isAIDefenseActionPending()
-
-    if(pressure.sentCount == 0) {
-        return false
-    }
-    if(offenseMath.requiredDps <= 0 || offenseMath.currentDps >= offenseMath.bloonBoostRequiredDps) {
-        return false
-    }
-    if(offenseWindow.count == 0) {
-        return false
-    }
-    if(offenseWindow.closeScore < 10 && offenseWindow.nearExitScore < 10 && offenseWindow.heavyCount == 0) {
-        return false
-    }
-    if((actionPending || matchup.dangerHigh) && offenseWindow.nearExitScore < 16 && offenseWindow.closeScore < 18) {
-        return false
-    }
-    if(gameNow() - aiProfile.lastRushAt > 4500 && offenseWindow.nearExitScore < 12 && offenseWindow.closeScore < 18) {
-        return false
-    }
-    if(enemyLiquidity.rich && enemyLiquidity.canDevelopSoon && offenseWindow.nearExitScore < 14 && offenseWindow.closeScore < 18 && offenseWindow.heavyCount == 0) {
-        return false
-    }
-    if(enemyLiquidity.canDevelopNow && matchup.enemyVulnerable == false && offenseMath.bloonBoostRequiredDps <= offenseMath.currentDps * 1.12 && offenseWindow.nearExitScore < 14 && offenseWindow.closeScore < 18) {
-        return false
-    }
-
-    return offenseMath.bloonBoostRequiredDps > offenseMath.currentDps * (enemyLiquidity.poor ? 1.0 : 1.03) && (offenseWindow.nearExitScore >= (enemyLiquidity.poor ? 8 : 10) || offenseWindow.heavyCount >= 1 && offenseWindow.closeScore >= (enemyLiquidity.poor ? 8 : 9) || pressure.sentCount >= 8 && pressure.maxPathPos >= 52 && offenseWindow.closeScore >= (enemyLiquidity.poor ? 10 : 11) || enemyLives <= 80 && offenseWindow.closeScore >= (enemyLiquidity.poor ? 10 : 12))
-}
-
-function shouldAILightningBoost(side) {
-    var threat = getBloonThreatSnapshot(side, false)
-    var boostWindow = getTowerBoostThreatSnapshot(side)
-    var matchup = getCurrentPlayerMatchupStyle(side)
-    var defenseMath = matchup.defenseMath
-    var actionPending = isAIDefenseActionPending()
-    var canStillDefendWithoutBoost = canAIUpgradeToHandleThreat(side, matchup, defenseMath) || canAIPlaceExtraDefenseNow(side, matchup, defenseMath)
-
-    if(threat.heavyCount > 0) {
-        return false
-    }
-    if(defenseMath.closeRequiredDps <= defenseMath.currentDps * 1.05 && threat.nearExitScore < 16) {
-        return false
-    }
-    if(boostWindow.count < 8) {
-        return false
-    }
-    if(boostWindow.closeScore < 9) {
-        return false
-    }
-    if(boostWindow.score < threat.score * 0.36 && threat.nearExitScore < 18) {
-        return false
-    }
-    if((actionPending || canStillDefendWithoutBoost) && defenseMath.minTimeToExitSec > 3 && defenseMath.requiredDps <= defenseMath.currentDps * 1.2 && boostWindow.closeScore < 16 && threat.maxPathPos < 62) {
-        return false
-    }
-
-    return defenseMath.currentDps + defenseMath.lightningDps >= Math.max(defenseMath.closeRequiredDps, defenseMath.requiredDps * 0.88) * 0.94 && (boostWindow.count >= 12 || threat.nearExitScore >= 18 || defenseMath.minTimeToExitSec <= 3)
-}
-
-function shouldAISlowBoost(side) {
-    var enemySide = side == PLAYER_SIDE.left ? PLAYER_SIDE.right : PLAYER_SIDE.left
-    var offenseWindow = getOffensiveBoostSnapshot(side)
-    var matchup = getCurrentPlayerMatchupStyle(side)
-    var offenseMath = matchup.offenseMath
-    var enemyLiquidity = matchup.enemyLiquidity
-    var actionPending = isAIDefenseActionPending()
-    var enemyDefense = getSideTowerCountExcluding(enemySide, ["farm", "farmer", "cobra"])
-
-    if(enemyDefense == 0) {
-        return false
-    }
-    if(offenseMath.requiredDps <= 0 || offenseMath.currentDps <= offenseMath.requiredDps) {
-        return false
-    }
-    if(offenseWindow.count < 5) {
-        return false
-    }
-    if(offenseWindow.closeScore < 10) {
-        return false
-    }
-    if((actionPending || matchup.dangerHigh) && offenseWindow.nearExitScore < 18 && offenseWindow.closeScore < 20) {
-        return false
-    }
-    if(gameNow() - aiProfile.lastRushAt > 4500 && offenseWindow.nearExitScore < 10 && offenseWindow.closeScore < 18) {
-        return false
-    }
-    if(enemyLiquidity.rich && enemyLiquidity.canDevelopSoon && offenseWindow.nearExitScore < 16 && offenseWindow.closeScore < 20 && offenseWindow.heavyCount == 0) {
-        return false
-    }
-    if(enemyLiquidity.canDevelopNow && matchup.enemyVulnerable == false && offenseMath.slowedDefenseDps >= offenseMath.requiredDps * 0.88 && offenseWindow.nearExitScore < 16 && offenseWindow.closeScore < 18) {
-        return false
-    }
-
-    return offenseMath.slowedDefenseDps < offenseMath.requiredDps * (enemyLiquidity.poor ? 1.0 : 0.96) && (offenseWindow.heavyCount >= 1 && offenseWindow.closeScore >= (enemyLiquidity.poor ? 9 : 10) || offenseWindow.defendedCount >= 6 && offenseWindow.closeScore >= (enemyLiquidity.poor ? 11 : 12) || offenseWindow.closeScore >= (enemyLiquidity.poor ? 16 : 18))
-}
-
-function shouldAIEcoBoost(side) {
-    var threat = getBloonThreatSnapshot(side, false)
-    var offenseWindow = getOffensiveBoostSnapshot(side)
-    var matchup = getCurrentPlayerMatchupStyle(side)
-    var strategy = getCurrentAIStrategy()
-
-    if(isAIDefenseActionPending() || matchup.dangerHigh) {
-        return false
-    }
-    if(offenseWindow.closeScore >= 10 || offenseWindow.nearExitScore >= 8) {
-        return false
-    }
-
-    return round >= 10 && round <= 26 && threat.score < 8 && players[side].eco < 900 + round * 14 && players[side].money < strategy.ecoFloor + 1500
-}
-
 function handleAIRoundStartBoosts(side) {
     var visibleRound = Math.max(1, Math.trunc(round / 2))
     if(visibleRound <= 0 || visibleRound == aiProfile.lastRoundBoostCheck) {
@@ -8145,17 +7057,6 @@ function handleAIRoundStartBoosts(side) {
     }
 
     aiProfile.lastRoundBoostCheck = visibleRound
-}
-
-function getStrategyImageForTowerType(towerType) {
-    var strategy = getCurrentAIStrategy()
-    for(var i = 0; i < strategy.towers.length; i++) {
-        if(getTowerTypeFromImage(strategy.towers[i]) == towerType) {
-            return strategy.towers[i]
-        }
-    }
-
-    return ""
 }
 
 function getCurrentPlayerMatchupStyle(side) {
@@ -8253,7 +7154,6 @@ function updateAIMatchTelemetry() {
 
 function getBestAIEconomyUtilityOption(side, matchup) {
     var bestOption = null
-    var visibleRound = getCurrentVisibleRound()
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.sell, matchup)
     function considerUtilityOption(option) {
         if(!bestOption || isAIDecisionScoreBetter(option.decisionSample, bestOption.decisionSample)) bestOption = option
@@ -8261,28 +7161,27 @@ function getBestAIEconomyUtilityOption(side, matchup) {
     for(var i = 0; i < towers.length; i++) {
         var tower = towers[i]
         if(!tower || tower.playerSide != side) continue
-        if(tower.towerType == "farmer") continue
-        if(isAITowerSaleProtected(tower) == false) {
-            var sellValue = getAITowerSellValueEstimate(tower)
-            var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
-                id: "sell|" + tower.towerType + "|" + tower.towerID,
-                type: tower.towerType,
-                actionKey: "sell|" + tower.towerType,
-                money: players[side].money,
-                position: clamp(Math.log1p(sellValue) / Math.log(100001), 0, 1),
-                x: tower.x,
-                y: tower.y,
-                tier1: tower.path1Upgrades,
-                tier2: tower.path2Upgrades,
-                tier3: tower.path3Upgrades,
-                count: Math.max(0, Number(tower.towerVar) || 0),
-                countScale: 6000,
-                tower: tower,
-                capabilityScale: -1,
-                capabilityFacts: { cashDelta: sellValue },
-            }, matchup, decisionState)
-            considerUtilityOption({ type: "sell", tower: tower, score: decision.score, decisionSample: decision })
-        }
+        var sellValue = getAITowerSellValueEstimate(tower)
+        var sellBank = tower.towerType == "farm" && tower.path2Upgrades >= 3 ? Math.max(0, Number(tower.towerVar) || 0) : 0
+        var sellProceeds = sellValue + sellBank
+        var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
+            id: "sell|" + tower.towerType + "|" + tower.towerID,
+            type: tower.towerType,
+            actionKey: "sell|" + tower.towerType,
+            money: players[side].money,
+            position: clamp(Math.log1p(sellProceeds) / Math.log(100001), 0, 1),
+            x: tower.x,
+            y: tower.y,
+            tier1: tower.path1Upgrades,
+            tier2: tower.path2Upgrades,
+            tier3: tower.path3Upgrades,
+            count: sellProceeds,
+            countScale: 6000,
+            tower: tower,
+            capabilityScale: -1,
+            capabilityFacts: { cashDelta: sellProceeds },
+        }, matchup, decisionState)
+        considerUtilityOption({ type: "sell", tower: tower, score: decision.score, decisionSample: decision })
         if(tower.towerType == "farm" && tower.path2Upgrades >= 3 && tower.towerVar > 0) {
             var collectDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.sell, {
                 id: "collect|farm|" + tower.towerID,
@@ -8322,43 +7221,6 @@ function getBestAIEconomyUtilityOption(side, matchup) {
     return bestOption
 }
 
-function getEmergencyDefenseImages(strategy) {
-    var priority = []
-    for(var i = 0; i < strategy.towers.length; i++) {
-        var role = getStrategyPlacementRoleForImage(strategy.towers[i])
-        if(role == "antiMoab") {
-            priority.push(strategy.towers[i])
-        }
-    }
-    for(var j = 0; j < strategy.towers.length; j++) {
-        var coreRole = getStrategyPlacementRoleForImage(strategy.towers[j])
-        if(coreRole == "core" || coreRole == "elite") {
-            priority.push(strategy.towers[j])
-        }
-    }
-
-    return priority
-}
-
-function getDominantTowerPath(tower) {
-    if(!tower) {
-        return 1
-    }
-
-    var dominantPath = 1
-    if(tower.path2Upgrades > tower.path1Upgrades) {
-        dominantPath = 2
-    }
-    if(tower.path3Upgrades > tower["path" + dominantPath + "Upgrades"]) {
-        dominantPath = 3
-    }
-    return dominantPath
-}
-
-function getTowerTargetSignature(target) {
-    return String(target[0]) + String(target[1]) + String(target[2])
-}
-
 function getTowerCurrentSignature(tower) {
     if(!tower) {
         return "000"
@@ -8377,7 +7239,7 @@ function getCrosspathContextKeyForMatchup(towerType, matchup) {
     if(matchup.playerThreat.count >= 12 || matchup.playerThreat.score >= 15) {
         return "swarm"
     }
-    if(matchup.enemyVulnerable && getCurrentAIStrategy().rushBias >= 0.72) {
+    if(matchup.enemyVulnerable) {
         return "pressure"
     }
     if(matchup.safeToGreed) {
@@ -8467,218 +7329,6 @@ function getTowerDominantCrosspathContext(tower) {
     return bestContext
 }
 
-function getTowerBuildTargets(tower, matchup) {
-    var dominantPath = getDominantTowerPath(tower)
-    var baseTargets = null
-
-    if(tower.towerType == "farm") {
-        baseTargets = matchup.safeToGreed ? [{ target: [2, 3, 0], weight: 1.45 }, { target: [0, 2, 3], weight: 1.1 }] : [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 3, 0], weight: 0.95 }]
-    } else if(tower.towerType == "dart") {
-        if(dominantPath == 1) {
-            baseTargets = [{ target: [3, 2, 0], weight: 1.45 }, { target: [0, 2, 3], weight: 1.0 }]
-        } else if(dominantPath == 3) {
-            baseTargets = matchup.playerThreat.heavyCount >= 1 ? [{ target: [3, 2, 0], weight: 1.38 }, { target: [0, 2, 3], weight: 1.05 }] : [{ target: [0, 2, 3], weight: 1.42 }, { target: [3, 2, 0], weight: 1.0 }]
-        } else {
-            baseTargets = matchup.dangerHigh ? [{ target: [3, 2, 0], weight: 1.35 }, { target: [0, 2, 3], weight: 1.08 }] : [{ target: [0, 2, 3], weight: 1.34 }, { target: [3, 2, 0], weight: 1.06 }]
-        }
-    } else if(tower.towerType == "tack") {
-        if(dominantPath == 1) {
-            baseTargets = [{ target: [3, 2, 0], weight: 1.42 }, { target: [0, 2, 3], weight: 1.0 }]
-        } else if(dominantPath == 3) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.45 }, { target: [3, 2, 0], weight: 1.0 }]
-        } else {
-            baseTargets = matchup.dangerHigh ? [{ target: [0, 2, 3], weight: 1.34 }, { target: [3, 2, 0], weight: 1.08 }] : [{ target: [3, 2, 0], weight: 1.28 }, { target: [0, 2, 3], weight: 1.16 }]
-        }
-    } else if(tower.towerType == "wizard") {
-        if(dominantPath == 2) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 0, 3], weight: 1.05 }]
-        } else if(dominantPath == 1) {
-            baseTargets = [{ target: [2, 0, 3], weight: 1.4 }, { target: [2, 3, 0], weight: 1.0 }]
-        } else {
-            baseTargets = matchup.dangerHigh || matchup.playerThreat.heavyCount >= 1 ? [{ target: [2, 0, 3], weight: 1.45 }, { target: [0, 2, 3], weight: 1.05 }] : [{ target: [0, 2, 3], weight: 1.4 }, { target: [2, 0, 3], weight: 1.1 }]
-        }
-    } else if(tower.towerType == "bomb") {
-        if(dominantPath == 2) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.4 }, { target: [2, 0, 3], weight: 1.05 }]
-        } else {
-            baseTargets = matchup.playerThreat.heavyCount >= 1 ? [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 0, 3], weight: 1.0 }] : [{ target: [2, 0, 3], weight: 1.35 }, { target: [0, 2, 3], weight: 1.05 }]
-        }
-    } else if(tower.towerType == "ice") {
-        if(dominantPath == 2) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 3, 0], weight: 1.02 }]
-        } else if(dominantPath == 1) {
-            baseTargets = [{ target: [2, 3, 0], weight: 1.42 }, { target: [0, 2, 3], weight: 1.04 }]
-        } else {
-            baseTargets = matchup.playerThreat.heavyCount >= 1 ? [{ target: [0, 2, 3], weight: 1.4 }, { target: [2, 3, 0], weight: 1.06 }] : [{ target: [2, 3, 0], weight: 1.34 }, { target: [0, 2, 3], weight: 1.1 }]
-        }
-    } else if(tower.towerType == "mortar") {
-        if(dominantPath == 3) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 3, 0], weight: 1.0 }]
-        } else {
-            baseTargets = matchup.playerThreat.heavyCount >= 1 ? [{ target: [2, 3, 0], weight: 1.45 }, { target: [0, 2, 3], weight: 1.05 }] : [{ target: [0, 2, 3], weight: 1.35 }, { target: [2, 3, 0], weight: 1.1 }]
-        }
-    } else if(tower.towerType == "dartling") {
-        if(dominantPath == 2) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 3, 0], weight: 1.0 }]
-        } else {
-            baseTargets = matchup.dangerHigh ? [{ target: [2, 3, 0], weight: 1.45 }, { target: [0, 2, 3], weight: 1.05 }] : [{ target: [0, 2, 3], weight: 1.35 }, { target: [2, 3, 0], weight: 1.1 }]
-        }
-    } else if(tower.towerType == "ninja") {
-        baseTargets = dominantPath == 2 ? [{ target: [1, 3, 2], weight: 1.45 }, { target: [2, 0, 3], weight: 1.0 }] : matchup.dangerHigh ? [{ target: [2, 0, 3], weight: 1.4 }, { target: [1, 3, 2], weight: 1.05 }] : [{ target: [1, 3, 2], weight: 1.35 }, { target: [2, 0, 3], weight: 1.0 }]
-    } else if(tower.towerType == "sniper") {
-        baseTargets = dominantPath == 1 ? [{ target: [3, 2, 0], weight: 1.4 }, { target: [2, 3, 0], weight: 1.0 }] : matchup.safeToGreed ? [{ target: [2, 3, 0], weight: 1.45 }, { target: [3, 2, 0], weight: 1.0 }] : [{ target: [3, 2, 0], weight: 1.35 }, { target: [2, 3, 0], weight: 1.05 }]
-    } else if(tower.towerType == "engi") {
-        baseTargets = dominantPath == 1 ? [{ target: [3, 1, 2], weight: 1.4 }, { target: [1, 3, 2], weight: 1.05 }] : matchup.dangerHigh ? [{ target: [1, 3, 2], weight: 1.45 }, { target: [3, 1, 2], weight: 1.0 }] : [{ target: [3, 1, 2], weight: 1.35 }, { target: [1, 3, 2], weight: 1.1 }]
-    } else if(tower.towerType == "buccaneer") {
-        if(matchup.safeToGreed) {
-            baseTargets = [{ target: [2, 0, 3], weight: 1.45 }, { target: [3, 2, 0], weight: 1.0 }]
-        } else if(matchup.playerThreat.heavyCount >= 1) {
-            baseTargets = [{ target: [0, 2, 3], weight: 1.42 }, { target: [3, 2, 0], weight: 1.04 }]
-        } else {
-            baseTargets = [{ target: [3, 2, 0], weight: 1.34 }, { target: [0, 2, 3], weight: 1.08 }]
-        }
-    } else if(tower.towerType == "boomer") {
-        baseTargets = dominantPath == 3 ? [{ target: [2, 0, 3], weight: 1.35 }, { target: [2, 3, 0], weight: 1.05 }] : matchup.dangerHigh ? [{ target: [2, 0, 3], weight: 1.4 }, { target: [2, 3, 0], weight: 1.1 }] : [{ target: [2, 3, 0], weight: 1.4 }, { target: [2, 0, 3], weight: 1.05 }]
-    } else if(tower.towerType == "super") {
-        baseTargets = matchup.dangerHigh ? [{ target: [3, 2, 0], weight: 1.45 }, { target: [2, 3, 0], weight: 1.05 }] : [{ target: [2, 3, 0], weight: 1.35 }, { target: [3, 2, 0], weight: 1.1 }]
-    } else if(tower.towerType == "cobra") {
-        baseTargets = matchup.enemyVulnerable ? [{ target: [0, 2, 3], weight: 1.45 }, { target: [2, 3, 0], weight: 1.0 }] : [{ target: [2, 3, 0], weight: 1.35 }, { target: [0, 2, 3], weight: 1.05 }]
-    } else if(tower.towerType == "sword") {
-        if(dominantPath == 1) {
-            baseTargets = [{ target: [3, 2, 0], weight: 1.44 }, { target: [2, 0, 3], weight: 1.0 }]
-        } else if(dominantPath == 2) {
-            baseTargets = [{ target: [0, 3, 2], weight: 1.42 }, { target: [3, 2, 0], weight: 1.02 }]
-        } else {
-            baseTargets = matchup.dangerHigh ? [{ target: [0, 3, 2], weight: 1.36 }, { target: [2, 0, 3], weight: 1.1 }] : [{ target: [2, 0, 3], weight: 1.34 }, { target: [3, 2, 0], weight: 1.08 }]
-        }
-    } else {
-        baseTargets = [{ target: [3, 2, 0], weight: 1.0 }]
-    }
-
-    ensureAILearningLoaded()
-    var contextKey = getCrosspathContextKeyForMatchup(tower.towerType, matchup)
-    var mergedTargets = []
-    var mergedBySignature = {}
-
-    function mergeTarget(target, weight) {
-        var signature = getTowerTargetSignature(target)
-        if(mergedBySignature[signature]) {
-            mergedBySignature[signature].weight = Math.max(mergedBySignature[signature].weight, weight)
-            return
-        }
-
-        var entry = { target: target.slice(0), weight: weight }
-        mergedBySignature[signature] = entry
-        mergedTargets.push(entry)
-    }
-
-    for(var baseIndex = 0; baseIndex < baseTargets.length; baseIndex++) {
-        mergeTarget(baseTargets[baseIndex].target, baseTargets[baseIndex].weight)
-    }
-
-    var strategicTargets = getCrosspathCandidatesForTowerType(tower.towerType)
-    for(var strategicIndex = 0; strategicIndex < strategicTargets.length; strategicIndex++) {
-        mergeTarget(strategicTargets[strategicIndex], getTowerStrategicTargetWeight(tower, strategicTargets[strategicIndex], matchup))
-    }
-
-    for(var learnedIndex = 0; learnedIndex < strategicTargets.length; learnedIndex++) {
-        var learnedSignature = getTowerTargetSignature(strategicTargets[learnedIndex])
-        var learnedBonus = getAILearningScore(aiLearning.crosspathStats, getAICrosspathStatKey(tower.towerType, contextKey, learnedSignature))
-        if(!mergedBySignature[learnedSignature]) {
-            mergeTarget(strategicTargets[learnedIndex], 0.9)
-        }
-        mergedBySignature[learnedSignature].weight += learnedBonus * 1.35
-    }
-
-    mergedTargets.sort(function(a, b) {
-        return b.weight - a.weight
-    })
-    return mergedTargets
-}
-
-function getTowerBuildTargetScore(tower, pathNumber, matchup) {
-    var current = [tower.path1Upgrades, tower.path2Upgrades, tower.path3Upgrades]
-    var upgraded = [tower.path1Upgrades, tower.path2Upgrades, tower.path3Upgrades]
-    upgraded[pathNumber - 1]++
-    var bestScore = 0
-
-    var buildTargets = getTowerBuildTargets(tower, matchup)
-    for(var i = 0; i < buildTargets.length; i++) {
-        var target = buildTargets[i].target
-        var weight = buildTargets[i].weight
-        var beforeDistance = Math.abs(target[0] - current[0]) + Math.abs(target[1] - current[1]) + Math.abs(target[2] - current[2])
-        var afterDistance = Math.abs(target[0] - upgraded[0]) + Math.abs(target[1] - upgraded[1]) + Math.abs(target[2] - upgraded[2])
-        var dominantTargetPath = 1
-        if(target[1] > target[dominantTargetPath - 1]) {
-            dominantTargetPath = 2
-        }
-        if(target[2] > target[dominantTargetPath - 1]) {
-            dominantTargetPath = 3
-        }
-
-        var score = (beforeDistance - afterDistance) * 22 * weight
-        if(pathNumber != dominantTargetPath && current[dominantTargetPath - 1] >= Math.max(2, target[dominantTargetPath - 1] - 1) && current[pathNumber - 1] < target[pathNumber - 1]) {
-            score += 14 * weight
-        }
-        if(pathNumber == dominantTargetPath && current[dominantTargetPath - 1] >= target[dominantTargetPath - 1] && (current[0] < target[0] || current[1] < target[1] || current[2] < target[2])) {
-            score -= 10 * weight
-        }
-        if(score > bestScore) {
-            bestScore = score
-        }
-    }
-
-    return bestScore
-}
-
-function getTowerGoalTarget(tower, matchup) {
-    return getTowerBuildTargets(tower, matchup)[0].target
-}
-
-function getGoalUpgradeOrder(goalTarget) {
-    var dominantPath = 1
-    if(goalTarget[1] > goalTarget[dominantPath - 1]) {
-        dominantPath = 2
-    }
-    if(goalTarget[2] > goalTarget[dominantPath - 1]) {
-        dominantPath = 3
-    }
-
-    var order = [dominantPath]
-    for(var pathNumber = 1; pathNumber <= 3; pathNumber++) {
-        if(pathNumber != dominantPath) {
-            order.push(pathNumber)
-        }
-    }
-    order.sort(function(a, b) {
-        if(a == dominantPath) {
-            return -1
-        }
-        if(b == dominantPath) {
-            return 1
-        }
-        return goalTarget[b - 1] - goalTarget[a - 1]
-    })
-    return order
-}
-
-function getPreferredGoalPath(tower, matchup) {
-    var bestPath = 0
-    var bestScore = -Infinity
-    for(var pathNumber = 1; pathNumber <= 3; pathNumber++) {
-        if(canTowerUpgradePathNow(tower.playerSide, tower, pathNumber) == false) {
-            continue
-        }
-        var pathScore = getTowerBuildTargetScore(tower, pathNumber, matchup)
-        if(pathScore > bestScore) {
-            bestScore = pathScore
-            bestPath = pathNumber
-        }
-    }
-
-    return bestPath
-}
-
 function getHypotheticalTowerAfterUpgrade(tower, pathNumber) {
     var clone = cloneTowerUpgradeState(tower)
     clone["path" + pathNumber + "Upgrades"]++
@@ -8688,205 +7338,12 @@ function getHypotheticalTowerAfterUpgrade(tower, pathNumber) {
     return clone
 }
 
-function estimateTowerUpgradeDpsGain(tower, pathNumber, matchup) {
-    var currentHeuristic = getTowerHeuristicDps(tower)
-    var projectedHeuristic = getTowerHeuristicDps(getHypotheticalTowerAfterUpgrade(tower, pathNumber))
-    var heuristicGain = Math.max(0, projectedHeuristic - currentHeuristic)
-    var observedDps = Math.max(currentHeuristic, getTowerObservedDps(tower))
-    if(currentHeuristic > 0) {
-        heuristicGain *= observedDps / currentHeuristic
-    }
-
-    if(tower.towerType == "bomb" && matchup.playerThreat.heavyCount >= 1 && pathNumber != 1) {
-        heuristicGain *= 1.2
-    }
-    if(tower.towerType == "mortar" && matchup.playerThreat.heavyCount >= 1 && pathNumber == 2) {
-        heuristicGain *= 1.25
-    }
-    if(tower.towerType == "dartling" && matchup.dangerHigh && (pathNumber == 1 || pathNumber == 2)) {
-        heuristicGain *= 1.2
-    }
-    if(matchup && matchup.defenseMath && matchup.defenseMath.requiredDps > 0) {
-        var relevantBloons = getAIThreatBloonsForSide(tower.playerSide)
-        var canEngage = false
-        for(var i = 0; i < relevantBloons.length; i++) {
-            if(canTowerReachBloonSoon(tower, relevantBloons[i])) {
-                canEngage = true
-                break
-            }
-        }
-        if(canEngage == false) {
-            heuristicGain *= 0.12
-        }
-    }
-
-    return Math.max(1.5, heuristicGain)
-}
-
-function getAIThreatBloonsForSide(side) {
-    var relevant = []
-    for(var i = 0; i < bloons.length; i++) {
-        if(bloons[i] && bloons[i].playerSide == side && !bloons[i].isBoss) {
-            relevant.push(bloons[i])
-        }
-    }
-    return relevant
-}
-
-function estimatePlacementDpsByImage(image, matchup) {
-    var towerType = getTowerTypeFromImage(image)
-    var estimate = getTowerHeuristicDps({ towerType: towerType, path1Upgrades: 0, path2Upgrades: 0, path3Upgrades: 0 })
-    if(towerType == "bomb" && matchup.playerThreat.heavyCount >= 1) {
-        estimate *= 1.2
-    }
-    if((towerType == "wizard" || towerType == "mortar" || towerType == "dartling") && matchup.dangerHigh) {
-        estimate *= 1.1
-    }
-
-    return estimate
-}
-
-function isAIFarmInvestmentWindow(matchup) {
-    return !!matchup && matchup.safeToGreed && matchup.dangerHigh == false && getCurrentVisibleRound() <= 12
-}
-
-function getAIGameStage() {
-    var visibleRound = getCurrentVisibleRound()
-    if(visibleRound <= 6) {
-        return "early"
-    }
-    if(visibleRound <= 20) {
-        return "mid"
-    }
-    return "late"
-}
-
-function getAITowerStageUsageScore(towerType, role, matchup) {
-    var stage = getAIGameStage()
-    var score = 0
-    if(stage == "early") {
-        if(towerType == "dartling") score = 26
-        else if(towerType == "tack") score = 24
-        else if(towerType == "wizard") score = 22
-        else if(towerType == "dart" || towerType == "boomer") score = 18
-        else if(towerType == "bomb") score = 14
-        else if(towerType == "mortar") score = 12
-        else if(towerType == "engi" || towerType == "buccaneer") score = 10
-        else if(towerType == "ninja") score = 8
-        else if(towerType == "ice") score = 2
-        else if(towerType == "sniper") score = -18
-        else if(towerType == "cobra") score = -24
-        else if(towerType == "sword") score = -12
-        else if(towerType == "super") score = -30
-    } else if(stage == "mid") {
-        if(towerType == "wizard" || towerType == "bomb") score = 12
-        else if(towerType == "dartling") score = 10
-        else if(towerType == "ninja" || towerType == "sniper") score = 8
-        else if(towerType == "boomer" || towerType == "engi") score = 6
-        else if(towerType == "cobra") score = 4
-        else if(towerType == "mortar" || towerType == "buccaneer") score = 5
-        else if(towerType == "tack" || towerType == "dart") score = -6
-        else if(towerType == "super") score = -8
-    } else {
-        if(towerType == "super") score = 26
-        else if(towerType == "sword") score = 18
-        else if(towerType == "wizard" || towerType == "sniper") score = 12
-        else if(towerType == "bomb" || towerType == "dartling") score = 10
-        else if(towerType == "ninja") score = 8
-        else if(towerType == "ice" || towerType == "buccaneer") score = 6
-        else if(towerType == "cobra") score = -10
-        else if(towerType == "tack" || towerType == "dart") score = -14
-    }
-
-    if(role == "support" && stage == "early" && (towerType == "cobra" || towerType == "sniper")) {
-        score -= 18
-    }
-    if(role == "elite" && stage != "late") {
-        score -= 16
-    }
-    if(role == "antiMoab" && stage == "early" && (!matchup || matchup.playerThreat.heavyCount == 0)) {
-        score -= 8
-    }
-    return score
-}
-
-function getAIEarlyTowerSpamPenalty(side) {
-    var visibleRound = getCurrentVisibleRound()
-    if(visibleRound > 3) {
-        return 0
-    }
-    var towerCount = getSideTowerCountExcluding(side, ["farmer"])
-    var towerLimit = visibleRound + 1
-    if(towerCount <= towerLimit) {
-        return 0
-    }
-    var overflow = towerCount - towerLimit
-    return overflow * overflow * 32
-}
-
-function getAIStrictPlacementPenalty(side, towerType, matchup) {
-    var visibleRound = getCurrentVisibleRound()
-    var totalTowers = getSideTowerCountExcluding(side, ["farmer"])
-    var defenseCount = getSideTowerCountExcluding(side, ["farm", "farmer", "cobra"])
-    var penalty = 0
-
-    if(visibleRound <= 3) {
-        penalty += Math.max(0, totalTowers - (visibleRound + 1)) * 90
-    } else if(visibleRound <= 6) {
-        penalty += Math.max(0, defenseCount - 2) * 48
-    } else if(visibleRound <= 12) {
-        penalty += Math.max(0, defenseCount - 4) * 24
-    }
-
-    if(towerType != "farm" && towerType != "farmer") {
-        var cheapestUpgradeCost = getCheapestCombatUpgradeCost(side)
-        if(cheapestUpgradeCost != Infinity) {
-            if(getAIGameStage() == "early") {
-                penalty += 22
-            } else if(getAIGameStage() == "mid") {
-                penalty += 10
-            }
-        }
-    }
-
-    if(matchup && matchup.dangerHigh == false && getAIGameStage() == "early" && towerType != "farm") {
-        penalty += 8
-    }
-
-    return penalty
-}
-
-function getAIStrictUpgradeBias() {
-    var stage = getAIGameStage()
-    if(stage == "early") {
-        return 34
-    }
-    if(stage == "mid") {
-        return 20
-    }
-    return 8
-}
-
-function getAIFarmLifecycleScore(matchup) {
-    var visibleRound = getCurrentVisibleRound()
-    if(isAIFarmInvestmentWindow(matchup)) {
-        return visibleRound <= 8 ? 30 : 22
-    }
-    if(visibleRound <= 16) {
-        return -18
-    }
-    if(visibleRound <= 24) {
-        return -34
-    }
-    return -48
-}
-
-function getBestTowerUpgradeOption(side, matchup, defenseMath, restrictToEmergency) {
+function getBestTowerUpgradeOption(side, matchup, defenseMath) {
     var bestOption = null
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.upgrade, matchup)
     for(var i = 0; i < towers.length; i++) {
         var tower = towers[i]
-        if(tower.playerSide != side || tower.towerType == "farmer" || (restrictToEmergency && tower.towerType == "farm")) {
+        if(tower.playerSide != side || tower.towerType == "farmer") {
             continue
         }
         for(var pathNumber = 1; pathNumber <= 3; pathNumber++) {
@@ -8930,156 +7387,11 @@ function getBestTowerUpgradeOption(side, matchup, defenseMath, restrictToEmergen
     return bestOption
 }
 
-function getPlacementDuplicationPenalty(side, image, matchup) {
-    var towerType = getTowerTypeFromImage(image)
-    if(towerType == "farm" || towerType == "farmer") {
-        return 0
-    }
-
-    var sameTypeTowers = getSideTowersByType(side, towerType)
-    if(sameTypeTowers.length == 0) {
-        return 0
-    }
-
-    var stage = getAIGameStage()
-    var visibleRound = getCurrentVisibleRound()
-    var lowTierCount = 0
-    var veryLowTierCount = 0
-    var upgradedCount = 0
-    var highTierCount = 0
-    var totalTier = 0
-    var bestUpgradeGain = 0
-    var signatureCounts = {}
-    var lowSignatureDuplicates = 0
-    for(var i = 0; i < sameTypeTowers.length; i++) {
-        var tower = sameTypeTowers[i]
-        var towerTier = getTowerTotalTier(tower)
-        var towerSignature = getTowerCurrentSignature(tower)
-        totalTier += towerTier
-        signatureCounts[towerSignature] = (signatureCounts[towerSignature] || 0) + 1
-        if(towerTier <= 4) {
-            lowTierCount++
-        }
-        if(towerTier <= 2) {
-            veryLowTierCount++
-        }
-        if(towerTier >= 3) {
-            upgradedCount++
-        }
-        if(towerTier >= 5) {
-            highTierCount++
-        }
-        for(var pathNumber = 1; pathNumber <= 3; pathNumber++) {
-            if(canTowerUpgradePathNow(side, tower, pathNumber)) {
-                bestUpgradeGain = Math.max(bestUpgradeGain, estimateTowerUpgradeDpsGain(tower, pathNumber, matchup))
-            }
-        }
-    }
-
-    for(var signature in signatureCounts) {
-        var signatureTier = Number(signature[0]) + Number(signature[1]) + Number(signature[2])
-        if(signatureCounts[signature] >= 2 && signatureTier <= 5) {
-            lowSignatureDuplicates += signatureCounts[signature] - 1
-        }
-    }
-
-    var averageTier = totalTier / sameTypeTowers.length
-    var placementValue = estimatePlacementDpsByImage(image, matchup)
-    var penalty = sameTypeTowers.length * 8 + lowTierCount * 14 + veryLowTierCount * 12 + lowSignatureDuplicates * 20
-    if(lowTierCount >= 2) {
-        penalty += 26 + (lowTierCount - 2) * 14
-    }
-    if(averageTier <= 4.2 && sameTypeTowers.length >= 2) {
-        penalty += 22
-    }
-    if(stage == "early" && sameTypeTowers.length >= 1) {
-        penalty += 22
-    }
-    if(stage == "early" && sameTypeTowers.length >= 2) {
-        penalty += 30
-    }
-    if(bestUpgradeGain >= placementValue * 0.35) {
-        penalty += stage == "early" ? 24 : 12
-    }
-    if(bestUpgradeGain >= placementValue * 0.6) {
-        penalty += stage == "early" ? 30 : 18
-    }
-    if(bestUpgradeGain >= placementValue * 0.9) {
-        penalty += stage == "early" ? 24 : 16
-    }
-
-    // True late game should allow duplicate scaling once the existing copies are already upgraded.
-    if(visibleRound >= 28) {
-        if(highTierCount >= 1 && averageTier >= 4.5) {
-            penalty *= 0.22
-        } else if(upgradedCount >= Math.min(2, sameTypeTowers.length) && averageTier >= 3) {
-            penalty *= 0.5
-        }
-    }
-
-    return penalty
-}
-
-function getRoleTargetTowerCount(role, matchup) {
-    if(role == "farm") {
-        var visibleRound = getCurrentVisibleRound()
-        if(isAIFarmInvestmentWindow(matchup) == false) return 0
-        if(visibleRound < 7) return 1
-        if(visibleRound <= 12) return 2
-        return 0
-    }
-    if(role == "core") {
-        if(round < 18) return 1
-        if(round < 34) return 2
-        return 3
-    }
-    if(role == "antiMoab") {
-        if(round < 10) return matchup.playerThreat.heavyCount >= 1 ? 1 : 0
-        if(round < 26) return 1
-        return 2
-    }
-    if(role == "support") {
-        if(round < 8) return 0
-        if(round < 26) return 1
-        return 2
-    }
-    if(role == "elite") {
-        if(round < 20) return 0
-        if(round < 38) return 1
-        return 2
-    }
-    return 1
-}
-
-function getAILoadoutRoleNeedBonus(side, image, matchup) {
-    var role = getStrategyPlacementRoleForImage(image)
-    var currentRoleCount = getSideTowersByStrategyRole(side, role).length
-    var targetRoleCount = getRoleTargetTowerCount(role, matchup)
-    var bonus = Math.max(0, targetRoleCount - currentRoleCount) * 18
-    var towerType = getTowerTypeFromImage(image)
-    if(matchup.dangerHigh && role == "core") {
-        bonus += 12
-    }
-    if(matchup.playerThreat.heavyCount >= 1 && role == "antiMoab") {
-        bonus += 18
-    }
-    if(role == "farm") {
-        bonus += Math.max(-10, getAIFarmLifecycleScore(matchup) * 0.5)
-    }
-    if(matchup.playerCamo >= 1 && (towerType == "wizard" || towerType == "ninja" || towerType == "sniper")) {
-        bonus += 10
-    }
-    if(currentRoleCount == 0 && role != "farm") {
-        bonus += 8
-    }
-    return bonus
-}
-
 function getLearnedPlacementOption(side, image, matchup, defenseMath) {
     var towerConfig = LOADOUT_TOWER_CONFIG[image]
     if(!towerConfig) return null
     var role = getStrategyPlacementRoleForImage(image)
-    var spotIndex = getSideTowersByStrategyRole(side, role).length
+    var spotIndex = getSideTowersByType(side, towerConfig.towerType).length
     var spot = findAISpot(side, towerConfig.radius, towerConfig.range, role, spotIndex, towerConfig.towerType)
     if(!spot) return null
     var decision = spot.decisionSample || scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
@@ -9104,16 +7416,7 @@ function getLearnedPlacementOption(side, image, matchup, defenseMath) {
 }
 
 function getLearnedFarmerPlacementOption(side, matchup) {
-    var farms = getSideTowersByType(side, "farm")
-    if(players[side].money < baseFarmerPrice || farms.length == 0) return null
-    var needsFarmer = false
-    for(var i = 0; i < farms.length; i++) {
-        if(!isFarmServicedByFarmer(farms[i])) {
-            needsFarmer = true
-            break
-        }
-    }
-    if(!needsFarmer) return null
+    if(players[side].money < baseFarmerPrice) return null
     var spot = findAISpot(side, 30, 250, "farmer", getSideTowersByType(side, "farmer").length, "farmer")
     if(!spot) return null
     return {
@@ -9125,17 +7428,12 @@ function getLearnedFarmerPlacementOption(side, matchup) {
     }
 }
 
-function getBestPlacementOption(side, matchup, defenseMath, restrictToEmergency) {
+function getBestPlacementOption(side, matchup, defenseMath) {
     var strategy = getCurrentAIStrategy()
     var candidateImages = strategy.towers
     var bestOption = null
     for(var i = 0; i < candidateImages.length; i++) {
         var image = candidateImages[i]
-        var towerType = getTowerTypeFromImage(image)
-        var role = getStrategyPlacementRoleForImage(image)
-        if(restrictToEmergency && (towerType == "farm" || towerType == "farmer" || role == "farm" || role == "farmer")) {
-            continue
-        }
         if(players[side].money < getTowerPriceByImage(image)) {
             continue
         }
@@ -9147,7 +7445,7 @@ function getBestPlacementOption(side, matchup, defenseMath, restrictToEmergency)
             bestOption = option
         }
     }
-    var farmerOption = restrictToEmergency ? null : getLearnedFarmerPlacementOption(side, matchup)
+    var farmerOption = getLearnedFarmerPlacementOption(side, matchup)
     if(farmerOption && (!bestOption || farmerOption.score > bestOption.score)) bestOption = farmerOption
 
     return bestOption
@@ -9178,127 +7476,10 @@ function requestAIDefenseOption(side, option, priority) {
     return aiRequestPlaceTowerImage(side, option.image, priority, option.decisionSample, option.targetX, option.targetY)
 }
 
-function tryPlaceEmergencyDefense(side, matchup) {
-    var defenseMath = matchup.defenseMath
-    if(matchup.dangerHigh == false || defenseMath.requiredDps <= defenseMath.currentDps * 1.02) {
-        return false
-    }
-
-    var bestUpgrade = getBestTowerUpgradeOption(side, matchup, defenseMath, true)
-    var bestPlacement = getBestPlacementOption(side, matchup, defenseMath, true)
-    var chosenOption = null
-    if(bestUpgrade && bestPlacement) {
-        chosenOption = isAIDecisionScoreBetter(bestUpgrade.decisionSample, bestPlacement.decisionSample) ? bestUpgrade : bestPlacement
-    } else {
-        chosenOption = bestUpgrade || bestPlacement
-    }
-
-    if(chosenOption) {
-        var noOpFamily = chosenOption.decisionSample.familyIndex
-        var noOpDecision = scoreAIDecisionCandidate(side, noOpFamily, {
-            id: (noOpFamily == AI_DECISION_FAMILY.placement ? "placement" : "upgrade") + "|emergency-noop",
-            type: "noop",
-            actionKey: "noop",
-            noop: true,
-        }, matchup)
-        if(isAIDecisionScoreBetter(noOpDecision, chosenOption.decisionSample)) {
-            recordAINoOpDecision(noOpDecision)
-            return false
-        }
-        return requestAIDefenseOption(side, chosenOption, AI_ACTION_PRIORITY.emergency)
-    }
-
-    return false
-}
-
-function getLoadoutDiscoveryPlacementOption(side, matchup) {
-    var strategy = getCurrentAIStrategy()
-    var visibleRound = getCurrentVisibleRound()
-
-    if(strategy.buildPlan) {
-        for(var stepIndex = 0; stepIndex < strategy.buildPlan.length; stepIndex++) {
-            var step = strategy.buildPlan[stepIndex]
-            if(visibleRound < step.round || getSideTowersByImage(side, step.image).length >= step.maxCount) {
-                continue
-            }
-
-            var stepPrice = getTowerPriceByImage(step.image)
-            if(players[side].money < stepPrice + step.buffer) {
-                continue
-            }
-
-            var plannedOption = getLearnedPlacementOption(side, step.image, matchup, matchup.defenseMath)
-            if(!plannedOption) {
-                continue
-            }
-
-            var roundsLate = Math.max(0, visibleRound - step.round)
-            plannedOption.heuristicScore += 34 + Math.min(30, roundsLate * 8)
-            if(step.image == "000farm.png") {
-                plannedOption.heuristicScore += visibleRound <= 6 ? 110 : 72
-                if(matchup.dangerHigh) {
-                    plannedOption.heuristicScore -= 90
-                } else if(matchup.safeToGreed == false) {
-                    plannedOption.heuristicScore -= 18
-                }
-            }
-            plannedOption.decisionSample = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
-                id: plannedOption.decisionSample.id,
-                type: getTowerTypeFromImage(plannedOption.image),
-                role: step.role,
-                actionKey: "place|" + getTowerTypeFromImage(plannedOption.image) + "|" + step.role,
-                heuristic: plannedOption.heuristicScore,
-                heuristicScale: 110,
-                cost: stepPrice,
-                money: players[side].money,
-                effect: plannedOption.dpsGain,
-                effectScale: 80,
-            }, matchup)
-            plannedOption.score = plannedOption.decisionSample.score
-            return plannedOption
-        }
-    }
-
-    var bestOption = null
-    for(var i = 0; i < strategy.towers.length; i++) {
-        var image = strategy.towers[i]
-        var price = getTowerPriceByImage(image)
-        if(players[side].money < price) {
-            continue
-        }
-        var option = getLearnedPlacementOption(side, image, matchup, matchup.defenseMath)
-        if(!option) {
-            continue
-        }
-        if(option.image == "000farm.png") {
-            option.heuristicScore += isAIFarmInvestmentWindow(matchup) ? 6 : -18
-        } else if(matchup.dangerHigh) {
-            option.heuristicScore += 8
-        }
-        option.decisionSample = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
-            id: option.decisionSample.id,
-            type: getTowerTypeFromImage(option.image),
-            role: getStrategyPlacementRoleForImage(option.image),
-            actionKey: "place|" + getTowerTypeFromImage(option.image),
-            heuristic: option.heuristicScore,
-            heuristicScale: 110,
-            cost: price,
-            money: players[side].money,
-            effect: option.dpsGain,
-            effectScale: 80,
-        }, matchup)
-        option.score = option.decisionSample.score
-        if(!bestOption || option.score > bestOption.score) {
-            bestOption = option
-        }
-    }
-    return bestOption
-}
-
-function getBestNonEmergencyDefenseOption(side, matchup) {
+function getBestDefenseOption(side, matchup) {
     var defenseMath = matchup.defenseMath
     var bestUpgrade = getBestTowerUpgradeOption(side, matchup, defenseMath)
-    var bestPlacement = getBestPlacementOption(side, matchup, defenseMath, false)
+    var bestPlacement = getBestPlacementOption(side, matchup, defenseMath)
     var economyUtility = getBestAIEconomyUtilityOption(side, matchup)
     var candidates = []
     if(bestUpgrade) {
@@ -9340,76 +7521,11 @@ function getBestNonEmergencyDefenseOption(side, matchup) {
     return actionableCandidates[0]
 }
 
-function getAdaptiveUpgradePriority(tower, matchup) {
-    var image = getStrategyImageForTowerType(tower.towerType)
-    var strategy = getCurrentAIStrategy()
-    var basePriority = strategy.upgradePrefs[image] ? strategy.upgradePrefs[image].slice(0) : [1, 2, 3]
-
-    if(tower.towerType == "mortar") {
-        return matchup.dangerHigh ? [2, 1, 3] : [2, 3, 1]
-    }
-    if(tower.towerType == "dartling") {
-        return matchup.dangerHigh ? [2, 1, 3] : [1, 2, 3]
-    }
-    if(tower.towerType == "sniper") {
-        return matchup.safeToGreed && round >= 20 ? [2, 3, 1] : [3, 2, 1]
-    }
-    if(tower.towerType == "ninja") {
-        return matchup.dangerHigh ? [2, 1, 3] : basePriority
-    }
-    if(tower.towerType == "engi") {
-        return matchup.dangerHigh ? [1, 2, 3] : basePriority
-    }
-    if(tower.towerType == "boomer") {
-        return matchup.dangerHigh ? [1, 2, 3] : basePriority
-    }
-    if(tower.towerType == "cobra") {
-        return matchup.enemyVulnerable ? [3, 2, 1] : basePriority
-    }
-    if(tower.towerType == "bomb" && matchup.playerThreat.heavyCount >= 1) {
-        return [2, 3, 1]
-    }
-
-    return basePriority
-}
-
-function tryUpgradeTowerByPriority(side, tower, pathPriority) {
-    for(var i = 0; i < pathPriority.length; i++) {
-        if(aiRequestUpgradeTower(side, tower, pathPriority[i], AI_ACTION_PRIORITY.normal)) {
-            return true
-        }
-    }
-
-    return false
-}
-
-function runAIUpgrades(side, matchup) {
-    var defenseMath = matchup.defenseMath
-    for(var towerIndex = 0; towerIndex < towers.length; towerIndex++) {
-        var tower = towers[towerIndex]
-        if(tower.playerSide == side && tower.towerType == "farm" && tower.path2Upgrades >= 3 && tower.towerVar >= 1200 && aiRequestCollectFarm(side, tower, AI_ACTION_PRIORITY.support)) {
-            return true
-        }
-    }
-
-    var bestUpgrade = getBestTowerUpgradeOption(side, matchup, defenseMath)
-    if(bestUpgrade) {
-        return requestAIDefenseOption(side, bestUpgrade, AI_ACTION_PRIORITY.normal)
-    }
-
-    return false
-}
-
 function runAIDefense(side) {
     var matchup = getCurrentPlayerMatchupStyle(side)
     if(aiProfile.currentAction) return
 
-    if(matchup.dangerHigh && matchup.defenseMath.requiredDps > matchup.defenseMath.currentDps * 1.02) {
-        tryPlaceEmergencyDefense(side, matchup)
-        return
-    }
-
-    var bestOption = getBestNonEmergencyDefenseOption(side, matchup)
+    var bestOption = getBestDefenseOption(side, matchup)
     if(bestOption && requestAIDefenseOption(side, bestOption, AI_ACTION_PRIORITY.normal)) {
         return
     }

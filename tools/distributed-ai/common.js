@@ -17,16 +17,16 @@ const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
 const POLICY_FORMAT_VERSION = 2
 const GAME_VERSION = "v2.6.0"
-const MODEL_SCHEMA_VERSION = 12
-const MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v4"
+const MODEL_SCHEMA_VERSION = 13
+const MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v5"
 const MAX_JSON_BYTES = 8 * 1024 * 1024
 const MAX_RECOVERED_STALLS = 3
 const FEATURE_COUNT = 17
 const STRATEGY_HIDDEN_SIZE_1 = 64
 const STRATEGY_HIDDEN_SIZE_2 = 32
 const STRATEGY_COUNT = 75
-const DECISION_STATE_INPUT_SIZE = 80
-const DECISION_CANDIDATE_INPUT_SIZE = 80
+const DECISION_STATE_INPUT_SIZE = 112
+const DECISION_CANDIDATE_INPUT_SIZE = 112
 const DECISION_CREDIT_VERSION = 3
 const DECISION_STATE_HIDDEN_SIZE = 96
 const DECISION_CANDIDATE_HIDDEN_SIZE = 48
@@ -34,10 +34,14 @@ const DECISION_EMBEDDING_SIZE = 48
 const DECISION_MEMORY_SIZE = 16
 const DECISION_SURVIVAL_CLASS_COUNT = 4
 const DECISION_FAMILY_COUNT = 8
-const POLICY_PARAMETER_COUNT = 26440
+const POLICY_PARAMETER_COUNT = 31048
 const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
+const EVALUATION_AGGREGATE_FORMAT_VERSION = 2
+const ABSOLUTE_DEFENSE_MINIMUM_LIVES = 50
+const ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES = 25
+const ABSOLUTE_DEFENSE_MINIMUM_RATE = 0.75
 
 function maxRecoveredStalls(matches) {
     return Math.max(MAX_RECOVERED_STALLS, Math.ceil(matches / 8))
@@ -815,9 +819,11 @@ function addMatch(bucket, match) {
 }
 
 const BUCKET_KEYS = ["games", "wins", "losses", "ties", "score"]
-const EVALUATION_AGGREGATE_KEYS = ["kind", "formatVersion", "aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest", "gameVersion", "modelSchemaVersion", "thresholds", "passed", "overall", "byMap", "bySide", "byRole", "coverage", "safety", "sourceResultIds"]
-const EVALUATION_THRESHOLD_KEYS = ["minimumScore", "minimumGames", "minimumBucketScore", "minimumSurvivalRate", "maximumSevereCollapseRate"]
+const LEGACY_EVALUATION_AGGREGATE_KEYS = ["kind", "formatVersion", "aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest", "gameVersion", "modelSchemaVersion", "thresholds", "passed", "overall", "byMap", "bySide", "byRole", "coverage", "safety", "sourceResultIds"]
+const EVALUATION_AGGREGATE_KEYS = LEGACY_EVALUATION_AGGREGATE_KEYS.concat("absoluteDefense")
+const EVALUATION_THRESHOLD_KEYS = ["minimumScore", "minimumGames", "minimumBucketScore", "minimumSurvivalRate", "maximumSevereCollapseRate", "minimumDefensiveGames", "minimumDefensiveLives", "minimumDefensiveFloorLives", "minimumDefensiveRate"]
 const EVALUATION_SAFETY_KEYS = ["games", "survivals", "severeCollapses", "survivalRate", "severeCollapseRate", "averageCandidateLives", "averageOpponentLives"]
+const EVALUATION_ABSOLUTE_DEFENSE_KEYS = ["games", "protectedGames", "protectionRate", "minimumCandidateLives", "averageCandidateLives"]
 
 function validateBucket(bucket, label) {
     assertExactKeys(bucket, BUCKET_KEYS, label)
@@ -849,6 +855,10 @@ function evaluationThresholds(minimumScore, minimumGames) {
         minimumBucketScore: stableRate(Math.max(0, minimumScore - 0.1)),
         minimumSurvivalRate: stableRate(Math.max(0, minimumScore - 0.08)),
         maximumSevereCollapseRate: stableRate(Math.min(1, Math.max(0, 1 - minimumScore - 0.15))),
+        minimumDefensiveGames: Math.max(1, Math.ceil(minimumGames / 2)),
+        minimumDefensiveLives: ABSOLUTE_DEFENSE_MINIMUM_LIVES,
+        minimumDefensiveFloorLives: ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES,
+        minimumDefensiveRate: ABSOLUTE_DEFENSE_MINIMUM_RATE,
     }
 }
 
@@ -867,6 +877,18 @@ function safetyForMatches(matches) {
     }
 }
 
+function absoluteDefenseForMatches(matches) {
+    const defensiveMatches = matches.filter(match => match.candidateRole == "responder")
+    const protectedGames = defensiveMatches.filter(match => match.candidateLives >= ABSOLUTE_DEFENSE_MINIMUM_LIVES).length
+    return {
+        games: defensiveMatches.length,
+        protectedGames,
+        protectionRate: defensiveMatches.length ? protectedGames / defensiveMatches.length : 0,
+        minimumCandidateLives: defensiveMatches.length ? Math.min(...defensiveMatches.map(match => match.candidateLives)) : 0,
+        averageCandidateLives: defensiveMatches.length ? defensiveMatches.reduce((sum, match) => sum + match.candidateLives, 0) / defensiveMatches.length : 0,
+    }
+}
+
 function bucketsMeetMinimum(maps, sides, roles, minimumScore) {
     return [...Object.values(maps), ...Object.values(sides), ...Object.values(roles)].every(bucket => bucket.score >= minimumScore)
 }
@@ -878,16 +900,24 @@ function aggregateIdentity(aggregate) {
 }
 
 function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") {
-    assertExactKeys(aggregate, EVALUATION_AGGREGATE_KEYS, label)
-    if(aggregate.kind !== EVALUATION_AGGREGATE_KIND || aggregate.formatVersion !== FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
+    const current = aggregate && aggregate.formatVersion === EVALUATION_AGGREGATE_FORMAT_VERSION
+    assertExactKeys(aggregate, current ? EVALUATION_AGGREGATE_KEYS : LEGACY_EVALUATION_AGGREGATE_KEYS, label)
+    if(aggregate.kind !== EVALUATION_AGGREGATE_KIND || (aggregate.formatVersion !== FORMAT_VERSION && aggregate.formatVersion !== EVALUATION_AGGREGATE_FORMAT_VERSION)) fail(`${label} has an unsupported kind or format version`)
     for(const key of ["aggregateId", "candidateCheckpointId", "candidateModelDigest", "baselineCheckpointId", "baselineModelDigest"]) assertDigest(aggregate[key], `${label}.${key}`)
     assertString(aggregate.gameVersion, `${label}.gameVersion`)
     assertInteger(aggregate.modelSchemaVersion, `${label}.modelSchemaVersion`, 1)
-    assertExactKeys(aggregate.thresholds, EVALUATION_THRESHOLD_KEYS, `${label}.thresholds`)
+    assertExactKeys(aggregate.thresholds, current ? EVALUATION_THRESHOLD_KEYS : EVALUATION_THRESHOLD_KEYS.slice(0, 5), `${label}.thresholds`)
     assertNumber(aggregate.thresholds.minimumScore, `${label}.thresholds.minimumScore`, 0, 1)
     assertInteger(aggregate.thresholds.minimumGames, `${label}.thresholds.minimumGames`, 1)
     for(const key of ["minimumBucketScore", "minimumSurvivalRate", "maximumSevereCollapseRate"]) assertNumber(aggregate.thresholds[key], `${label}.thresholds.${key}`, 0, 1)
-    if(canonicalStringify(aggregate.thresholds) != canonicalStringify(evaluationThresholds(aggregate.thresholds.minimumScore, aggregate.thresholds.minimumGames))) fail(`${label}.thresholds are inconsistent`)
+    if(current) {
+        for(const key of ["minimumDefensiveLives", "minimumDefensiveFloorLives"]) assertInteger(aggregate.thresholds[key], `${label}.thresholds.${key}`, 0)
+        assertInteger(aggregate.thresholds.minimumDefensiveGames, `${label}.thresholds.minimumDefensiveGames`, 1)
+        for(const key of ["minimumDefensiveRate"]) assertNumber(aggregate.thresholds[key], `${label}.thresholds.${key}`, 0, 1)
+    }
+    const expectedThresholds = evaluationThresholds(aggregate.thresholds.minimumScore, aggregate.thresholds.minimumGames)
+    const legacyThresholds = Object.fromEntries(Object.entries(expectedThresholds).filter(([key]) => EVALUATION_THRESHOLD_KEYS.slice(0, 5).includes(key)))
+    if(canonicalStringify(aggregate.thresholds) != canonicalStringify(current ? expectedThresholds : legacyThresholds)) fail(`${label}.thresholds are inconsistent`)
     if(typeof aggregate.passed != "boolean") fail(`${label}.passed must be boolean`)
     validateBucket(aggregate.overall, `${label}.overall`)
     assertExactKeys(aggregate.byMap, ["0", "1"], `${label}.byMap`)
@@ -912,16 +942,29 @@ function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") 
     const expectedSurvivalRate = aggregate.safety.games ? aggregate.safety.survivals / aggregate.safety.games : 0
     const expectedSevereCollapseRate = aggregate.safety.games ? aggregate.safety.severeCollapses / aggregate.safety.games : 0
     if(Math.abs(aggregate.safety.survivalRate - expectedSurvivalRate) > 1e-12 || Math.abs(aggregate.safety.severeCollapseRate - expectedSevereCollapseRate) > 1e-12) fail(`${label}.safety rates are inconsistent`)
+    if(current) {
+        assertExactKeys(aggregate.absoluteDefense, EVALUATION_ABSOLUTE_DEFENSE_KEYS, `${label}.absoluteDefense`)
+        for(const key of ["games", "protectedGames"]) assertInteger(aggregate.absoluteDefense[key], `${label}.absoluteDefense.${key}`)
+        if(aggregate.absoluteDefense.protectedGames > aggregate.absoluteDefense.games) fail(`${label}.absoluteDefense counts are inconsistent`)
+        assertNumber(aggregate.absoluteDefense.protectionRate, `${label}.absoluteDefense.protectionRate`, 0, 1)
+        for(const key of ["minimumCandidateLives", "averageCandidateLives"]) assertNumber(aggregate.absoluteDefense[key], `${label}.absoluteDefense.${key}`, 0)
+        const expectedProtectionRate = aggregate.absoluteDefense.games ? aggregate.absoluteDefense.protectedGames / aggregate.absoluteDefense.games : 0
+        if(Math.abs(aggregate.absoluteDefense.protectionRate - expectedProtectionRate) > 1e-12) fail(`${label}.absoluteDefense.protectionRate is inconsistent`)
+        if(aggregate.absoluteDefense.games < aggregate.thresholds.minimumDefensiveGames) fail(`${label}.absoluteDefense does not contain enough responder games`)
+    }
     if(!Array.isArray(aggregate.sourceResultIds) || aggregate.sourceResultIds.length == 0) fail(`${label}.sourceResultIds must be non-empty`)
     aggregate.sourceResultIds.forEach((id, index) => assertDigest(id, `${label}.sourceResultIds[${index}]`))
     if(new Set(aggregate.sourceResultIds).size != aggregate.sourceResultIds.length) fail(`${label}.sourceResultIds contains duplicates`)
     if(aggregate.sourceResultIds.some((id, index) => index > 0 && aggregate.sourceResultIds[index - 1] >= id)) fail(`${label}.sourceResultIds must be sorted`)
+    const absoluteDefensePassed = !current || aggregate.absoluteDefense.protectionRate >= aggregate.thresholds.minimumDefensiveRate
+        && aggregate.absoluteDefense.minimumCandidateLives >= aggregate.thresholds.minimumDefensiveFloorLives
     const expectedPassed = aggregate.overall.games >= aggregate.thresholds.minimumGames
         && aggregate.overall.score >= aggregate.thresholds.minimumScore
         && bucketsMeetMinimum(aggregate.byMap, aggregate.bySide, aggregate.byRole, aggregate.thresholds.minimumBucketScore)
         && aggregate.safety.survivalRate >= aggregate.thresholds.minimumSurvivalRate
         && aggregate.safety.severeCollapseRate <= aggregate.thresholds.maximumSevereCollapseRate
         && expectedCoverage.mapsCovered && expectedCoverage.sidesCovered && expectedCoverage.rolesCovered && expectedCoverage.balanced
+        && absoluteDefensePassed
     if(aggregate.passed != expectedPassed) fail(`${label}.passed is inconsistent`)
     if(aggregate.aggregateId != digest(aggregateIdentity(aggregate))) fail(`${label}.aggregateId does not match its contents`)
     return aggregate
@@ -935,6 +978,7 @@ function validatePromotionBundle(candidate, evaluation, baseline, minimumScore =
     if(evaluation.candidateCheckpointId != candidate.checkpointId || evaluation.candidateModelDigest != candidate.modelDigest) fail("Evaluation does not belong to the candidate")
     if(evaluation.baselineCheckpointId != baseline.checkpointId || evaluation.baselineModelDigest != baseline.modelDigest) fail("Evaluation does not use the current baseline")
     if(evaluation.gameVersion != candidate.gameVersion || evaluation.modelSchemaVersion != candidate.modelSchemaVersion) fail("Evaluation schema does not match the candidate")
+    if(evaluation.formatVersion !== EVALUATION_AGGREGATE_FORMAT_VERSION) fail("Evaluation lacks format-2 absolute defensive competence evidence")
     if(evaluation.passed !== true) fail("Evaluation did not pass its declared thresholds and coverage")
     if(evaluation.overall.score < minimumScore || evaluation.overall.games < minimumGames) fail(`Evaluation does not meet the promotion minimum of ${minimumGames} games and score ${minimumScore}`)
     return { candidate, evaluation, baseline }
@@ -968,9 +1012,10 @@ function aggregateEvaluationResults(results, minimumScore, minimumGames) {
     const thresholds = evaluationThresholds(minimumScore, minimumGames)
     const matches = validated.flatMap(result => result.matches)
     const safety = safetyForMatches(matches)
+    const absoluteDefense = absoluteDefenseForMatches(matches)
     const aggregate = {
         kind: EVALUATION_AGGREGATE_KIND,
-        formatVersion: FORMAT_VERSION,
+        formatVersion: EVALUATION_AGGREGATE_FORMAT_VERSION,
         aggregateId: "",
         candidateCheckpointId: first.candidateCheckpointId,
         candidateModelDigest: first.candidateModelDigest,
@@ -991,8 +1036,13 @@ function aggregateEvaluationResults(results, minimumScore, minimumGames) {
         byRole: roles,
         coverage,
         safety,
+        absoluteDefense,
         sourceResultIds: validated.map(result => result.resultId).sort(),
     }
+    aggregate.passed = aggregate.passed
+        && absoluteDefense.games >= thresholds.minimumDefensiveGames
+        && absoluteDefense.protectionRate >= thresholds.minimumDefensiveRate
+        && absoluteDefense.minimumCandidateLives >= thresholds.minimumDefensiveFloorLives
     aggregate.aggregateId = digest(aggregateIdentity(aggregate))
     return validateEvaluationAggregate(aggregate)
 }
@@ -1011,6 +1061,10 @@ function evaluationMarkdown(aggregate) {
         `Safety: every split at least ${percent(aggregate.thresholds.minimumBucketScore)}, survival at least ${percent(aggregate.thresholds.minimumSurvivalRate)}, severe collapses at most ${percent(aggregate.thresholds.maximumSevereCollapseRate)}`,
         `Coverage: at least ${aggregate.coverage.minimumGamesPerMap} games per map, ${aggregate.coverage.minimumGamesPerSide} per candidate side, and ${aggregate.coverage.minimumGamesPerRole} per candidate role; all splits must be balanced`,
         `Observed: ${percent(aggregate.safety.survivalRate)} survival, ${percent(aggregate.safety.severeCollapseRate)} severe collapses, ${aggregate.safety.averageCandidateLives.toFixed(2)} average candidate lives`,
+        ...(aggregate.absoluteDefense ? [
+            `Absolute defense: at least ${aggregate.thresholds.minimumDefensiveGames} responder games, ${percent(aggregate.thresholds.minimumDefensiveRate)} finishing with at least ${aggregate.thresholds.minimumDefensiveLives} lives, and no responder below ${aggregate.thresholds.minimumDefensiveFloorLives} lives`,
+            `Observed defense: ${percent(aggregate.absoluteDefense.protectionRate)} protected responder games, ${aggregate.absoluteDefense.minimumCandidateLives.toFixed(2)} minimum and ${aggregate.absoluteDefense.averageCandidateLives.toFixed(2)} average responder lives`,
+        ] : []),
         "",
         "| Split | Games | Wins | Losses | Ties | Score |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
@@ -1208,10 +1262,14 @@ function defaultMarkdownPath(jsonPath) {
 }
 
 module.exports = {
+    ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES,
+    ABSOLUTE_DEFENSE_MINIMUM_LIVES,
+    ABSOLUTE_DEFENSE_MINIMUM_RATE,
     CHECKPOINT_KIND,
     DECISION_CANDIDATE_INPUT_SIZE,
     DECISION_CREDIT_VERSION,
     DECISION_STATE_INPUT_SIZE,
+    EVALUATION_AGGREGATE_FORMAT_VERSION,
     EVALUATION_AGGREGATE_KIND,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,

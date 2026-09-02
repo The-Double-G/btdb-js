@@ -12,8 +12,8 @@ const featureCount = 17
 const strategyCount = 75
 const hidden1 = 64
 const hidden2 = 32
-const stateInputSize = 80
-const candidateInputSize = 80
+const stateInputSize = 112
+const candidateInputSize = 112
 const schema11StateInputSize = 72
 const schema11CandidateInputSize = 64
 const schema10StateInputSize = 72
@@ -205,8 +205,8 @@ function createSchema9Model() {
 function createModel() {
     const policy = createPolicy()
     return {
-        version: 12,
-        modelFamily: "semantic-intent-spatial-recurrent-actor-critic-v4",
+        version: 13,
+        modelFamily: "semantic-intent-spatial-recurrent-actor-critic-v5",
         totalGames: 0,
         totalSyntheticEpisodes: 0,
         totalPolicySamples: 0,
@@ -347,6 +347,20 @@ function createDecisionSample(overrides = {}) {
     }
 }
 
+function createPlacementSample(overrides = {}) {
+    return {
+        creditVersion: 3,
+        familyIndex: 2,
+        stateFeatures: vector(stateInputSize, 0.35),
+        chosenCandidateFeatures: vector(candidateInputSize, 0.2),
+        memoryIn: vector(memorySize, 0.1),
+        startedAtMs: 1000,
+        settledAtMs: 2000,
+        intervalReward: 0.8,
+        ...overrides,
+    }
+}
+
 function createLegacyDecisionSample(overrides = {}) {
     return {
         familyIndex: 2,
@@ -360,7 +374,7 @@ function createLegacyDecisionSample(overrides = {}) {
     }
 }
 
-function createContribution(id, baseRevision, contributionEpoch, decisionSamples = []) {
+function createContribution(id, baseRevision, contributionEpoch, decisionSamples = [], placementSamples = undefined) {
     return {
         protocolVersion: 1,
         contributionId: id,
@@ -379,6 +393,7 @@ function createContribution(id, baseRevision, contributionEpoch, decisionSamples
         ],
         selfPlay: false,
         decisionSamples,
+        ...(placementSamples === undefined ? {} : { placementSamples }),
     }
 }
 
@@ -613,7 +628,7 @@ async function main() {
     try {
         const emptyEnvelope = await (await waitForServer(endpoints[0], commonHeaders)).json()
         await waitForServer(endpoints[1], commonHeaders)
-        assert.equal(emptyEnvelope.modelSchema, 12)
+        assert.equal(emptyEnvelope.modelSchema, 13)
         assert.equal(emptyEnvelope.contributionEnabled, false)
         assert.deepEqual(emptyEnvelope.model, [])
 
@@ -652,11 +667,11 @@ async function main() {
         assert.deepEqual(migrationRace.map(response => response.status), [200, 200, 409])
 
         let envelope = await readEnvelope(endpoints[0], commonHeaders)
-        assert.equal(envelope.modelSchema, 12)
+        assert.equal(envelope.modelSchema, 13)
         assert.equal(envelope.revision, 8)
         assert.equal(envelope.contributionEpoch, 5)
-        assert.equal(envelope.model.version, 12)
-        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v4")
+        assert.equal(envelope.model.version, 13)
+        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v5")
         assert.equal(envelope.model.totalDecisionSamples, 29)
         assert.equal(envelope.model.totalHumanDemonstrations, 3)
         assert.equal(envelope.model.candidateGeneration, 12)
@@ -676,7 +691,7 @@ async function main() {
         assert.match(envelope.promotionBaseDigest, /^sha256:[a-f0-9]{64}$/)
         assertPolicyContract(envelope.model.policy)
         assertPolicyContract(envelope.model.championPolicy)
-        assert.equal(policyParameterCount(envelope.model.policy), 26440)
+        assert.equal(policyParameterCount(envelope.model.policy), 31048)
         assert.equal(envelope.modelDigest, hostedDigest(envelope.model))
         assert.equal(envelope.policyDigest, hostedDigest(envelope.model.policy))
         createHostedSnapshot(envelope)
@@ -739,8 +754,8 @@ async function main() {
         envelope = await readEnvelope(endpoints[0], commonHeaders)
         assert.equal(envelope.revision, 21)
         assert.equal(envelope.contributionEpoch, 9)
-        assert.equal(envelope.model.version, 12)
-        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v4")
+        assert.equal(envelope.model.version, 13)
+        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v5")
         assert.equal(envelope.model.totalDecisionSamples, 0)
         assert.deepEqual(envelope.model.placementStats, {})
         assert.deepEqual(envelope.model.loadoutPlacementStats, {})
@@ -830,6 +845,10 @@ async function main() {
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, malformed)).status, 422)
         const malformedVector = createContribution("00000000000000000000000000000003", envelope.revision, migratedEpoch, [createDecisionSample({ stateFeatures: vector(stateInputSize, 1.01) })])
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, malformedVector)).status, 422)
+        const malformedPlacement = createContribution("00000000000000000000000000000006", envelope.revision, migratedEpoch, [], [createPlacementSample({ extra: true })])
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, malformedPlacement)).status, 422)
+        const malformedPlacementVector = createContribution("00000000000000000000000000000007", envelope.revision, migratedEpoch, [], [createPlacementSample({ chosenCandidateFeatures: vector(candidateInputSize, 1.01) })])
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, malformedPlacementVector)).status, 422)
         const reversedTime = createContribution("00000000000000000000000000000010", envelope.revision, migratedEpoch, [createDecisionSample({ startedAtMs: 2001, settledAtMs: 2000 })])
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, reversedTime)).status, 422)
         const outOfOrder = createContribution("00000000000000000000000000000013", envelope.revision, migratedEpoch, [
@@ -849,6 +868,8 @@ async function main() {
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, brokenSuccessor)).status, 422)
         const tooMany = createContribution("00000000000000000000000000000004", envelope.revision, migratedEpoch, Array.from({ length: 13 }, () => createDecisionSample()))
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, tooMany)).status, 422)
+        const tooManyPlacements = createContribution("00000000000000000000000000000008", envelope.revision, migratedEpoch, [], Array.from({ length: 25 }, () => createPlacementSample()))
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, tooManyPlacements)).status, 422)
         const forgedHumanPrior = createContribution("00000000000000000000000000000025", envelope.revision, migratedEpoch)
         forgedHumanPrior.observations = [{ store: "tacticalFamilyStats", key: "human|rush|send|2", value: 1 }]
         assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, forgedHumanPrior)).status, 422)
@@ -915,6 +936,24 @@ async function main() {
         assert.equal(envelope.model.totalDecisionSamples, 13)
         assert.equal(envelope.model.policy.decision.trainingSamples[sample.familyIndex], 13)
         assert.ok(policyParameterDeltaNorm(envelope.model.policy, policyBeforeBatch) <= 0.350000000001)
+
+        const placementSample = createPlacementSample({ startedAtMs: 9000, settledAtMs: 10000, intervalReward: 0.8 })
+        const placementSampleOutOfOrder = createPlacementSample({ startedAtMs: 1000, settledAtMs: 2000, intervalReward: 0.8 })
+        const policyBeforePlacement = structuredClone(envelope.model.policy)
+        const placementPrediction = decisionPrediction(placementSample, policyBeforePlacement.decision)
+        assert.equal((await postJson(
+            endpoints[0],
+            "contribute",
+            contributionHeaders,
+            createContribution("00000000000000000000000000000020", envelope.revision, migratedEpoch, [], [placementSample, placementSampleOutOfOrder]),
+        )).status, 200)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+        assert.equal(envelope.model.totalDecisionSamples, 15)
+        assert.equal(envelope.model.policy.decision.trainingSamples[placementSample.familyIndex], 15)
+        const trainedPlacementPrediction = decisionPrediction(placementSample, envelope.model.policy.decision)
+        assert.ok(trainedPlacementPrediction.actor > placementPrediction.actor)
+        assert.ok(Math.abs(placementSample.intervalReward - trainedPlacementPrediction.value) < Math.abs(placementSample.intervalReward - placementPrediction.value))
+        assert.ok(policyParameterDeltaNorm(envelope.model.policy, policyBeforePlacement) <= 0.350000000001)
 
         const modelBeforeHumanHeadroom = structuredClone(envelope.model)
         const humanHeadroomModel = structuredClone(envelope.model)
@@ -1116,8 +1155,8 @@ async function main() {
         assert.equal(resetResult.contributionEpoch, migratedEpoch + 1)
         assert.equal(resetResult.knowledgeReset, true)
         envelope = await readEnvelope(endpoints[0], commonHeaders)
-        assert.equal(envelope.model.version, 12)
-        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v4")
+        assert.equal(envelope.model.version, 13)
+        assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v5")
         assert.equal(envelope.model.totalDecisionSamples, 0)
         assertPolicyContract(envelope.model.policy)
         assert.deepEqual(envelope.model, freshModel)
@@ -1165,7 +1204,7 @@ async function main() {
         fs.writeFileSync(statePath, `${JSON.stringify(exhaustedEpochState)}\n`)
         assert.equal((await postJson(endpoints[0], "reset", trainerHeaders, { expectedRevision: finalState.revision, model: createModel() })).status, 409)
 
-        console.log("AI endpoint integration passed: schema-12 migration, human event priors, four-step actor-critic learning, promotion, reset, and concurrent writes are serialized.")
+        console.log("AI endpoint integration passed: schema-13 migration, human event priors, four-step actor-critic learning, promotion, reset, and concurrent writes are serialized.")
     } finally {
         servers.forEach(server => server.kill())
         await Promise.all(servers.map(server => new Promise(resolve => server.once("exit", resolve).once("error", resolve))))

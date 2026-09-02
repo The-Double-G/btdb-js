@@ -28,6 +28,15 @@ const PHASES = ["queued", "running", "preparing", "training", "selecting", "eval
 const COUNT_KEYS = ["total", "queued", "inProgress", "completed", "succeeded", "failed", "cancelled", "skipped"]
 const WORKER_KEYS = ["total", "queued", "inProgress", "succeeded", "failed", "cancelled", "skipped"]
 const FAILED_CONCLUSIONS = new Set(["failure", "timed_out", "action_required", "stale", "startup_failure"])
+const LEGACY_EVALUATION_STATUS_KEYS = [
+    "runId", "runNumber", "runAttempt", "aggregateId", "candidateCheckpointId", "baselineCheckpointId", "passed",
+    "games", "wins", "losses", "ties", "score", "minimumScore", "minimumGames", "minimumBucketScore", "worstBucketScore",
+    "survivalRate", "minimumSurvivalRate", "severeCollapseRate", "maximumSevereCollapseRate",
+]
+const EVALUATION_STATUS_KEYS = LEGACY_EVALUATION_STATUS_KEYS.concat([
+    "defensiveGames", "defensiveProtectedGames", "defensiveProtectionRate", "minimumDefensiveRate",
+    "minimumDefensiveLives", "minimumDefensiveFloorLives", "minimumDefensiveObservedLives",
+])
 const textDecoder = new TextDecoder("utf-8", { fatal: true })
 
 function fail(message) {
@@ -138,11 +147,8 @@ function validateEvidenceSource(value, label) {
 
 function validateEvaluationStatus(evaluation, label = "status.latestEvaluation") {
     if(evaluation === null) return null
-    assertExactKeys(evaluation, [
-        "runId", "runNumber", "runAttempt", "aggregateId", "candidateCheckpointId", "baselineCheckpointId", "passed",
-        "games", "wins", "losses", "ties", "score", "minimumScore", "minimumGames", "minimumBucketScore", "worstBucketScore",
-        "survivalRate", "minimumSurvivalRate", "severeCollapseRate", "maximumSevereCollapseRate",
-    ], label)
+    const current = Object.prototype.hasOwnProperty.call(evaluation, "defensiveGames")
+    assertExactKeys(evaluation, current ? EVALUATION_STATUS_KEYS : LEGACY_EVALUATION_STATUS_KEYS, label)
     validateEvidenceSource(evaluation, label)
     for(const key of ["aggregateId", "candidateCheckpointId", "baselineCheckpointId"]) assertDigest(evaluation[key], `${label}.${key}`)
     assertBoolean(evaluation.passed, `${label}.passed`)
@@ -152,6 +158,15 @@ function validateEvaluationStatus(evaluation, label = "status.latestEvaluation")
     assertNumber(evaluation.minimumScore, `${label}.minimumScore`, 0, 1)
     assertInteger(evaluation.minimumGames, `${label}.minimumGames`, 1)
     for(const key of ["minimumBucketScore", "worstBucketScore", "survivalRate", "minimumSurvivalRate", "severeCollapseRate", "maximumSevereCollapseRate"]) assertNumber(evaluation[key], `${label}.${key}`, 0, 1)
+    if(current) {
+        for(const key of ["defensiveGames", "defensiveProtectedGames"]) assertInteger(evaluation[key], `${label}.${key}`)
+        if(evaluation.defensiveProtectedGames > evaluation.defensiveGames || evaluation.defensiveGames > evaluation.games) fail(`${label}.defensive counts are inconsistent`)
+        for(const key of ["defensiveProtectionRate", "minimumDefensiveRate"]) assertNumber(evaluation[key], `${label}.${key}`, 0, 1)
+        for(const key of ["minimumDefensiveLives", "minimumDefensiveFloorLives"]) assertInteger(evaluation[key], `${label}.${key}`)
+        assertNumber(evaluation.minimumDefensiveObservedLives, `${label}.minimumDefensiveObservedLives`, 0)
+        const expectedRate = evaluation.defensiveGames ? evaluation.defensiveProtectedGames / evaluation.defensiveGames : 0
+        if(Math.abs(evaluation.defensiveProtectionRate - expectedRate) > 1e-12) fail(`${label}.defensiveProtectionRate is inconsistent`)
+    }
     return evaluation
 }
 
@@ -409,7 +424,7 @@ function projectJobs(jobs, source) {
 function projectEvaluation(aggregate, source) {
     validateEvaluationAggregate(aggregate, "training status evaluation artifact")
     const buckets = [...Object.values(aggregate.byMap), ...Object.values(aggregate.bySide), ...Object.values(aggregate.byRole)]
-    return validateEvaluationStatus({
+    const projected = {
         runId: source.runId,
         runNumber: source.runNumber,
         runAttempt: source.runAttempt,
@@ -430,7 +445,17 @@ function projectEvaluation(aggregate, source) {
         minimumSurvivalRate: aggregate.thresholds.minimumSurvivalRate,
         severeCollapseRate: aggregate.safety.severeCollapseRate,
         maximumSevereCollapseRate: aggregate.thresholds.maximumSevereCollapseRate,
+    }
+    if(aggregate.absoluteDefense) Object.assign(projected, {
+        defensiveGames: aggregate.absoluteDefense.games,
+        defensiveProtectedGames: aggregate.absoluteDefense.protectedGames,
+        defensiveProtectionRate: aggregate.absoluteDefense.protectionRate,
+        minimumDefensiveRate: aggregate.thresholds.minimumDefensiveRate,
+        minimumDefensiveLives: aggregate.thresholds.minimumDefensiveLives,
+        minimumDefensiveFloorLives: aggregate.thresholds.minimumDefensiveFloorLives,
+        minimumDefensiveObservedLives: aggregate.absoluteDefense.minimumCandidateLives,
     })
+    return validateEvaluationStatus(projected)
 }
 
 function projectPromotion(receipt, source) {

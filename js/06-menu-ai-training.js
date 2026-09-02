@@ -1,6 +1,5 @@
 // AI Lab extension layered on top of the base AI menu/runtime.
 
-var AI_TRAINING_BATCH_OPTIONS = [1, 50, 150, 400, 900]
 var AI_TRAINING_GOAL_OPTIONS = [500, 2000, 5000, 15000, 40000]
 var AI_TRAINING_AUTOSAVE_EPISODES = 10
 var AI_TRAINING_FIXED_FRAME_MS = 1000 / 60
@@ -39,77 +38,7 @@ var AI_TRAINING_MODES = [
         description: "Open loadout discovery through real AI versus AI matches with auto-rematch and accelerated scheduling.",
     },
 ]
-var AI_TRAINING_PROFILES = [
-    {
-        id: "mixed",
-        label: "Mixed Ladder",
-        description: "Broad synthetic scrims across eco, pressure, and hybrid loadouts.",
-        ecoBias: 0,
-        pressureBias: 0,
-        heavyBias: 0,
-        lateBias: 0,
-        supportBias: 0,
-        camoBias: 0,
-        ecoBoostBias: 0,
-        defenseBoostBias: 0,
-        offenseBoostBias: 0,
-        hybridChance: 0.34,
-        volatility: 0.08,
-    },
-    {
-        id: "pressure",
-        label: "Pressure Lab",
-        description: "Stress-tests anti-rush choices, tempo lines, and offense boosts.",
-        ecoBias: -0.05,
-        pressureBias: 0.24,
-        heavyBias: 0.1,
-        lateBias: -0.08,
-        supportBias: 0.04,
-        camoBias: 0.08,
-        ecoBoostBias: -0.08,
-        defenseBoostBias: 0.06,
-        offenseBoostBias: 0.2,
-        hybridChance: 0.42,
-        volatility: 0.1,
-    },
-    {
-        id: "greed",
-        label: "Eco Punish",
-        description: "Targets greedy ladders so the AI learns when to punish economy-first loadouts.",
-        ecoBias: 0.22,
-        pressureBias: -0.06,
-        heavyBias: 0.02,
-        lateBias: 0.12,
-        supportBias: -0.02,
-        camoBias: 0,
-        ecoBoostBias: 0.2,
-        defenseBoostBias: -0.06,
-        offenseBoostBias: 0.02,
-        hybridChance: 0.26,
-        volatility: 0.07,
-    },
-    {
-        id: "late",
-        label: "Late Game",
-        description: "Biases toward heavy, camo, and scaling matchups to sharpen endgame plans.",
-        ecoBias: 0.08,
-        pressureBias: -0.02,
-        heavyBias: 0.22,
-        lateBias: 0.24,
-        supportBias: 0.12,
-        camoBias: 0.14,
-        ecoBoostBias: 0.04,
-        defenseBoostBias: 0.1,
-        offenseBoostBias: -0.02,
-        hybridChance: 0.3,
-        volatility: 0.09,
-    },
-]
-
 var aiTrainingRuntimeReady = false
-var aiTrainingTowerPool = []
-var aiTrainingBoostPool = []
-var aiTrainingStrategySummaries = []
 var aiContextsBySide = {}
 var aiTrainingFrameSimulationMultiplier = 1
 var aiTrainingLastSimulationFrameAt = 0
@@ -126,17 +55,9 @@ function createAITrainingState() {
         modeIndex: 0,
         batchOptionIndex: 2,
         goalOptionIndex: 2,
-        profileIndex: 0,
         startedAt: 0,
         activeMs: 0,
         currentRunStartedAt: 0,
-        sessionEpisodes: 0,
-        sessionWins: 0,
-        sessionLosses: 0,
-        sessionTies: 0,
-        sessionCoachHits: 0,
-        sessionRewardTotal: 0,
-        sessionFeatureSums: aiCreateVector(AI_FEATURE_KEYS.length, 0),
         sessionStrategyPickCounts: aiCreateVector(AI_STRATEGY_LIBRARY.length, 0),
         sessionBestStrategyCounts: aiCreateVector(AI_STRATEGY_LIBRARY.length, 0),
         uniqueOpponentSignatures: {},
@@ -174,13 +95,6 @@ function createAITrainingState() {
         trueSelfPlayProgressAt: 0,
         trueSelfPlayRecentRounds: [],
         trueSelfPlayRecentLeftWinRates: [],
-        lastBatchEpisodes: 0,
-        lastBatchReward: 0,
-        lastBatchWins: 0,
-        lastBatchLosses: 0,
-        lastBatchTies: 0,
-        lastBatchCoachHits: 0,
-        lastBatchAt: 0,
         lastChosenStrategyIndex: 0,
         lastBestStrategyIndex: 0,
         pendingSaveEpisodes: 0,
@@ -272,6 +186,10 @@ function createAIProfileState() {
         explorationEnabled: false,
         pendingTacticalDecision: null,
         tacticalTrace: [],
+        placementOutcomes: {},
+        placementSamples: [],
+        observedLivesBySide: {},
+        observedLivesLostBySide: {},
         decisionMemory: aiCreateVector(AI_DECISION_MEMORY_SIZE, 0),
     }
 }
@@ -387,23 +305,6 @@ function ensureAITrainingRuntimeInitialized() {
     }
 
     aiTrainingRuntimeReady = true
-    aiTrainingTowerPool = []
-    aiTrainingBoostPool = []
-    aiTrainingStrategySummaries = []
-    for(var i = 0; i < AI_STRATEGY_LIBRARY.length; i++) {
-        var strategy = AI_STRATEGY_LIBRARY[i]
-        aiTrainingStrategySummaries.push(summarizeLoadoutSelection(strategy.towers, strategy.boosts))
-        for(var towerIndex = 0; towerIndex < strategy.towers.length; towerIndex++) {
-            if(aiTrainingTowerPool.indexOf(strategy.towers[towerIndex]) == -1) {
-                aiTrainingTowerPool.push(strategy.towers[towerIndex])
-            }
-        }
-        for(var boostIndex = 0; boostIndex < strategy.boosts.length; boostIndex++) {
-            if(aiTrainingBoostPool.indexOf(strategy.boosts[boostIndex]) == -1) {
-                aiTrainingBoostPool.push(strategy.boosts[boostIndex])
-            }
-        }
-    }
     return true
 }
 
@@ -411,24 +312,12 @@ function getAITrainingMode() {
     return AI_TRAINING_MODES[clamp(aiTrainingState.modeIndex, 0, AI_TRAINING_MODES.length - 1)]
 }
 
-function getAITrainingProfile() {
-    return AI_TRAINING_PROFILES[aiTrainingState.profileIndex]
-}
-
 function getAITrainingSpeedOptionCount() {
-    return getAITrainingMode().id == "selfplay" ? AI_TRAINING_TRUE_SELF_PLAY_SPEEDS.length : AI_TRAINING_BATCH_OPTIONS.length
-}
-
-function getAITrainingActiveSpeedIndex() {
-    return clamp(aiTrainingState.batchOptionIndex, 0, getAITrainingSpeedOptionCount() - 1)
-}
-
-function getAITrainingBatchSize() {
-    return AI_TRAINING_BATCH_OPTIONS[getAITrainingActiveSpeedIndex()]
+    return AI_TRAINING_TRUE_SELF_PLAY_SPEEDS.length
 }
 
 function getAITrainingTrueSelfPlaySpeed() {
-    return AI_TRAINING_TRUE_SELF_PLAY_SPEEDS[getAITrainingActiveSpeedIndex()]
+    return AI_TRAINING_TRUE_SELF_PLAY_SPEEDS[clamp(aiTrainingState.batchOptionIndex, 0, getAITrainingSpeedOptionCount() - 1)]
 }
 
 function getAITrainingGoalEpisodes() {
@@ -486,15 +375,7 @@ function getAITrainingHeadlessRenderContext() {
 }
 
 function getAITrainingSpeedLabel() {
-    if(getAITrainingMode().id == "selfplay") {
-        return getAITrainingTrueSelfPlaySpeed().label
-    }
-    var batchSize = getAITrainingBatchSize()
-    return batchSize == 1 ? "Normal x1 episode / frame" : batchSize + " episodes / frame"
-}
-
-function getAITrainingScenarioLabel() {
-    return getAITrainingProfile().label
+    return getAITrainingTrueSelfPlaySpeed().label
 }
 
 function getAITrainingAnimationDelayMs() {
@@ -649,7 +530,7 @@ function getAITrainingEpisodesPerSecond() {
     if(elapsedMs <= 0) {
         return 0
     }
-    var progressCount = getAITrainingMode().id == "selfplay" ? aiTrainingState.trueSelfPlayMatches : aiTrainingState.sessionEpisodes
+    var progressCount = aiTrainingState.trueSelfPlayMatches
     return progressCount / Math.max(0.001, elapsedMs / 1000)
 }
 
@@ -660,7 +541,6 @@ function resetAITrainingSession() {
     nextState.modeIndex = aiTrainingState.modeIndex
     nextState.batchOptionIndex = aiTrainingState.batchOptionIndex
     nextState.goalOptionIndex = aiTrainingState.goalOptionIndex
-    nextState.profileIndex = aiTrainingState.profileIndex
     nextState.persistenceMode = aiTrainingState.persistenceMode
     aiTrainingState = nextState
     setAITrainingNotice("Training session metrics reset.", 1800)
@@ -716,7 +596,7 @@ function requestAITrainingSave(forceSave) {
             }
             return false
         }
-        var progressCount = getAITrainingMode().id == "selfplay" ? aiTrainingState.trueSelfPlayMatches : aiTrainingState.sessionEpisodes
+        var progressCount = aiTrainingState.trueSelfPlayMatches
         flushAIPublicContributionQueue()
         aiTrainingState.pendingSaveEpisodes = 0
         aiTrainingState.saveRequestedEpisodes = 0
@@ -805,7 +685,7 @@ function requestAITrainingControlSave() {
 
 function syncAITrainingSaveState() {
     if(aiPersistenceState.lastSavedAt > aiTrainingState.lastObservedSavedAt) {
-        var progressCount = getAITrainingMode().id == "selfplay" ? aiTrainingState.trueSelfPlayMatches : aiTrainingState.sessionEpisodes
+        var progressCount = aiTrainingState.trueSelfPlayMatches
         aiTrainingState.lastObservedSavedAt = aiPersistenceState.lastSavedAt
         aiTrainingState.pendingSaveEpisodes = Math.max(0, aiTrainingState.pendingSaveEpisodes - aiTrainingState.saveRequestedEpisodes)
         aiTrainingState.saveRequestedEpisodes = 0
@@ -1016,10 +896,7 @@ function syncAITrainingTrueSelfPlayProgressWatchdog() {
 }
 
 function getAITrainingAverageFeatureValue(featureIndex) {
-    if(aiTrainingState.sessionEpisodes <= 0) {
-        return aiLearning.playerProfile.features[featureIndex]
-    }
-    return aiTrainingState.sessionFeatureSums[featureIndex] / aiTrainingState.sessionEpisodes
+    return aiLearning.playerProfile.features[featureIndex]
 }
 
 function getAITrainingEvaluationDisplay() {
@@ -1080,9 +957,8 @@ function drawAITrainingTrendChart(x, y, width, height) {
     if(height <= 18) {
         return
     }
-    var selfPlayMode = getAITrainingMode().id == "selfplay"
-    var rewardSeries = selfPlayMode ? aiTrainingState.trueSelfPlayRecentRounds : aiTrainingState.recentAverageRewards
-    var supportSeries = selfPlayMode ? aiTrainingState.trueSelfPlayRecentLeftWinRates : aiTrainingState.recentCoachRates
+    var rewardSeries = aiTrainingState.trueSelfPlayRecentRounds
+    var supportSeries = aiTrainingState.trueSelfPlayRecentLeftWinRates
     ctx.fillStyle = "rgba(255, 255, 255, 0.04)"
     ctx.fillRect(x, y, width, height)
     ctx.strokeStyle = "rgba(255, 255, 255, 0.08)"
@@ -1091,7 +967,7 @@ function drawAITrainingTrendChart(x, y, width, height) {
         ctx.fillStyle = "rgba(198, 210, 233, 0.82)"
         ctx.font = "13px Arial"
         ctx.textAlign = "center"
-        ctx.fillText(selfPlayMode ? "Finish a few self-play matches to build the trend." : "Run a few batches to build the reward trend.", x + width / 2, y + height / 2 + 4, width * 0.9)
+        ctx.fillText("Finish a few self-play matches to build the trend.", x + width / 2, y + height / 2 + 4, width * 0.9)
         return
     }
 
@@ -1102,13 +978,13 @@ function drawAITrainingTrendChart(x, y, width, height) {
     var supportAreaHeight = Math.max(5, height * 0.12)
     var barWidth = width / Math.max(1, rewardSeries.length)
     for(var i = 0; i < rewardSeries.length; i++) {
-        var rewardValue = selfPlayMode ? rewardSeries[i] / 40 : rewardSeries[i]
+        var rewardValue = rewardSeries[i] / 40
         var supportRate = supportSeries[i] || 0
         var normalizedHeight = clamp(Math.abs(rewardValue) / 1.2, 0.06, 1)
         var columnHeight = normalizedHeight * rewardMaxHeight
         var columnX = x + i * barWidth + Math.max(1, barWidth * 0.14)
         var columnWidth = Math.max(3, barWidth * 0.68)
-        ctx.fillStyle = selfPlayMode ? "rgba(118, 225, 167, 0.92)" : rewardValue >= 0 ? "rgba(118, 225, 167, 0.92)" : "rgba(255, 145, 133, 0.92)"
+        ctx.fillStyle = "rgba(118, 225, 167, 0.92)"
         if(rewardValue >= 0) {
             ctx.fillRect(columnX, rewardZeroY - columnHeight, columnWidth, columnHeight)
         } else {
@@ -1122,419 +998,6 @@ function drawAITrainingTrendChart(x, y, width, height) {
     ctx.moveTo(x + 6, rewardZeroY)
     ctx.lineTo(x + width - 6, rewardZeroY)
     ctx.stroke()
-}
-
-function getAITrainingProfileForSelfPlay() {
-    return AI_TRAINING_PROFILES[aiTrainingState.profileIndex]
-}
-
-function pickAITrainingRandomItem(values) {
-    return values[Math.floor(Math.random() * values.length)]
-}
-
-function scoreAITrainingTemplateStrategy(strategyIndex, profile) {
-    var strategy = AI_STRATEGY_LIBRARY[strategyIndex]
-    var summary = aiTrainingStrategySummaries[strategyIndex]
-    var score = Math.random() * 0.12 + strategy.baseBias
-    if(profile.id == "pressure") {
-        score += summary.pressure * 0.85 + strategy.rushBias * 0.55 + summary.offenseBoost * 0.22
-    } else if(profile.id == "greed") {
-        score += summary.eco * 0.95 + summary.late * 0.38 + summary.ecoBoost * 0.25 - summary.pressure * 0.12
-    } else if(profile.id == "late") {
-        score += summary.late * 0.88 + summary.heavy * 0.46 + summary.support * 0.18 + summary.camo * 0.2
-    } else {
-        score += summary.eco * 0.24 + summary.pressure * 0.24 + summary.heavy * 0.18 + summary.late * 0.18
-    }
-    return score
-}
-
-function isAITrainingStrategyExcluded(excludedStrategyIndices, strategyIndex) {
-    if(excludedStrategyIndices == null) {
-        return false
-    }
-    if(Array.isArray(excludedStrategyIndices)) {
-        for(var i = 0; i < excludedStrategyIndices.length; i++) {
-            if(isAITrainingStrategyExcluded(excludedStrategyIndices[i], strategyIndex)) {
-                return true
-            }
-        }
-        return false
-    }
-    return excludedStrategyIndices == strategyIndex
-}
-
-function pickAITrainingTemplateStrategyIndex(profile, excludedStrategyIndices) {
-    var bestIndex = 0
-    var bestScore = -Infinity
-    for(var i = 0; i < 8; i++) {
-        var candidateIndex = Math.floor(Math.random() * AI_STRATEGY_LIBRARY.length)
-        if(AI_STRATEGY_LIBRARY.length > 1 && isAITrainingStrategyExcluded(excludedStrategyIndices, candidateIndex)) {
-            continue
-        }
-        var candidateScore = scoreAITrainingTemplateStrategy(candidateIndex, profile)
-        if(candidateScore > bestScore) {
-            bestScore = candidateScore
-            bestIndex = candidateIndex
-        }
-    }
-    if(AI_STRATEGY_LIBRARY.length > 1 && isAITrainingStrategyExcluded(excludedStrategyIndices, bestIndex)) {
-        for(var strategyIndex = 0; strategyIndex < AI_STRATEGY_LIBRARY.length; strategyIndex++) {
-            if(isAITrainingStrategyExcluded(excludedStrategyIndices, strategyIndex) == false) {
-                bestIndex = strategyIndex
-                break
-            }
-        }
-    }
-    return bestIndex
-}
-
-function createAITrainingHybridLoadout(primaryStrategy, secondaryStrategy) {
-    var towers = []
-    var boosts = []
-    while(towers.length < 3) {
-        var towerPool = (Math.random() < 0.65 ? primaryStrategy : secondaryStrategy).towers
-        var towerImage = pickAITrainingRandomItem(towerPool)
-        if(towers.indexOf(towerImage) == -1) {
-            towers.push(towerImage)
-        }
-    }
-    while(towers.length < 3) {
-        var randomTower = pickAITrainingRandomItem(aiTrainingTowerPool)
-        if(towers.indexOf(randomTower) == -1) {
-            towers.push(randomTower)
-        }
-    }
-    while(boosts.length < 2) {
-        var boostPool = (Math.random() < 0.65 ? primaryStrategy : secondaryStrategy).boosts
-        var boostImage = pickAITrainingRandomItem(boostPool)
-        if(boosts.indexOf(boostImage) == -1) {
-            boosts.push(boostImage)
-        }
-    }
-    while(boosts.length < 2) {
-        var randomBoost = pickAITrainingRandomItem(aiTrainingBoostPool)
-        if(boosts.indexOf(randomBoost) == -1) {
-            boosts.push(randomBoost)
-        }
-    }
-    return { towers: towers, boosts: boosts }
-}
-
-function applyAITrainingProfileBias(summary, profile) {
-    summary.eco = clamp(summary.eco + profile.ecoBias + aiRandomWeight(profile.volatility), 0, 1)
-    summary.pressure = clamp(summary.pressure + profile.pressureBias + aiRandomWeight(profile.volatility), 0, 1)
-    summary.heavy = clamp(summary.heavy + profile.heavyBias + aiRandomWeight(profile.volatility * 0.8), 0, 1)
-    summary.late = clamp(summary.late + profile.lateBias + aiRandomWeight(profile.volatility * 0.75), 0, 1)
-    summary.support = clamp(summary.support + profile.supportBias + aiRandomWeight(profile.volatility * 0.6), 0, 1)
-    summary.camo = clamp(summary.camo + profile.camoBias + aiRandomWeight(profile.volatility * 0.55), 0, 1)
-    summary.ecoBoost = clamp(summary.ecoBoost + profile.ecoBoostBias, 0, 1)
-    summary.defenseBoost = clamp(summary.defenseBoost + profile.defenseBoostBias, 0, 1)
-    summary.offenseBoost = clamp(summary.offenseBoost + profile.offenseBoostBias, 0, 1)
-    summary.selectionRatio = clamp(summary.selectionRatio, 0.82, 1)
-    summary.hasAnySelection = true
-    return summary
-}
-
-function createAITrainingOpponentSummary(profile, excludedStrategyIndices) {
-    var primaryIndex = pickAITrainingTemplateStrategyIndex(profile, excludedStrategyIndices)
-    var secondaryIndex = pickAITrainingTemplateStrategyIndex(profile, [excludedStrategyIndices, primaryIndex])
-    var primaryStrategy = AI_STRATEGY_LIBRARY[primaryIndex]
-    var secondaryStrategy = AI_STRATEGY_LIBRARY[secondaryIndex]
-    var towerImages = primaryStrategy.towers.slice(0)
-    var boostImages = primaryStrategy.boosts.slice(0)
-    if(Math.random() < profile.hybridChance) {
-        var hybridLoadout = createAITrainingHybridLoadout(primaryStrategy, secondaryStrategy)
-        towerImages = hybridLoadout.towers
-        boostImages = hybridLoadout.boosts
-    }
-    var summary = applyAITrainingProfileBias(summarizeLoadoutSelection(towerImages, boostImages), profile)
-    summary.sourceStrategyIndex = primaryIndex
-    summary.sourceSecondaryStrategyIndex = secondaryIndex
-    return summary
-}
-
-function createAITrainingMatchFeatures(observedLoadoutSummary, profile) {
-    var vector = getObservedLoadoutFeatureVector(observedLoadoutSummary)
-    var farmIndex = getFeatureIndex("farm")
-    var ecoIndex = getFeatureIndex("eco")
-    var rushIndex = getFeatureIndex("rush")
-    var heavyIndex = getFeatureIndex("heavy")
-    var lateIndex = getFeatureIndex("late")
-    var supportIndex = getFeatureIndex("support")
-    var camoIndex = getFeatureIndex("camo")
-    var greedIndex = getFeatureIndex("greed")
-    var noise = profile.volatility
-
-    vector[farmIndex] = clamp(observedLoadoutSummary.eco * 0.82 + observedLoadoutSummary.ecoBoost * 0.2 - observedLoadoutSummary.pressure * 0.18 + aiRandomWeight(noise), 0, 1)
-    vector[ecoIndex] = clamp(observedLoadoutSummary.eco * 0.78 + observedLoadoutSummary.ecoBoost * 0.24 + observedLoadoutSummary.late * 0.08 + aiRandomWeight(noise), 0, 1)
-    vector[rushIndex] = clamp(observedLoadoutSummary.pressure * 0.82 + observedLoadoutSummary.offenseBoost * 0.24 + observedLoadoutSummary.camo * 0.06 + aiRandomWeight(noise), 0, 1)
-    vector[heavyIndex] = clamp(observedLoadoutSummary.heavy * 0.76 + observedLoadoutSummary.late * 0.18 + observedLoadoutSummary.defenseBoost * 0.08 + aiRandomWeight(noise * 0.8), 0, 1)
-    vector[lateIndex] = clamp(observedLoadoutSummary.late * 0.76 + observedLoadoutSummary.eco * 0.18 + observedLoadoutSummary.support * 0.08 + aiRandomWeight(noise * 0.8), 0, 1)
-    vector[supportIndex] = clamp(observedLoadoutSummary.support * 0.82 + observedLoadoutSummary.defenseBoost * 0.2 + aiRandomWeight(noise * 0.7), 0, 1)
-    vector[camoIndex] = clamp(observedLoadoutSummary.camo * 0.84 + observedLoadoutSummary.pressure * 0.08 + aiRandomWeight(noise * 0.55), 0, 1)
-    vector[greedIndex] = clamp(Math.max(observedLoadoutSummary.eco * 0.88, observedLoadoutSummary.ecoBoost * 0.92) - observedLoadoutSummary.pressure * 0.12 + aiRandomWeight(noise * 0.75), 0, 1)
-    return vector
-}
-
-function getAITrainingCoachScore(strategyIndex, observedLoadoutSummary, matchFeatures, profile) {
-    var strategy = AI_STRATEGY_LIBRARY[strategyIndex]
-    var strategySummary = aiTrainingStrategySummaries[strategyIndex]
-    var farmValue = matchFeatures[getFeatureIndex("farm")]
-    var ecoValue = matchFeatures[getFeatureIndex("eco")]
-    var rushValue = matchFeatures[getFeatureIndex("rush")]
-    var heavyValue = matchFeatures[getFeatureIndex("heavy")]
-    var lateValue = matchFeatures[getFeatureIndex("late")]
-    var supportValue = matchFeatures[getFeatureIndex("support")]
-    var camoValue = matchFeatures[getFeatureIndex("camo")]
-    var greedValue = matchFeatures[getFeatureIndex("greed")]
-    var score = getStrategyLoadoutCounterHeuristicBonus(strategy, observedLoadoutSummary)
-    score += strategySummary.eco * (farmValue * 0.48 + ecoValue * 0.26 + greedValue * 0.2)
-    score += strategySummary.pressure * (rushValue * 0.62 + observedLoadoutSummary.offenseBoost * 0.14)
-    score += strategySummary.heavy * (heavyValue * 0.48 + lateValue * 0.14)
-    score += strategySummary.late * (lateValue * 0.42 + supportValue * 0.08)
-    score += strategySummary.support * (supportValue * 0.34 + camoValue * 0.06)
-    score += strategySummary.camo * camoValue * 0.32
-    score += (1 - Math.abs(strategy.rushBias - rushValue)) * 0.16
-    if(strategy.towers.indexOf("000farm.png") != -1) {
-        score += greedValue * 0.22 - rushValue * 0.14
-    }
-    if(strategy.towers.indexOf("000cobra.png") != -1) {
-        score += rushValue * 0.2 + observedLoadoutSummary.eco * 0.16
-    }
-    if(strategy.towers.indexOf("000bomb.png") != -1) {
-        score += heavyValue * 0.16 + observedLoadoutSummary.heavy * 0.12
-    }
-    if(profile.id == "pressure") {
-        score += strategy.rushBias * 0.24 + strategySummary.pressure * 0.16
-    } else if(profile.id == "greed") {
-        score += strategySummary.eco * 0.2 + strategySummary.late * 0.08
-    } else if(profile.id == "late") {
-        score += strategySummary.late * 0.22 + strategySummary.heavy * 0.14 + strategySummary.support * 0.06
-    }
-    score += getStrategyPerformanceBonus(strategyIndex) * 0.28
-    score += getLoadoutCounterLearningBonus(strategyIndex, observedLoadoutSummary) * 0.22
-    return score
-}
-
-function getAITrainingRewardForSelection(chosenIndex, strategyScores) {
-    var totalScore = 0
-    var bestIndex = 0
-    var bestScore = -Infinity
-    var secondBestScore = -Infinity
-    for(var i = 0; i < strategyScores.length; i++) {
-        totalScore += strategyScores[i]
-        if(strategyScores[i] > bestScore) {
-            secondBestScore = bestScore
-            bestScore = strategyScores[i]
-            bestIndex = i
-        } else if(strategyScores[i] > secondBestScore) {
-            secondBestScore = strategyScores[i]
-        }
-    }
-
-    var chosenScore = strategyScores[chosenIndex]
-    var averageScore = totalScore / Math.max(1, strategyScores.length)
-    var reward = (chosenScore - averageScore) * 0.72 - (bestScore - chosenScore) * 0.5 + aiRandomWeight(0.05)
-    if(chosenIndex == bestIndex) {
-        reward += 0.24
-    } else if(chosenScore >= secondBestScore - 0.03) {
-        reward += 0.08
-    }
-    return { reward: clamp(reward, -1.35, 1.35), bestIndex: bestIndex }
-}
-
-function buildAITrainingEpisodeFeatures(selectionFeatures, matchFeatures) {
-    var trainingFeatures = []
-    for(var i = 0; i < AI_FEATURE_KEYS.length; i++) {
-        if(AI_FEATURE_KEYS[i].indexOf("pre") == 0) {
-            trainingFeatures.push(selectionFeatures[i] * 0.55 + matchFeatures[i] * 0.45)
-        } else {
-            trainingFeatures.push(selectionFeatures[i] * 0.4 + matchFeatures[i] * 0.6)
-        }
-    }
-    return trainingFeatures
-}
-
-function getAITrainingPlacementBucketForRole(strategy, role, towerIndex) {
-    var xBase = 3
-    if(role == "farm") {
-        xBase = strategy.placementProfile == "aggressive" ? 2 : 1
-    } else if(strategy.placementProfile == "safe") {
-        xBase = 4
-    } else if(strategy.placementProfile == "aggressive") {
-        xBase = 2
-    }
-    var yBase = 2
-    if(role == "support") {
-        yBase = 4
-    } else if(role == "antiMoab") {
-        yBase = 3
-    } else if(role == "elite") {
-        yBase = 2
-    } else if(role == "farm") {
-        yBase = 0
-    }
-    return { x: clamp(xBase + (towerIndex % 2), 0, 6), y: clamp(yBase + Math.floor(towerIndex / 2), 0, 5) }
-}
-
-function getAITrainingCrosspathContext(matchFeatures, strategy) {
-    var heavyValue = matchFeatures[getFeatureIndex("heavy")]
-    var rushValue = matchFeatures[getFeatureIndex("rush")]
-    var greedValue = matchFeatures[getFeatureIndex("greed")]
-    if(heavyValue >= 0.58) return "heavy"
-    if(rushValue >= 0.6) return strategy.rushBias >= 0.68 ? "pressure" : "swarm"
-    if(greedValue >= 0.55) return "greed"
-    return "balanced"
-}
-
-function getAITrainingUpgradeSignature(strategy, image, towerType) {
-    var preferredUpgrade = strategy.upgradePrefs[image]
-    if(preferredUpgrade && preferredUpgrade.length == 3) {
-        return String(preferredUpgrade[0]) + String(preferredUpgrade[1]) + String(preferredUpgrade[2])
-    }
-    var candidates = getCrosspathCandidatesForTowerType(towerType)
-    if(candidates.length <= 0) {
-        return "320"
-    }
-    return String(candidates[0][0]) + String(candidates[0][1]) + String(candidates[0][2])
-}
-
-function applyAITrainingTowerSignals(strategyIndex, matchFeatures, reward) {
-    var strategy = AI_STRATEGY_LIBRARY[strategyIndex]
-    var contextKey = getAITrainingCrosspathContext(matchFeatures, strategy)
-    for(var towerIndex = 0; towerIndex < strategy.towers.length; towerIndex++) {
-        var towerImage = strategy.towers[towerIndex]
-        var towerType = getTowerTypeFromImage(towerImage)
-        var role = strategy.placementRoles[towerImage] || "core"
-        var bucket = getAITrainingPlacementBucketForRole(strategy, role, towerIndex)
-        var placementReward = clamp(reward + (role == "farm" ? matchFeatures[getFeatureIndex("greed")] * 0.2 + (1 - matchFeatures[getFeatureIndex("late")]) * 0.12 - matchFeatures[getFeatureIndex("rush")] * 0.1 - matchFeatures[getFeatureIndex("heavy")] * 0.08 : matchFeatures[getFeatureIndex("rush")] * 0.06), -0.45, 1.15)
-        updateAILearningScore(aiLearning.placementStats, getAIPlacementStatKey(mapNumber, towerType, role, bucket), placementReward)
-        updateAILearningScore(aiLearning.crosspathStats, getAICrosspathStatKey(towerType, contextKey, getAITrainingUpgradeSignature(strategy, towerImage, towerType)), placementReward)
-    }
-}
-
-function runAITrainingEpisode(profile) {
-    var observedLoadoutSummary = null
-    var selectionFeatures = null
-    var selection = null
-    for(var matchupAttempt = 0; matchupAttempt < 3; matchupAttempt++) {
-        observedLoadoutSummary = createAITrainingOpponentSummary(profile, selection ? selection.index : null)
-        selectionFeatures = buildAIStrategySelectionFeatures(observedLoadoutSummary)
-        selection = chooseAIStrategyFromFeaturesWithObservation(selectionFeatures, observedLoadoutSummary)
-        if(AI_STRATEGY_LIBRARY.length <= 1 || (selection.index != observedLoadoutSummary.sourceStrategyIndex && selection.index != observedLoadoutSummary.sourceSecondaryStrategyIndex)) {
-            break
-        }
-    }
-    var matchFeatures = createAITrainingMatchFeatures(observedLoadoutSummary, profile)
-    var strategyScores = []
-    for(var i = 0; i < AI_STRATEGY_LIBRARY.length; i++) {
-        strategyScores.push(getAITrainingCoachScore(i, observedLoadoutSummary, matchFeatures, profile))
-    }
-    var rewardSummary = getAITrainingRewardForSelection(selection.index, strategyScores)
-    var reward = rewardSummary.reward
-    var trainingFeatures = buildAITrainingEpisodeFeatures(selection.features, matchFeatures)
-
-    trainAIPolicy(trainingFeatures, selection.index, reward)
-    if(observedLoadoutSummary.hasAnySelection && observedLoadoutSummary.signature != "||") {
-        updateAILearningScore(aiLearning.loadoutCounterStats, getLoadoutCounterStatKey(observedLoadoutSummary.signature, selection.index), reward)
-    }
-    applyAITrainingTowerSignals(selection.index, matchFeatures, reward)
-
-    var stats = aiLearning.strategyStats[selection.index]
-    stats.syntheticEpisodes++
-    stats.lastReward = reward
-    aiLearning.totalSyntheticEpisodes++
-    aiLearning.totalPolicySamples++
-
-    return {
-        chosenIndex: selection.index,
-        bestIndex: rewardSummary.bestIndex,
-        reward: reward,
-        matchFeatures: matchFeatures,
-        observedLoadoutSummary: observedLoadoutSummary,
-        win: reward > 0.18,
-        loss: reward < -0.18,
-    }
-}
-
-function tickSyntheticTrainingMode() {
-    if(getAITrainingMode().id != "synthetic") {
-        return
-    }
-    syncAITrainingSaveState()
-    if(frontMenuState != "training" || aiTrainingState.running == false) {
-        return
-    }
-    if(ensureAITrainingRuntimeInitialized() == false) {
-        return
-    }
-    ensureAILearningLoaded()
-
-    var profile = getAITrainingProfile()
-    var batchEpisodes = getAITrainingBatchSize()
-    var batchReward = 0
-    var batchWins = 0
-    var batchLosses = 0
-    var batchTies = 0
-    var batchCoachHits = 0
-    for(var episodeIndex = 0; episodeIndex < batchEpisodes; episodeIndex++) {
-        if(aiTrainingState.sessionEpisodes >= getAITrainingGoalEpisodes()) {
-            break
-        }
-        var result = runAITrainingEpisode(profile)
-        aiTrainingState.sessionEpisodes++
-        aiTrainingState.sessionRewardTotal += result.reward
-        aiTrainingState.sessionStrategyPickCounts[result.chosenIndex]++
-        aiTrainingState.sessionBestStrategyCounts[result.bestIndex]++
-        aiTrainingState.lastChosenStrategyIndex = result.chosenIndex
-        aiTrainingState.lastBestStrategyIndex = result.bestIndex
-        if(result.observedLoadoutSummary.signature && aiTrainingState.uniqueOpponentSignatures[result.observedLoadoutSummary.signature] == null) {
-            aiTrainingState.uniqueOpponentSignatures[result.observedLoadoutSummary.signature] = true
-            aiTrainingState.uniqueOpponentCount++
-        }
-        for(var featureIndex = 0; featureIndex < AI_FEATURE_KEYS.length; featureIndex++) {
-            aiTrainingState.sessionFeatureSums[featureIndex] += result.matchFeatures[featureIndex]
-        }
-        if(result.win) {
-            aiTrainingState.sessionWins++
-            batchWins++
-        } else if(result.loss) {
-            aiTrainingState.sessionLosses++
-            batchLosses++
-        } else {
-            aiTrainingState.sessionTies++
-            batchTies++
-        }
-        if(result.chosenIndex == result.bestIndex) {
-            aiTrainingState.sessionCoachHits++
-            batchCoachHits++
-        }
-        aiTrainingState.pendingSaveEpisodes++
-        batchReward += result.reward
-    }
-
-    aiTrainingState.lastBatchEpisodes = batchWins + batchLosses + batchTies
-    aiTrainingState.lastBatchReward = aiTrainingState.lastBatchEpisodes > 0 ? batchReward / aiTrainingState.lastBatchEpisodes : 0
-    aiTrainingState.lastBatchWins = batchWins
-    aiTrainingState.lastBatchLosses = batchLosses
-    aiTrainingState.lastBatchTies = batchTies
-    aiTrainingState.lastBatchCoachHits = batchCoachHits
-    aiTrainingState.lastBatchAt = realNow()
-    if(aiTrainingState.lastBatchEpisodes > 0) {
-        pushAITrainingHistoryValue(aiTrainingState.recentAverageRewards, aiTrainingState.lastBatchReward, 22)
-        pushAITrainingHistoryValue(aiTrainingState.recentCoachRates, batchCoachHits / aiTrainingState.lastBatchEpisodes, 22)
-        pushAITrainingHistoryValue(aiTrainingState.recentBatchSizes, aiTrainingState.lastBatchEpisodes, 22)
-    }
-
-    requestAITrainingSave(false)
-    if(aiTrainingState.sessionEpisodes >= getAITrainingGoalEpisodes()) {
-        aiTrainingState.goalReachedAt = realNow()
-        aiTrainingState.activeMs += Math.max(0, realNow() - aiTrainingState.currentRunStartedAt)
-        aiTrainingState.currentRunStartedAt = 0
-        aiTrainingState.running = false
-        requestAITrainingSave(true)
-        setAITrainingNotice("Training goal reached.", 2200)
-    }
 }
 
 function tickAIControllerForSide(side) {
@@ -1592,6 +1055,7 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
         effectScale: 4,
         count: chosenLoadout.summary.filledTowerSlots + chosenLoadout.summary.filledBoostSlots,
         countScale: 5,
+        loadoutSummary: chosenLoadout.summary,
         capabilityFacts: getAILoadoutCapabilityFacts(chosenLoadout.towers, chosenLoadout.boosts, 1),
     }, null, buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null))
     recordAIDecisionTraceSample(loadoutDecisionSample, 0)
@@ -1931,40 +1395,10 @@ function tickAITrainingTrueSelfPlayLifecycle() {
 }
 
 function setAITrainingRunning(nextRunning) {
-    if(getAITrainingMode().id == "selfplay") {
-        if(nextRunning) {
-            return startAITrainingTrueSelfPlay()
-        }
-        return stopAITrainingTrueSelfPlay(false)
-    }
-
     if(nextRunning) {
-        ensureAILearningLoaded()
-        if(AI_CROSS_MATCH_LEARNING_ENABLED && aiPersistenceState.restoreComplete == false && aiPersistenceState.loadInFlight) {
-            setAITrainingNotice("Wait for hosted AI data to finish loading.", 1800)
-            return false
-        }
-        if(aiTrainingState.running) {
-            return true
-        }
-        if(aiTrainingState.startedAt <= 0) {
-            aiTrainingState.startedAt = realNow()
-        }
-        aiTrainingState.currentRunStartedAt = realNow()
-        aiTrainingState.running = true
-        aiTrainingState.goalReachedAt = 0
-        setAITrainingNotice("Trainer running " + getAITrainingProfile().label.toLowerCase() + ".", 1500)
-        return true
+        return startAITrainingTrueSelfPlay()
     }
-
-    if(aiTrainingState.running) {
-        aiTrainingState.activeMs += Math.max(0, realNow() - aiTrainingState.currentRunStartedAt)
-        aiTrainingState.currentRunStartedAt = 0
-        aiTrainingState.running = false
-        requestAITrainingSave(false)
-        setAITrainingNotice("Trainer paused.", 1200)
-    }
-    return true
+    return stopAITrainingTrueSelfPlay(false)
 }
 
 function openAITrainingDashboard() {
@@ -2087,7 +1521,6 @@ function drawAITrainingScreen() {
         return
     }
 
-    tickSyntheticTrainingMode()
     syncAITrainingSaveState()
     ensureAILearningLoaded()
 
@@ -2129,12 +1562,9 @@ function drawAITrainingScreen() {
     var contentTop = panelY + panelHeight * 0.23
     var sectionGap = panelWidth * 0.018
 
-    var profile = getAITrainingProfile()
     var goalEpisodes = getAITrainingGoalEpisodes()
-    var progressCount = trainingMode.id == "selfplay" ? aiTrainingState.trueSelfPlayMatches : aiTrainingState.sessionEpisodes
+    var progressCount = aiTrainingState.trueSelfPlayMatches
     var goalProgress = clamp(progressCount / Math.max(1, goalEpisodes), 0, 1)
-    var coachRate = aiTrainingState.sessionEpisodes > 0 ? aiTrainingState.sessionCoachHits / aiTrainingState.sessionEpisodes : 0
-    var averageReward = aiTrainingState.sessionEpisodes > 0 ? aiTrainingState.sessionRewardTotal / aiTrainingState.sessionEpisodes : 0
     var averageSelfPlayRound = aiTrainingState.trueSelfPlayMatches > 0 ? aiTrainingState.trueSelfPlayRoundTotal / aiTrainingState.trueSelfPlayMatches : 0
     var evaluationDisplay = getAITrainingEvaluationDisplay()
     var runtimeLabel = aiTrainingState.running ? "Running" : "Idle"
@@ -2147,20 +1577,13 @@ function drawAITrainingScreen() {
     var summaryGap = contentWidth * 0.012
     var summaryMetricWidth = (contentWidth - summaryGap * 5) / 6
     var summaryMetricHeight = 42
-    var summaryMetrics = trainingMode.id == "selfplay" ? [
+    var summaryMetrics = [
         { label: "Matches", value: aiTrainingState.trueSelfPlayMatches.toLocaleString(), color: "#62c5ff" },
         { label: "Phase", value: aiTrainingState.evaluationActive ? "Eval " + aiTrainingState.evaluationGames + "/64" : "Train " + aiTrainingState.candidateTrainingMatches + "/128", color: "#7fe0a2" },
         { label: evaluationDisplay.label, value: Math.round(evaluationDisplay.score * 100) + "%", color: "#f7c76d" },
         { label: "Lab Promotions", value: aiTrainingState.promotions.toLocaleString(), color: "#87f0ad" },
         { label: "Rejected", value: aiTrainingState.rejectedCandidates.toLocaleString(), color: "#ff9f8f" },
         { label: "Avg Round", value: averageSelfPlayRound.toFixed(1), color: "#7bd8d4" },
-    ] : [
-        { label: "Episodes", value: aiTrainingState.sessionEpisodes.toLocaleString(), color: "#62c5ff" },
-        { label: "Goal", value: goalEpisodes.toLocaleString(), color: "#7fe0a2" },
-        { label: "Eps/Sec", value: getAITrainingEpisodesPerSecond().toFixed(1), color: "#f7c76d" },
-        { label: "Avg Reward", value: averageReward.toFixed(2), color: averageReward >= 0 ? "#87f0ad" : "#ff9f8f" },
-        { label: "Oracle", value: Math.round(coachRate * 100) + "%", color: "#b698ff" },
-        { label: "Opponents", value: aiTrainingState.uniqueOpponentCount.toLocaleString(), color: "#7bd8d4" },
     ]
     for(var summaryIndex = 0; summaryIndex < summaryMetrics.length; summaryIndex++) {
         drawAIStatsMetricCell(contentX + summaryIndex * (summaryMetricWidth + summaryGap), contentTop, summaryMetricWidth, summaryMetricHeight, summaryMetrics[summaryIndex].label, summaryMetrics[summaryIndex].value, summaryMetrics[summaryIndex].color)
@@ -2172,7 +1595,7 @@ function drawAITrainingScreen() {
     var trendWidth = contentWidth - statusWidth - sectionGap
     var trendX = contentX + statusWidth + sectionGap
     drawAIStatsCard(contentX, middleY, statusWidth, middleHeight, "Run Status", "rgba(98, 197, 255, 0.92)")
-    drawAIStatsCard(trendX, middleY, trendWidth, middleHeight, trainingMode.id == "selfplay" ? "Self-Play Trend" : "Reward Trend", "rgba(255, 189, 92, 0.92)")
+    drawAIStatsCard(trendX, middleY, trendWidth, middleHeight, "Self-Play Trend", "rgba(255, 189, 92, 0.92)")
 
     var bottomY = middleY + middleHeight + sectionGap
     var bottomHeight = panelY + panelHeight - bottomY - 14
@@ -2180,7 +1603,7 @@ function drawAITrainingScreen() {
     var featureWidth = contentWidth - strategyWidth - sectionGap
     var featureX = contentX + strategyWidth + sectionGap
     drawAIStatsCard(contentX, bottomY, strategyWidth, bottomHeight, "Top Archetypes", "rgba(255, 189, 92, 0.92)")
-    drawAIStatsCard(featureX, bottomY, featureWidth, bottomHeight, trainingMode.id == "selfplay" ? "Session Player Profile" : "Session Feature Pulse", "rgba(116, 232, 170, 0.92)")
+    drawAIStatsCard(featureX, bottomY, featureWidth, bottomHeight, "Session Player Profile", "rgba(116, 232, 170, 0.92)")
 
     ctx.textAlign = "left"
     var statusTextX = contentX + statusWidth * 0.06
@@ -2195,15 +1618,13 @@ function drawAITrainingScreen() {
         "Status: " + runtimeLabel,
         "Model: Temporary 26,440-Parameter Intent-Spatial AC",
         "Publishing: " + publishingLabel,
-        (trainingMode.id == "selfplay" ? "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() : getAITrainingScenarioLabel()) + "  |  " + getAITrainingSpeedLabel(),
+        "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,
     ]
-    if(trainingMode.id == "selfplay") {
-        statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
-        statusLines.push("Lab champion generation: " + aiLearning.championGeneration.toLocaleString())
-        statusLines.push("Decision samples: " + aiLearning.totalDecisionSamples.toLocaleString())
-        statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())
-    }
+    statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
+    statusLines.push("Lab champion generation: " + aiLearning.championGeneration.toLocaleString())
+    statusLines.push("Decision samples: " + aiLearning.totalDecisionSamples.toLocaleString())
+    statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())
     var statusTextY = middleY + 40
     var statusLineHeight = 11
     ctx.font = "10px Arial"
@@ -2223,23 +1644,16 @@ function drawAITrainingScreen() {
     var trendMetricGap = trendWidth * 0.018
     var trendMetricY = middleY + 48
     var trendMetricHeight = 32
-    if(trainingMode.id == "selfplay") {
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Wins", aiTrainingState.evaluationWins.toLocaleString(), "#7fe0a2")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Losses", aiTrainingState.evaluationLosses.toLocaleString(), "#ff9f8f")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Ties", aiTrainingState.evaluationTies.toLocaleString(), "#62c5ff")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Lab Champion", "v" + aiLearning.championGeneration, "#f7c76d")
-    } else {
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Positive", aiTrainingState.sessionWins.toLocaleString(), "#7fe0a2")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Negative", aiTrainingState.sessionLosses.toLocaleString(), "#ff9f8f")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Ties", aiTrainingState.sessionTies.toLocaleString(), "#62c5ff")
-        drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Last Batch", aiTrainingState.lastBatchEpisodes.toLocaleString(), "#f7c76d")
-    }
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Wins", aiTrainingState.evaluationWins.toLocaleString(), "#7fe0a2")
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Losses", aiTrainingState.evaluationLosses.toLocaleString(), "#ff9f8f")
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Ties", aiTrainingState.evaluationTies.toLocaleString(), "#62c5ff")
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Lab Champion", "v" + aiLearning.championGeneration, "#f7c76d")
     var trendChartY = trendMetricY + trendMetricHeight + 8
     var trendChartHeight = Math.max(0, middleY + middleHeight - 12 - trendChartY)
     drawAITrainingTrendChart(trendX + trendWidth * 0.04, trendChartY, trendWidth * 0.92, trendChartHeight)
 
     var topStrategyIndices = getAITrainingTopStrategyIndices(clamp(Math.floor((bottomHeight - 92) / 34), 2, 3), aiTrainingState.sessionStrategyPickCounts)
-    var highlightedStrategyIndex = trainingMode.id == "selfplay" ? aiTrainingState.lastBestStrategyIndex : aiTrainingState.lastChosenStrategyIndex
+    var highlightedStrategyIndex = aiTrainingState.lastBestStrategyIndex
     var rowBaseY = bottomY + 48
     var rowHeight = 28
     var rowGap = 6
@@ -2272,19 +1686,14 @@ function drawAITrainingScreen() {
         ctx.fillText(getStrategyDisplayName(AI_STRATEGY_LIBRARY[strategyIndex]), listX + 44, strategyRowY + 14, listWidth * 0.62)
         ctx.font = "10px Arial"
         ctx.fillStyle = "rgba(214, 226, 255, 0.82)"
-        ctx.fillText("Picked " + pickCount + (trainingMode.id == "selfplay" ? "  Match wins " : "  Coach best ") + bestCount, listX + 44, strategyRowY + 24, listWidth * 0.72)
+        ctx.fillText("Picked " + pickCount + "  Match wins " + bestCount, listX + 44, strategyRowY + 24, listWidth * 0.72)
     }
 
     ctx.textAlign = "left"
     ctx.font = "12px Arial"
     ctx.fillStyle = "rgba(214, 226, 255, 0.88)"
-    if(trainingMode.id == "selfplay") {
-        ctx.fillText("Last winner: " + (aiTrainingState.trueSelfPlayLastWinner || "None yet"), listX, bottomY + bottomHeight - 40, listWidth)
-        ctx.fillText("Avg round: " + averageSelfPlayRound.toFixed(1), listX, bottomY + bottomHeight - 22, listWidth)
-    } else {
-        ctx.fillText("Last batch avg reward: " + aiTrainingState.lastBatchReward.toFixed(2), listX, bottomY + bottomHeight - 40, listWidth)
-        ctx.fillText("Coach matches last batch: " + aiTrainingState.lastBatchCoachHits, listX, bottomY + bottomHeight - 22, listWidth)
-    }
+    ctx.fillText("Last winner: " + (aiTrainingState.trueSelfPlayLastWinner || "None yet"), listX, bottomY + bottomHeight - 40, listWidth)
+    ctx.fillText("Avg round: " + averageSelfPlayRound.toFixed(1), listX, bottomY + bottomHeight - 22, listWidth)
 
     var featureColumns = 3
     var featureInnerWidth = featureWidth * 0.9
