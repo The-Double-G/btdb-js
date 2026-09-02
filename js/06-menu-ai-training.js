@@ -1334,7 +1334,8 @@ function startAITrainingTrueSelfPlay() {
         return false
     }
     var persistenceMode = getAITrainingPersistenceMode()
-    if(persistenceMode == "snapshot" && (aiPersistenceState.contributionInFlight || getAIPublicContributionQueue().length > 0)) {
+    var lastDiscarded = String(aiPersistenceState.lastError || "").indexOf("Discarded a permanently invalid") != -1
+    if(persistenceMode == "snapshot" && !lastDiscarded && (aiPersistenceState.contributionInFlight || getAIPublicContributionQueue().length > 0)) {
         flushAIPublicContributionQueue()
         setAITrainingNotice("Saving...", 2000)
         return false
