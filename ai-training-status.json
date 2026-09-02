@@ -3,48 +3,48 @@
   "formatVersion": 1,
   "repository": "The-Double-G/btdb-js",
   "branch": "main",
-  "publishedAt": "2026-09-02T06:51:49.049Z",
+  "publishedAt": "2026-09-02T09:55:58.264Z",
   "current": {
     "runId": 33600759811,
     "runNumber": 32,
     "runAttempt": 1,
-    "state": "in_progress",
-    "conclusion": null,
+    "state": "completed",
+    "conclusion": "failure",
     "headSha": "859c863514100df614383ec46eb1eb67d07c2400",
     "url": "https://github.com/The-Double-G/btdb-js/actions/runs/33600759811",
     "createdAt": "2026-09-02T06:51:34.000Z",
     "startedAt": "2026-09-02T06:51:34.000Z",
-    "updatedAt": "2026-09-02T06:51:40.000Z",
-    "phase": "preparing",
+    "updatedAt": "2026-09-02T06:51:56.000Z",
+    "phase": "completed",
     "projection": {
       "jobs": {
-        "total": 1,
+        "total": 9,
         "queued": 0,
-        "inProgress": 1,
-        "completed": 0,
+        "inProgress": 0,
+        "completed": 9,
         "succeeded": 0,
-        "failed": 0,
+        "failed": 1,
         "cancelled": 0,
-        "skipped": 0
+        "skipped": 8
       },
       "workers": {
         "training": {
-          "total": 0,
+          "total": 1,
           "queued": 0,
           "inProgress": 0,
           "succeeded": 0,
           "failed": 0,
           "cancelled": 0,
-          "skipped": 0
+          "skipped": 1
         },
         "evaluation": {
-          "total": 0,
+          "total": 1,
           "queued": 0,
           "inProgress": 0,
           "succeeded": 0,
           "failed": 0,
           "cancelled": 0,
-          "skipped": 0
+          "skipped": 1
         }
       }
     }
