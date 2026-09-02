@@ -6588,7 +6588,9 @@ function aiSelectEcoSend(side, matchup) {
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.eco, matchup)
     for(var i = startIndex; i <= endIndex; i++) {
         var bloon = displayBloons[i]
-        if(!bloon || bloon.image == "locked.png" || bloon.eco <= 0) {
+        var bloonRoundUnlock = bloon ? Number(bloon.roundUnlock) : NaN
+        var currentVisibleRound = typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : (typeof round != "undefined" ? Math.floor(round / 2) : 0)
+        if(!bloon || bloon.image == "locked.png" || (Number.isFinite(bloonRoundUnlock) && bloonRoundUnlock > currentVisibleRound) || bloon.eco <= 0) {
             continue
         }
 
@@ -6655,7 +6657,9 @@ function getBestRushPlan(side, matchup) {
 
     for(var i = startIndex; i <= endIndex; i++) {
         var candidate = displayBloons[i]
-        if(!candidate || candidate.image == "locked.png" || candidate.cost <= 0 || candidate.cost > players[side].money) {
+        var candidateRoundUnlock = candidate ? Number(candidate.roundUnlock) : NaN
+        var currentVisibleRoundForRush = typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : (typeof round != "undefined" ? Math.floor(round / 2) : 0)
+        if(!candidate || candidate.image == "locked.png" || (Number.isFinite(candidateRoundUnlock) && candidateRoundUnlock > currentVisibleRoundForRush) || candidate.cost <= 0 || candidate.cost > players[side].money) {
             continue
         }
 
