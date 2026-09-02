@@ -840,7 +840,7 @@ function chooseAILoadoutForMatch(observedLoadoutSummary, excludedLoadoutKeys) {
             count: summary.filledTowerSlots + summary.filledBoostSlots,
             countScale: 5,
             loadoutSummary: summary,
-            capabilityFacts: getAILoadoutCapabilityFacts(entry.loadout.towers, entry.loadout.boosts, 0),
+            capabilityFacts: getAILoadoutCapabilityFacts(entry.loadout.towers, entry.loadout.boosts, typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : 1),
         }, null, stateFeatures)
         entry.decision.counterLearningBonus = getAILoadoutCounterLearningBonus(entry.loadout.key, observedLoadoutSummary)
         entry.decision.performanceBonus = getAILoadoutPerformanceBonus(entry.loadout.key)
@@ -1179,12 +1179,19 @@ function migrateAISchema12Decision(oldDecision) {
 
 function migrateAISchema10Decision(oldDecision) {
     var decision = createDefaultAIDecisionPolicy()
+    decision.trainingSamples = oldDecision.trainingSamples.slice(0)
     for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) {
         decision.WState1[stateRow] = oldDecision.WState1[stateRow].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 72, 0))
     }
     decision.bState1 = oldDecision.bState1.slice(0)
     decision.WState2 = cloneAIMatrix(oldDecision.WState2)
     decision.bState2 = oldDecision.bState2.slice(0)
+    for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
+        decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 40, 0))
+    }
+    decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
+    decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
+    decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
     decision.WStateToMemory = cloneAIMatrix(oldDecision.WStateToMemory)
     decision.WMemoryToMemory = cloneAIMatrix(oldDecision.WMemoryToMemory)
     decision.bMemory = oldDecision.bMemory.slice(0)
@@ -1193,17 +1200,34 @@ function migrateAISchema10Decision(oldDecision) {
     decision.bValue = oldDecision.bValue
     decision.WSurvival = cloneAIMatrix(oldDecision.WSurvival)
     decision.bSurvival = oldDecision.bSurvival.slice(0)
+    decision.familyBias = oldDecision.familyBias.slice(0)
     return decision
 }
 
 function migrateAISchema9Decision(oldDecision) {
     var decision = createDefaultAIDecisionPolicy()
+    decision.trainingSamples = oldDecision.trainingSamples.slice(0)
     decision.bState1 = oldDecision.bState1.slice(0)
     decision.WState2 = cloneAIMatrix(oldDecision.WState2)
     decision.bState2 = oldDecision.bState2.slice(0)
     for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) {
         decision.WState1[stateRow] = oldDecision.WState1[stateRow].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 48, 0))
     }
+    for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) {
+        decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - 32, 0))
+    }
+    decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
+    decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
+    decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
+    decision.WStateToMemory = cloneAIMatrix(oldDecision.WStateToMemory)
+    decision.WMemoryToMemory = cloneAIMatrix(oldDecision.WMemoryToMemory)
+    decision.bMemory = oldDecision.bMemory.slice(0)
+    decision.WMemoryToState = cloneAIMatrix(oldDecision.WMemoryToState)
+    decision.WValue = oldDecision.WValue.slice(0)
+    decision.bValue = oldDecision.bValue
+    decision.WSurvival = cloneAIMatrix(oldDecision.WSurvival)
+    decision.bSurvival = oldDecision.bSurvival.slice(0)
+    decision.familyBias = oldDecision.familyBias.slice(0)
     return decision
 }
 
@@ -2238,32 +2262,35 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         typeof roundReady != "undefined" && roundReady ? 1 : 0,
         typeof roundReady != "undefined" && roundReady && typeof endOfRoundGiven != "undefined" && endOfRoundGiven == false && typeof timeRoundEnded != "undefined" && gameNow() - timeRoundEnded >= 6000 ? 1 : 0,
     ]
+    var supplied = Array.isArray(contextFeatures) ? contextFeatures : []
+    // Core values occupy 8..47 (40 slots). Keep supplied to first 13 to stay within 40 for loadout (27+13=40).
+    for(var suppliedIndex = 0; suppliedIndex < supplied.length && suppliedIndex < 13; suppliedIndex++) {
+        values.push(clamp(Number(supplied[suppliedIndex]) || 0, 0, 1))
+    }
+    for(var valueIndex = 0; valueIndex < values.length && AI_DECISION_FAMILY_COUNT + valueIndex < 48; valueIndex++) {
+        features[AI_DECISION_FAMILY_COUNT + valueIndex] = clampAIDecisionFeature(values[valueIndex])
+    }
+    var entityFeatures = summarizeAIDecisionEntities(side).concat(summarizeAIDecisionEntities(enemySide))
+    for(var entityIndex = 0; entityIndex < entityFeatures.length; entityIndex++) features[48 + entityIndex] = clampAIDecisionFeature(entityFeatures[entityIndex])
+    // Extra economy for non-loadout families at 72-77 (was previously pushed into values and overlapped entity).
     if(familyIndex != AI_DECISION_FAMILY.loadout) {
-        // Expose stored and collectible economy that the previous state omitted.
         var ownFarmBank = getAISideFarmBankTotal(side)
         var enemyFarmBank = getAISideFarmBankTotal(enemySide)
         var ownBananaCash = getAISideBananaCashTotal(side)
         var enemyBananaCash = getAISideBananaCashTotal(enemySide)
         var ownBananaExpiry = getAISideBananaExpiryAvg(side)
-        var economyExtras = [
-            clamp(Math.log1p(ownFarmBank) / Math.log(30001), 0, 1),
-            clamp(Math.log1p(enemyFarmBank) / Math.log(30001), 0, 1),
-            clamp(Math.log1p(ownBananaCash) / Math.log(6001), 0, 1),
-            clamp(Math.log1p(enemyBananaCash) / Math.log(6001), 0, 1),
-            clamp(ownBananaExpiry / 10000, 0, 1),
-            clamp(typeof timeRoundEnded != "undefined" && typeof gameNow == "function" ? Math.max(0, gameNow() - timeRoundEnded) / 6000 : 0, 0, 1),
-        ]
-        for(var economyIndex = 0; economyIndex < economyExtras.length; economyIndex++) values.push(economyExtras[economyIndex])
+        features[72] = clamp(Math.log1p(ownFarmBank) / Math.log(30001), 0, 1)
+        features[73] = clamp(Math.log1p(enemyFarmBank) / Math.log(30001), 0, 1)
+        features[74] = clamp(Math.log1p(ownBananaCash) / Math.log(6001), 0, 1)
+        features[75] = clamp(Math.log1p(enemyBananaCash) / Math.log(6001), 0, 1)
+        features[76] = clamp(ownBananaExpiry / 10000, 0, 1)
+        features[77] = clamp(typeof timeRoundEnded != "undefined" && typeof gameNow == "function" ? Math.max(0, gameNow() - timeRoundEnded) / 6000 : 0, 0, 1)
     }
-    var supplied = Array.isArray(contextFeatures) ? contextFeatures : []
-    for(var suppliedIndex = 0; suppliedIndex < supplied.length && suppliedIndex < 13; suppliedIndex++) {
-        values.push(clamp(Number(supplied[suppliedIndex]) || 0, 0, 1))
+    // Remaining supplied 13..16 (preLate, preEcoBoost, preDefenseBoost, preOffenseBoost) at 108-111 to avoid truncation.
+    for(var extraSupplied = 13; extraSupplied < supplied.length && extraSupplied < 17; extraSupplied++) {
+        var extraIdx = 108 + (extraSupplied - 13)
+        if(extraIdx < features.length) features[extraIdx] = clamp(Number(supplied[extraSupplied]) || 0, 0, 1)
     }
-    for(var valueIndex = 0; valueIndex < values.length && AI_DECISION_FAMILY_COUNT + valueIndex < features.length; valueIndex++) {
-        features[AI_DECISION_FAMILY_COUNT + valueIndex] = clampAIDecisionFeature(values[valueIndex])
-    }
-    var entityFeatures = summarizeAIDecisionEntities(side).concat(summarizeAIDecisionEntities(enemySide))
-    for(var entityIndex = 0; entityIndex < entityFeatures.length; entityIndex++) features[48 + entityIndex] = clampAIDecisionFeature(entityFeatures[entityIndex])
     // 112-dim extension: per-tower-type composition for both sides (32 dims at 80-111) for bit-perfect loadout/tower awareness.
     var towerTypesForState = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var perTypeBase = 80
@@ -2746,7 +2773,7 @@ function chooseAIStrategyFromFeaturesWithObservation(features, observedLoadoutSu
             actionKey: "strategy|" + strategy.id,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
-            capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof round == "undefined" ? 0 : round),
+            capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : (typeof round == "undefined" ? 0 : Math.floor(round / 2))),
         }, null, decisionState)
         var adjustedScore = pass.outputs[scoreIndex] + decision.score
         decisionScores.push(decision)
@@ -2808,7 +2835,7 @@ function chooseAIArchetypeFromFeatures(features, excludedStrategyIndex, loadoutK
             actionKey: "strategy|" + strategy.id,
             index: scoreIndex,
             maxIndex: Math.max(1, pass.outputs.length - 1),
-            capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof round == "undefined" ? 0 : round),
+            capabilityFacts: getAILoadoutCapabilityFacts(strategy.towers, strategy.boosts, typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : (typeof round == "undefined" ? 0 : Math.floor(round / 2))),
         }, null, decisionState)
         var adjustedScore = pass.outputs[scoreIndex] + decision.score
         decisionScores.push(decision)
@@ -5234,6 +5261,10 @@ function findAISpot(side, radius, range, role, offsetIndex, towerType) {
                 y: y,
             })
         }
+    }
+    if(candidates.length > 1 && Number.isFinite(Number(offsetIndex))) {
+        var offset = ((Number(offsetIndex) % candidates.length) + candidates.length) % candidates.length
+        if(offset > 0) candidates = candidates.slice(offset).concat(candidates.slice(0, offset))
     }
 
     if(candidates.length == 0) {

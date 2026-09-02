@@ -734,7 +734,7 @@ class Tower {
     }
 
     checkIDs() {
-        for(var i = 0; i < towers.length - 1; i++) {
+        for(var i = 0; i < towers.length; i++) {
             if(towers[i].towerID == this.towerID) {
                 this.towerID = nextTowerID++
                 this.checkIDs()
@@ -836,10 +836,12 @@ class Tower {
             return
         }
         if(this.towerType == "super" && this.path2Upgrades >= 3) {
+            if(this.target == -1 || this.target2 == -1 || !bloons[this.target] || !bloons[this.target2]) return
             this.rotationAngle = Math.atan2((bloons[this.target].y + bloons[this.target2].y)/2 - this.y, (bloons[this.target].x + bloons[this.target2].x)/2 - this.x) + Math.PI/2
             return
         }
 
+        if(this.target == -1 || !bloons[this.target]) return
         this.rotationAngle = Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x) + Math.PI/2
     }
 
@@ -973,7 +975,7 @@ class Tower {
                 }
                 if(this.path1Upgrades == 6 || this.path2Upgrades == 6 && this.path3Upgrades == 6) {
                     //paragon
-                    this.attackSpeed = this.towerBoosted * this.slowSabotaged * (167 * 0.75 ** this.path2Upgrades)
+                    this.attackSpeed = this.cobraBoosted * this.towerBoosted * this.slowSabotaged * this.overclockFactor * (167 * 0.75 ** this.path2Upgrades)
                     projectiles.push(new Projectile(this.x, this.y, 15 * Math.cos(-Math.PI/6 + Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 15 * Math.sin(-Math.PI/6 + Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 25, "555dartproj.png", Math.ceil(20 * 1.02 ** (this.degree - 1)), Math.ceil(500 * 1.02 ** (this.degree - 1)), 0, 0, this.towerID, this.playerSide, false, -1, 0, 0, 0, 0, 0))
                     projectiles.push(new Projectile(this.x, this.y, 15 * Math.cos(-Math.PI/12 + Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 15 * Math.sin(-Math.PI/12 + Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 25, "555dartproj.png", Math.ceil(20 * 1.02 ** (this.degree - 1)), Math.ceil(500 * 1.02 ** (this.degree - 1)), 0, 0, this.towerID, this.playerSide, false, -1, 0, 0, 0, 0, 0))
                     projectiles.push(new Projectile(this.x, this.y, 15 * Math.cos(Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 15 * Math.sin(Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 25, "555dartproj.png", Math.ceil(20 * 1.02 ** (this.degree - 1)), Math.ceil(500 * 1.02 ** (this.degree - 1)), 0, 0, this.towerID, this.playerSide, false, -1, 0, 0, 0, 0, 0))
@@ -1160,7 +1162,7 @@ class Tower {
                 }
                 if(this.path1Upgrades == 6 || this.path2Upgrades == 6 || this.path3Upgrades == 6) {
                     //paragon
-                    this.attackSpeed = this.towerBoosted * this.slowSabotaged * (100)
+                    this.attackSpeed = this.cobraBoosted * this.towerBoosted * this.slowSabotaged * this.overclockFactor * (100)
                     this.towerVar += Math.PI/15 * (0.75 ** 2) * 1.5
                     projectiles.push(new Projectile(this.x, this.y, 0, 0, this.range, "555tackproj1.png", Math.ceil(15 * 1.02 ** (this.degree - 1)), Math.ceil(1000 * 1.02 ** (this.degree - 1)), 0, 0, this.towerID, this.playerSide, false, -1, 0, 0, 0, 0, 0))
                     for(var i = 0; i < 8; i++) {
@@ -1415,7 +1417,7 @@ class Tower {
                 }
                 if(this.path1Upgrades == 6 || this.path2Upgrades == 6 || this.path3Upgrades == 6) {
                     //500, 510, 520
-                    this.attackSpeed = this.towerBoosted * this.slowSabotaged * (37)
+                    this.attackSpeed = this.cobraBoosted * this.towerBoosted * this.slowSabotaged * this.overclockFactor * (37)
                     this.towerVar++
                     if(this.towerVar % 2 == 0) {
                         projectiles.push(new Projectile(this.x, this.y, 27 * Math.cos(Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 27 * Math.sin(Math.atan2(bloons[this.target].y - this.y, bloons[this.target].x - this.x)), 40, "555superproj1.png", Math.ceil(160 * 1.02 ** (this.degree - 1)), Math.ceil(1000 * 1.02 ** (this.degree - 1)), 40, 20, this.towerID, this.playerSide, false, -1, 0, 0, 0, 0, 0))

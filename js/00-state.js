@@ -16,6 +16,7 @@ var p1lives = ECONOMY_SETTINGS.startingLives
 var p2lives = ECONOMY_SETTINGS.startingLives
 var timeRoundEnded = 0
 var timeGameStarted = gameNow()
+var ecoIntervalId = null
 var round = 0
 var debug = false
 var speedFactor = 1

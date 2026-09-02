@@ -908,13 +908,17 @@ function animate() {
                 p2eco = Infinity
                 p2lives = Infinity
             }
-            setInterval(function() {
-                money += eco
-                p1money += p1eco
-                p2money += p2eco
-                p1CashGenWithEco += p1eco
-                p2CashGenWithEco += p2eco
-            }, 6000)
+            if(typeof ecoIntervalId == "undefined" || ecoIntervalId == null) {
+                ecoIntervalId = runtimeSetInterval(function() {
+                    if(gameStarted && !gameOver && !gamePaused) {
+                        money += eco
+                        p1money += p1eco
+                        p2money += p2eco
+                        p1CashGenWithEco += p1eco
+                        p2CashGenWithEco += p2eco
+                    }
+                }, 6000)
+            }
         }
         ctx.fillStyle = "white"
         ctx.strokeStyle = "black"

@@ -40,8 +40,6 @@ function realNow() {
     return nativeDateNow()
 }
 
-Date.now = gameNow
-
 function runtimeSetTimeout(callback, delay) {
     var scheduleBaseAt = runtimeTaskScheduleBaseAt > 0 ? runtimeTaskScheduleBaseAt : gameTimeNow
     var taskId = runtimeTaskId++

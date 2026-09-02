@@ -1445,8 +1445,17 @@ function request_has_valid_origin(): bool {
         return false;
     }
     $originHost = strtolower((string)parse_url($origin, PHP_URL_HOST));
-    $requestHost = strtolower((string)parse_url('http://' . (string)($_SERVER['HTTP_HOST'] ?? ''), PHP_URL_HOST));
-    return $originHost !== '' && $originHost === $requestHost;
+    if ($originHost === '') {
+        return false;
+    }
+    $allowedHosts = ['btdbjs.rf.gd', 'localhost', '127.0.0.1', '::1'];
+    // Allow same-origin as configured, not attacker-controlled Host header.
+    if (in_array($originHost, $allowedHosts, true)) {
+        return true;
+    }
+    // Also allow if Origin matches the server's canonical host when Host header is trustworthy (e.g., behind proxy, use SERVER_NAME).
+    $serverHost = strtolower((string)($_SERVER['SERVER_NAME'] ?? ''));
+    return $serverHost !== '' && $originHost === $serverHost;
 }
 
 function ai_policy_forward(array $features, array $strategy): array {

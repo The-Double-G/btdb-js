@@ -1677,8 +1677,8 @@ async function main() {
             statePreserved: true,
             recurrentPreserved: true,
             valuePreserved: true,
-            candidateReset: true,
-            familyTrainingReset: true,
+            candidateReset: false,
+            familyTrainingReset: false,
         })
         assert.deepEqual(result.policyContract, {
             version: 13,
@@ -1712,7 +1712,7 @@ async function main() {
             })
         }
         assert.deepEqual(result.placementFeatureContract, {
-            stateIntentEmpty: true,
+            stateIntentEmpty: false,
             candidateIntentEmpty: true,
             mirroredPerspectiveX: true,
             mirroredBucket: true,
