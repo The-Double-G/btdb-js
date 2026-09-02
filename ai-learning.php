@@ -1,6 +1,12 @@
 <?php
 declare(strict_types=1);
 
+// Increase execution time limit to prevent timeout on slow filesystems
+set_time_limit(30);
+
+// Ensure no output buffering issues
+if (ob_get_level()) ob_end_clean();
+
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('X-Content-Type-Options: nosniff');
@@ -54,6 +60,16 @@ $lockFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-learning-global.lock';
 $keyHashFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-trainer-key.sha256';
 $promotionKeyHashFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-policy-promotion-key.sha256';
 $contributionSecretFile = $dataDir . DIRECTORY_SEPARATOR . 'ai-contribution-secret';
+
+// Ensure data directory exists and is writable
+if (!is_dir($dataDir)) {
+    if (!@mkdir($dataDir, 0775, true)) {
+        fail_json(500, 'storage_unavailable', 'Unable to create data directory.');
+    }
+}
+if (!is_writable($dataDir)) {
+    fail_json(500, 'storage_unavailable', 'Data directory is not writable.');
+}
 
 function send_json(int $statusCode, array $payload): void {
     http_response_code($statusCode);
@@ -1399,8 +1415,23 @@ function client_rate_key(): string {
 
 function contribution_secret(string $secretFile): string {
     $handle = @fopen($secretFile, 'c+b');
-    if ($handle === false || !flock($handle, LOCK_EX)) {
+    if ($handle === false) {
         fail_json(503, 'contribution_unavailable', 'Global contribution tokens are unavailable.');
+    }
+    // Try to acquire lock with timeout
+    $lockAcquired = false;
+    $startTime = microtime(true);
+    $timeout = 3.0; // 3 second timeout
+    while (microtime(true) - $startTime < $timeout) {
+        if (flock($handle, LOCK_EX | LOCK_NB)) {
+            $lockAcquired = true;
+            break;
+        }
+        usleep(50000); // 50ms
+    }
+    if (!$lockAcquired) {
+        fclose($handle);
+        fail_json(503, 'lock_unavailable', 'Global contribution tokens are unavailable (timeout).');
     }
     rewind($handle);
     $secret = trim((string)stream_get_contents($handle));
@@ -2093,9 +2124,7 @@ function write_model_state(string $stateFile, int $revision, array $model, array
         @unlink($temporaryFile);
         fail_json(500, 'write_failed', 'Unable to write AI model.');
     }
-    if (function_exists('fsync')) {
-        @fsync($temporaryHandle);
-    }
+    // fsync removed to prevent slowdown on slow filesystems
     fclose($temporaryHandle);
     if (!@rename($temporaryFile, $stateFile)) {
         @unlink($temporaryFile);
@@ -2223,13 +2252,14 @@ if (!is_file($stateFile) && file_put_contents($stateFile, "{}\n", LOCK_EX) === f
     fail_json(500, 'storage_unavailable', 'Unable to initialize AI model storage.');
 }
 
-$protocol = (int)($_GET['protocol'] ?? 0);
-if ($protocol !== AI_PROTOCOL_VERSION) {
-    fail_json(400, 'unsupported_protocol', 'Use AI learning protocol version 1.');
-}
+try {
+    $protocol = (int)($_GET['protocol'] ?? 0);
+    if ($protocol !== AI_PROTOCOL_VERSION) {
+        fail_json(400, 'unsupported_protocol', 'Use AI learning protocol version 1.');
+    }
 
-$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-if ($method === 'GET') {
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    if ($method === 'GET') {
     $state = read_state_locked($stateFile, $lockFile);
     $model = $state['model'];
     $contributionEnabled = valid_model($model);
@@ -2519,9 +2549,24 @@ if (!valid_nonnegative_integer($expectedRevision) || ($isKnowledgeReset ? !valid
 }
 
 $lock = @fopen($lockFile, 'c+');
-if ($lock === false || !flock($lock, LOCK_EX)) {
-    fail_json(503, 'lock_unavailable', 'AI model storage is busy.');
-}
+    if ($lock === false) {
+        fail_json(503, 'lock_unavailable', 'AI model storage is busy.');
+    }
+    // Try to acquire lock with timeout
+    $lockAcquired = false;
+    $startTime = microtime(true);
+    $timeout = 5.0; // 5 second timeout
+    while (microtime(true) - $startTime < $timeout) {
+        if (flock($lock, LOCK_EX | LOCK_NB)) {
+            $lockAcquired = true;
+            break;
+        }
+        usleep(50000); // 50ms
+    }
+    if (!$lockAcquired) {
+        fclose($lock);
+        fail_json(503, 'lock_unavailable', 'AI model storage is busy (timeout).');
+    }
 $currentContents = @file_get_contents($stateFile);
 if ($currentContents === false || trim($currentContents) === '') {
     flock($lock, LOCK_UN);
@@ -2561,3 +2606,9 @@ send_json(200, [
     'contributionEpoch' => $nextEpoch,
     'knowledgeReset' => $isKnowledgeReset,
 ]);
+
+} catch (Throwable $e) {
+    // Catch any unhandled exceptions and return a proper error response
+    error_log("AI Learning Error: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+    fail_json(500, 'internal_error', 'An internal server error occurred.');
+}
