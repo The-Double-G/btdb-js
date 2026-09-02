@@ -1869,8 +1869,8 @@ async function main() {
             { label: "Progress", value: "Live · now" },
         ])
         assert.deepEqual(result.overviewLabels, ["Hosted Champion", "Match Perspectives", "Human Demos", "Decision Samples", "Loadout Samples", "Counter Records"])
-        assert.match(result.queuedContributionMessage, /finishes syncing/)
-        assert.match(result.acceptedContributionMessage, /accepted/)
+        assert.equal(result.queuedContributionMessage, "Saving...")
+        assert.equal(result.acceptedContributionMessage, "Saved! You can close now.")
         assert.match(result.ineligibleContributionMessage, /No global AI contribution/)
 
         const recoveryPolicy = await runtime.page.evaluate(() => {
