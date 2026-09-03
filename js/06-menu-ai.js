@@ -2288,11 +2288,6 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         features[76] = clamp(ownBananaExpiry / 10000, 0, 1)
         features[77] = clamp(typeof timeRoundEnded != "undefined" && typeof gameNow == "function" ? Math.max(0, gameNow() - timeRoundEnded) / 6000 : 0, 0, 1)
     }
-    // Remaining supplied 13..16 (preLate, preEcoBoost, preDefenseBoost, preOffenseBoost) at 108-111 to avoid truncation.
-    for(var extraSupplied = 13; extraSupplied < supplied.length && extraSupplied < 17; extraSupplied++) {
-        var extraIdx = 108 + (extraSupplied - 13)
-        if(extraIdx < features.length) features[extraIdx] = clamp(Number(supplied[extraSupplied]) || 0, 0, 1)
-    }
     // 112-dim extension: per-tower-type composition for both sides (32 dims at 80-111) for bit-perfect loadout/tower awareness.
     var towerTypesForState = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var perTypeBase = 80
@@ -3215,6 +3210,7 @@ function getAIFactualDecisionOutcomeSnapshot(side) {
         ownPops: Math.max(0, Number(ownPops) || 0),
         enemyPops: Math.max(0, Number(enemyPops) || 0),
         ownLivesLost: aiProfile ? Math.max(0, Number(aiProfile.observedLivesLostBySide[side]) || 0) : 0,
+        observedAtMs: Math.max(0, Math.floor(gameNow())),
     }
 }
 
@@ -3227,7 +3223,7 @@ function getAIFactualDecisionMoneyOutcome(before, after, actionContext) {
         return moneyDelta + Math.max(0, Number(actionContext.expectedCost) || 0)
     }
     if(actionContext.kind == "liquidate") {
-        return moneyDelta - Math.max(0, Number(actionContext.proceeds) || 0) - Math.max(0, Number(actionContext.liquidationLoss) || 0)
+        return moneyDelta - Math.max(0, Number(actionContext.proceeds) || 0) - Math.max(0, Number(actionContext.liquidationLoss) || 0) - Math.max(0, Number(actionContext.recentUpgradeLoss) || 0)
     }
     return 0
 }
@@ -3237,8 +3233,15 @@ function getAIFactualDecisionLocalReward(before, after, actionContext) {
     var lifeOutcome = (Number(after.ownLives) || 0) - (Number(before.ownLives) || 0) + (Number(before.enemyLives) || 0) - (Number(after.enemyLives) || 0)
     var popOutcome = (Number(after.ownPops) || 0) - (Number(before.ownPops) || 0) - ((Number(after.enemyPops) || 0) - (Number(before.enemyPops) || 0))
     var moneyOutcome = getAIFactualDecisionMoneyOutcome(before, after, actionContext)
+    var ownLivesLost = Math.max(0, (Number(after.ownLivesLost) || 0) - (Number(before.ownLivesLost) || 0))
+    var durationSeconds = Math.max(0, (Number(after.observedAtMs) || 0) - (Number(before.observedAtMs) || 0)) / 1000
+    var survivalOutcome = clamp(durationSeconds / 30 * 0.06, 0, 0.12)
+    var solvencyBefore = Math.log1p(Math.max(0, Number(before.ownMoney) || 0)) / Math.log(30001)
+    var solvencyAfter = Math.log1p(Math.max(0, Number(after.ownMoney) || 0)) / Math.log(30001)
+    var solvencyOutcome = actionContext && actionContext.kind == "spend" ? 0 : clamp((solvencyAfter - solvencyBefore) * 0.12, -0.12, 0.12)
+    var lifeLossPenalty = clamp(ownLivesLost / 30 * 0.2, 0, 0.2)
     var farmerOutcome = getAIFarmerPlacementReward(actionContext)
-    return clamp(lifeOutcome / 30 + popOutcome / 5000 + moneyOutcome / 2000 + farmerOutcome, -1, 1)
+    return clamp(lifeOutcome / 30 + popOutcome / 5000 + moneyOutcome / 2000 + survivalOutcome + solvencyOutcome + farmerOutcome - lifeLossPenalty, -1, 1)
 }
 
 function settleAITacticalDecision(side, successorDecisionSample, terminal) {
@@ -5444,6 +5447,14 @@ function getAITowerSellValueEstimate(tower) {
     return Math.round(totalCost * 0.7)
 }
 
+function getAIRecentUpgradeLiquidationLoss(tower) {
+    if(!tower || !Number.isFinite(Number(tower.aiLastUpgradeAt))) return 0
+    var ageMs = Math.max(0, gameNow() - Number(tower.aiLastUpgradeAt))
+    if(ageMs >= 15000) return 0
+    var totalCost = Math.max(0, Number(tower.totalCost) || 0)
+    return totalCost * 0.18 * (1 - ageMs / 15000)
+}
+
 function getSideTowersByType(side, towerType) {
     var sideTowers = []
     for(var i = 0; i < towers.length; i++) {
@@ -6006,6 +6017,7 @@ function aiTryUpgradeTower(side, tower, pathNumber) {
     }
     var upgraded = tower[upgradeProp] > beforeUpgradeCount
     if(upgraded) {
+        tower.aiLastUpgradeAt = gameNow()
         noteAITowerCrosspathContext(tower, getCurrentPlayerMatchupStyle(side))
     }
     return upgraded
@@ -6318,6 +6330,7 @@ function getAIActionRewardContext(action) {
             kind: "liquidate",
             proceeds: sellValue + bankValue,
             liquidationLoss: Math.max(0, totalCost - sellValue),
+            recentUpgradeLoss: getAIRecentUpgradeLiquidationLoss(sellTower),
         }
     }
     if(action.type == "collectFarm") {

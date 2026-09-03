@@ -901,6 +901,7 @@ function migrate_schema12_model(array $oldModel): array {
     $model = $oldModel;
     $model['version'] = AI_MODEL_SCHEMA;
     $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['totalDecisionSamples'] = 0;
     $model['placementStats'] = [];
     $model['loadoutPlacementStats'] = [];
     strip_reserved_human_priors($model);

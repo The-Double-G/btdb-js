@@ -1617,7 +1617,7 @@ function drawAITrainingScreen() {
     var statusLines = [
         "Mode: " + trainingMode.label,
         "Status: " + runtimeLabel,
-        "Model: Temporary 26,440-Parameter Intent-Spatial AC",
+        "Model: Schema 13 31,048-Parameter Intent-Spatial AC",
         "Publishing: " + publishingLabel,
         "Goal " + progressCount.toLocaleString() + "/" + goalEpisodes.toLocaleString() + "  |  " + getAITrainingSpeedLabel(),
         "Backend: " + compactBackendLabel,

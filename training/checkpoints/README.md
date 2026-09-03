@@ -2,7 +2,7 @@
 
 `champion.json` is the repository's schema-compatible distributed baseline and audit mirror. A schema migration preserves compatible learned state and records the preceding checkpoint as its parent; `npm run ai:migrate -- --checkpoint <source> --seed 0 --shard <id> --output <target>` reproduces that transition. It is not the training authority.
 
-Each training generation starts from one immutable Hosted Model snapshot artifact. Distributed selection replaces only the deterministic score-weighted aggregate of validated schema-12 policy bundles, generation metadata, and bounded two-policy population history in that snapshot; shard-learned stores are not promoted. The 26,440-parameter bundle contains 5,707 strategy parameters and 20,733 parameters for the semantic-intent-spatial recurrent actor, value, and survival heads. This audit checkpoint can therefore contain the public aggregate model fields present in the hosted GET response.
+Each training generation starts from one immutable Hosted Model snapshot artifact. Distributed selection replaces only the deterministic score-weighted aggregate of validated schema-13 policy bundles, generation metadata, and bounded two-policy population history in that snapshot; shard-learned stores are not promoted. The 31,048-parameter bundle contains 5,707 strategy parameters and 25,341 parameters for the semantic-intent-spatial recurrent actor, value, and survival heads. This audit checkpoint can therefore contain the public aggregate model fields present in the hosted GET response.
 
 Never copy the private production state envelope into this directory. Contribution guards, identifiers, rate-limit records, tokens, secrets, and trainer or promotion authorization are prohibited.
 

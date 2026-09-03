@@ -1205,12 +1205,20 @@ async function main() {
             const denseRewardBefore = { ownLives: 150, enemyLives: 150, ownMoney: 1000, ownPops: 10, enemyPops: 20 }
             const denseRewardPositiveAfter = { ownLives: 150, enemyLives: 140, ownMoney: 1100, ownPops: 110, enemyPops: 20 }
             const denseRewardNegativeAfter = { ownLives: 140, enemyLives: 150, ownMoney: 900, ownPops: 10, enemyPops: 120 }
+            const timedSurvivalBefore = { ownLives: 150, enemyLives: 150, ownMoney: 1000, ownPops: 10, enemyPops: 20, ownLivesLost: 0, observedAtMs: 1000 }
+            const timedSurvivalAfter = { ...timedSurvivalBefore, observedAtMs: 31000 }
+            const lifeLossAfter = { ...timedSurvivalBefore, ownLivesLost: 10 }
+            const liquidationReward = getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "liquidate", proceeds: 300, liquidationLoss: 100 })
+            const recentLiquidationReward = getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "liquidate", proceeds: 300, liquidationLoss: 100, recentUpgradeLoss: 200 })
             const denseRewardContract = {
                 snapshotHasMoney: Number.isFinite(getAIFactualDecisionOutcomeSnapshot(aiSide).ownMoney),
                 moneyGainPositive: getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardPositiveAfter) > 0,
                 paidSpendNeutral: Math.abs(getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 600 }, { kind: "spend", expectedCost: 400 })) < 1e-12,
                 collectionGainPositive: getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "income", expectedIncome: 300 }) > 0,
                 liquidationPenalty: getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "liquidate", proceeds: 300, liquidationLoss: 100 }) < 0,
+                liquidationPenaltyStrengthened: recentLiquidationReward < liquidationReward,
+                survivalTimePositive: getAIFactualDecisionLocalReward(timedSurvivalBefore, timedSurvivalAfter, { kind: "neutral" }) > 0,
+                lifeLossPenalty: getAIFactualDecisionLocalReward(timedSurvivalBefore, lifeLossAfter, { kind: "neutral" }) < 0,
                 lifePopSigns: getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardPositiveAfter) > 0 && getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardNegativeAfter) < 0,
                 bounded: [denseRewardPositiveAfter, denseRewardNegativeAfter].every(after => {
                     const reward = getAIFactualDecisionLocalReward(denseRewardBefore, after)
@@ -1884,6 +1892,9 @@ async function main() {
             paidSpendNeutral: true,
             collectionGainPositive: true,
             liquidationPenalty: true,
+            liquidationPenaltyStrengthened: true,
+            survivalTimePositive: true,
+            lifeLossPenalty: true,
             lifePopSigns: true,
             bounded: true,
             rewardActionBaselineCaptured: true,
