@@ -1022,7 +1022,65 @@ async function main() {
                 towers: towers.slice(),
             }
             let farmerPriceContract
+            let farmerSignalContract
             try {
+                towers.length = 0
+                bananas.length = 0
+                const signalFarm = {
+                    playerSide: aiSide,
+                    towerType: "farm",
+                    x: canvas.width * 0.75,
+                    y: canvas.height * 0.5,
+                    range: 200,
+                }
+                towers.push(signalFarm)
+                bananas.push({
+                    playerSide: aiSide,
+                    x: signalFarm.x + 100,
+                    y: signalFarm.y,
+                    cashGiven: 900,
+                })
+                const farmerNearFeatures = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.placement, {
+                    type: "farmer",
+                    x: signalFarm.x + 100,
+                    y: signalFarm.y,
+                    cost: 0,
+                    money: 0,
+                    range: 250,
+                    placementGeometry: true,
+                })
+                const farmerFarFeatures = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.placement, {
+                    type: "farmer",
+                    x: signalFarm.x + 400,
+                    y: signalFarm.y,
+                    cost: 0,
+                    money: 0,
+                    range: 250,
+                    placementGeometry: true,
+                })
+                const nonFarmerFeatures = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.placement, {
+                    type: "wizard",
+                    x: signalFarm.x + 100,
+                    y: signalFarm.y,
+                    cost: 300,
+                    money: 1000,
+                    range: 250,
+                    placementGeometry: true,
+                })
+                const nearFarmerReward = getAIFarmerPlacementReward({ farmerPlacement: { side: aiSide, x: signalFarm.x + 100, y: signalFarm.y, range: 250 } })
+                const farFarmerReward = getAIFarmerPlacementReward({ farmerPlacement: { side: aiSide, x: signalFarm.x + 400, y: signalFarm.y, range: 250 } })
+                const farmerActionContext = getAIActionRewardContext({ type: "placeFarmer", side: aiSide, targetX: signalFarm.x + 100, targetY: signalFarm.y })
+                farmerSignalContract = {
+                    explicitType: farmerNearFeatures[104] == 1 && nonFarmerFeatures[104] == 0,
+                    bounded: farmerNearFeatures.every(value => Number.isFinite(value) && value >= -1 && value <= 1),
+                    coveragePresent: farmerNearFeatures[106] > farmerFarFeatures[106] && farmerNearFeatures[107] > farmerFarFeatures[107],
+                    uncoveredValuePresent: farmerNearFeatures[109] > farmerFarFeatures[109] && farmerNearFeatures[110] > farmerFarFeatures[110],
+                    strategyIntentPresent: farmerNearFeatures[111] > 0,
+                    rewardPrefersCoverage: nearFarmerReward > farFarmerReward,
+                    rewardBounded: nearFarmerReward >= -1 && nearFarmerReward <= 1 && farFarmerReward >= -1 && farFarmerReward <= 1,
+                    freeActionContext: farmerActionContext.kind == "spend" && farmerActionContext.expectedCost == 0 && farmerActionContext.farmerPlacement.x == signalFarm.x + 100,
+                    rewardSnapshot: farmerActionContext.farmerPlacement.reward == nearFarmerReward,
+                }
                 towers.length = 0
                 bananas.length = 0
                 gameStarted = false
@@ -1499,6 +1557,7 @@ async function main() {
                 placementPressureContract,
                 placementOutcomeContract,
                 farmerPriceContract,
+                farmerSignalContract,
                 humanCursorStep: CURSOR_MOVE_STEP,
                 humanDelta: { x: humanEnd.x - humanStart.x, y: humanEnd.y - humanStart.y },
                 factualFeaturesPermutationInvariant: factualFeaturesBefore.every((value, index) => value == factualFeaturesAfter[index]),
@@ -1769,6 +1828,17 @@ async function main() {
             sellValue: 0,
             totalCost: 0,
             upgradeable: false,
+        })
+        assert.deepEqual(result.farmerSignalContract, {
+            explicitType: true,
+            bounded: true,
+            coveragePresent: true,
+            uncoveredValuePresent: true,
+            strategyIntentPresent: true,
+            rewardPrefersCoverage: true,
+            rewardBounded: true,
+            freeActionContext: true,
+            rewardSnapshot: true,
         })
         assert.deepEqual(result.humanTacticalCapture.capturedActions, {
             placed: true,

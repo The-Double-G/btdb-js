@@ -2416,7 +2416,7 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
         ]
         for(var placementIndex = 0; placementIndex < placementFeatures.length; placementIndex++) features[72 + placementIndex] = placementFeatures[placementIndex]
     }
-    // 112-dim extension: tower-type one-hot (16 dims at 80-95) and detailed tier/cost context at 96-111 for bit-perfect quirk separation.
+    // 112-dim extension: tower-type one-hot (16 dims at 80-95) and detailed tier/cost context at 96-103.
     var towerTypesForCandidate = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var rawType = String(metadata.type || metadata.towerType || "").split("|")[0].split(",")[0]
     for(var typeIdx = 0; typeIdx < towerTypesForCandidate.length; typeIdx++) {
@@ -2430,6 +2430,18 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     if(typeof metadata.count == "number" && 101 < features.length) features[101] = clamp(Number(metadata.count) / Math.max(1, Number(metadata.countScale) || 16), 0, 1)
     if(metadata.send && 102 < features.length) features[102] = clamp(Math.log1p(Math.max(0, Number(metadata.send.health) || 0)) / Math.log(100001), 0, 1)
     if(metadata.boostType && 103 < features.length) features[103] = 1
+    // Farmer-specific context uses the final eight slots; other candidates stay zero.
+    if(rawType == "farmer") {
+        var farmerCoverage = getAIFarmerPlacementCoverage(side, candidateX, candidateY, Number(metadata.range) || 250)
+        features[104] = 1
+        features[105] = clamp(farmerCoverage.farmCount / 6, 0, 1)
+        features[106] = clamp(farmerCoverage.coveredFarmCount / 6, 0, 1)
+        features[107] = clamp(farmerCoverage.marginalFarmCount / 6, 0, 1)
+        features[108] = clamp(farmerCoverage.redundantFarmCount / 6, 0, 1)
+        features[109] = clamp(farmerCoverage.uncoveredBananaCount / 24, 0, 1)
+        features[110] = clamp(Math.log1p(farmerCoverage.uncoveredBananaCash) / Math.log(6001), 0, 1)
+        features[111] = farmerCoverage.strategyHasFarm ? 1 : 0
+    }
     return features
 }
 
@@ -3225,7 +3237,8 @@ function getAIFactualDecisionLocalReward(before, after, actionContext) {
     var lifeOutcome = (Number(after.ownLives) || 0) - (Number(before.ownLives) || 0) + (Number(before.enemyLives) || 0) - (Number(after.enemyLives) || 0)
     var popOutcome = (Number(after.ownPops) || 0) - (Number(before.ownPops) || 0) - ((Number(after.enemyPops) || 0) - (Number(before.enemyPops) || 0))
     var moneyOutcome = getAIFactualDecisionMoneyOutcome(before, after, actionContext)
-    return clamp(lifeOutcome / 30 + popOutcome / 5000 + moneyOutcome / 2000, -1, 1)
+    var farmerOutcome = getAIFarmerPlacementReward(actionContext)
+    return clamp(lifeOutcome / 30 + popOutcome / 5000 + moneyOutcome / 2000 + farmerOutcome, -1, 1)
 }
 
 function settleAITacticalDecision(side, successorDecisionSample, terminal) {
@@ -3689,6 +3702,67 @@ function getAIFarmMoneyOutputValue(tower) {
     }
 
     return Math.max(0, tower.cashGenerated) + Math.max(0, tower.towerVar || 0)
+}
+
+function getAIFarmerPlacementCoverage(side, x, y, range) {
+    var coverage = {
+        farmCount: 0,
+        coveredFarmCount: 0,
+        marginalFarmCount: 0,
+        redundantFarmCount: 0,
+        uncoveredBananaCount: 0,
+        uncoveredBananaCash: 0,
+        strategyHasFarm: false,
+    }
+    var candidateX = Number(x)
+    var candidateY = Number(y)
+    var farmerRange = Math.max(1, Number(range) || 250)
+    var strategy = typeof getCurrentAIStrategy == "function" ? getCurrentAIStrategy() : null
+    var strategyTowers = strategy && Array.isArray(strategy.towers) ? strategy.towers : []
+    for(var strategyIndex = 0; strategyIndex < strategyTowers.length; strategyIndex++) {
+        if(typeof getTowerTypeFromImage == "function" && getTowerTypeFromImage(strategyTowers[strategyIndex]) == "farm") {
+            coverage.strategyHasFarm = true
+            break
+        }
+    }
+    if(!Number.isFinite(candidateX) || !Number.isFinite(candidateY)) return coverage
+
+    var farms = getSideTowersByType(side, "farm")
+    coverage.farmCount = farms.length
+    for(var farmIndex = 0; farmIndex < farms.length; farmIndex++) {
+        var farm = farms[farmIndex]
+        var farmRange = Math.max(90, farmerRange - Math.max(0, Number(farm.range) || 0) * 0.6)
+        var candidateServices = Math.sqrt((candidateX - farm.x) ** 2 + (candidateY - farm.y) ** 2) <= farmRange
+        if(candidateServices == false) continue
+        coverage.coveredFarmCount++
+        if(isFarmServicedByFarmer(farm)) coverage.redundantFarmCount++
+        else coverage.marginalFarmCount++
+    }
+
+    var sideBananas = typeof getBananasForSide == "function" ? getBananasForSide(side) : []
+    for(var bananaIndex = 0; bananaIndex < sideBananas.length; bananaIndex++) {
+        var banana = sideBananas[bananaIndex]
+        if(isBananaCoveredByFarmer(side, banana)) continue
+        if(Math.sqrt((candidateX - banana.x) ** 2 + (candidateY - banana.y) ** 2) <= farmerRange) {
+            coverage.uncoveredBananaCount++
+            coverage.uncoveredBananaCash += Math.max(0, Number(banana.cashGiven) || 0)
+        }
+    }
+    return coverage
+}
+
+function getAIFarmerPlacementReward(actionContext) {
+    if(!actionContext || !actionContext.farmerPlacement) return 0
+    var placement = actionContext.farmerPlacement
+    if(Number.isFinite(Number(placement.reward))) return clamp(Number(placement.reward), -0.2, 0.35)
+    var coverage = getAIFarmerPlacementCoverage(placement.side, placement.x, placement.y, placement.range)
+    var farmDenominator = Math.max(1, coverage.farmCount)
+    var reward = clamp(coverage.marginalFarmCount / farmDenominator * 0.24, 0, 0.24)
+    reward += clamp(Math.log1p(coverage.uncoveredBananaCash) / Math.log(6001) * 0.18, 0, 0.18)
+    reward += clamp(coverage.uncoveredBananaCount / 24 * 0.08, 0, 0.08)
+    reward -= clamp(coverage.redundantFarmCount / farmDenominator * 0.12, 0, 0.12)
+    if(coverage.marginalFarmCount == 0 && coverage.uncoveredBananaCount == 0 && coverage.redundantFarmCount == 0 && coverage.strategyHasFarm == false) reward -= 0.08
+    return clamp(reward, -0.2, 0.35)
 }
 
 function getFarmerServicedFarmCount(tower) {
@@ -6217,7 +6291,18 @@ function getAIActionRewardContext(action) {
         return { kind: "spend", expectedCost: towerConfig ? towerConfig.price() : 0 }
     }
     if(action.type == "placeFarmer") {
-        return { kind: "spend", expectedCost: baseFarmerPrice }
+        var farmerPlacement = {
+            side: action.side,
+            x: action.targetX,
+            y: action.targetY,
+            range: 250,
+        }
+        farmerPlacement.reward = getAIFarmerPlacementReward({ farmerPlacement: farmerPlacement })
+        return {
+            kind: "spend",
+            expectedCost: baseFarmerPrice,
+            farmerPlacement: farmerPlacement,
+        }
     }
     if(action.type == "upgradeTower") {
         var upgradeTower = action.tower
