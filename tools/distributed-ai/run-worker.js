@@ -237,6 +237,7 @@ function migrateSchema12Model(source) {
     migrated.placementStats = {}
     migrated.loadoutPlacementStats = {}
     migrated.tacticalFamilyStats = Object.fromEntries(Object.entries(source.tacticalFamilyStats).filter(([key]) => !key.startsWith("human|")))
+    migrated.totalDecisionSamples = 0
     migrated.policy = migrateSchema12Policy(source.policy, "model.policy")
     migrated.championPolicy = migrateSchema12Policy(source.championPolicy, "model.championPolicy")
     migrated.populationPolicies = source.populationPolicies.map((policy, index) => migrateSchema12Policy(policy, `model.populationPolicies[${index}]`))
@@ -621,6 +622,7 @@ module.exports = {
     assertRuntimeClean,
     closeRuntime,
     migrateSchema11Model,
+    migrateSchema12Model,
     openRuntime,
     stepUntilMatches,
     validateMigrationSource,

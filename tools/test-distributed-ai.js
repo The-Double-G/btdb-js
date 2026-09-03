@@ -52,6 +52,7 @@ const {
 const {
     assertMigrationRetention,
     migrateSchema11Model,
+    migrateSchema12Model,
     validateMigrationSource,
 } = require("./distributed-ai/run-worker")
 const {
@@ -128,6 +129,15 @@ function expectedSchema12Policy(legacy) {
     expected.decision.WState1 = expected.decision.WState1.map(row => row.concat(vector(40)))
     expected.decision.WCandidate1 = expected.decision.WCandidate1.map(row => row.concat(vector(48)))
     return expected
+}
+
+function schema12Policy(value = 0) {
+    const legacy = policy(value)
+    legacy.decision.stateInputSize = 80
+    legacy.decision.candidateInputSize = 80
+    legacy.decision.WState1 = legacy.decision.WState1.map(row => row.slice(0, 80))
+    legacy.decision.WCandidate1 = legacy.decision.WCandidate1.map(row => row.slice(0, 80))
+    return legacy
 }
 
 function legacyCheckpoint(legacyModel) {
@@ -397,6 +407,18 @@ async function main() {
     assert.deepEqual(safeMigration.tacticalFamilyStats, {})
     assert.equal(Object.prototype.hasOwnProperty.call(safeMigration, "humanTacticalStats"), false)
     validateModel(safeMigration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
+
+    const schema12Model = model()
+    schema12Model.version = 12
+    schema12Model.modelFamily = "semantic-intent-spatial-recurrent-actor-critic-v4"
+    schema12Model.totalDecisionSamples = 37
+    schema12Model.policy = schema12Policy(0.01)
+    schema12Model.championPolicy = schema12Policy(0.02)
+    schema12Model.populationPolicies = [schema12Policy(0.03)]
+    const schema12Migration = migrateSchema12Model(schema12Model)
+    assert.equal(schema12Migration.totalDecisionSamples, 0)
+    assertMigrationRetention(schema12Model, schema12Migration)
+    validateModel(schema12Migration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
 
     const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
     validateCheckpoint(base)
