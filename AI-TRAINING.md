@@ -13,7 +13,7 @@ The 112-value state has up to 40 core match values, 24 permutation-invariant fac
 
 ## Learned Boundary
 
-The policy tensors learn strategy and candidate rankings from terminal match results, factual interval rewards, four-step TD targets, and final-life survival classes. Factual rewards combine bounded life, pop, and money outcomes; paid placement, upgrade, and send actions neutralize their known spend, collection actions retain realized income, and sales remove proceeds while exposing sellback loss. The persistent player profile learns aggregate opponent behavior from completed standard Vs AI matches. `loadoutCounterStats` contributes a bounded learned bonus for an observed opponent/loadout pairing, `tacticalFamilyStats` contributes a bounded bonus only for validated `human|` demonstration keys with at least four samples, and `loadoutStats` now contributes three bounded bonuses for the actor's own loadout—performance exploitation, UCB exploration, and dominant unseen-loadout coverage—to ensure the enumerated library is learnably explored. `strategyStats` records outcomes and supplies the strategy learning-rate sample count.
+The policy tensors learn strategy and candidate rankings from terminal match results, factual interval rewards, four-step TD targets, and final-life survival classes. Factual rewards combine bounded life, pop, and money outcomes; paid placement, upgrade, and send actions neutralize their known spend, collection actions retain realized income, and sales remove proceeds while exposing sellback loss. No hosted or session player-profile object is persisted; strategy selection uses the current observed loadout and the policy. `loadoutCounterStats` contributes a bounded learned bonus for an observed opponent/loadout pairing, `tacticalFamilyStats` contributes a bounded bonus only for validated `human|` demonstration keys with at least four samples, and `loadoutStats` now contributes three bounded bonuses for the actor's own loadout—performance exploitation, UCB exploration, and dominant unseen-loadout coverage—to ensure the enumerated library is learnably explored. `strategyStats` records hosted outcomes and supplies the strategy learning-rate sample count.
 
 The remaining placement, timing, crosspath, general tactical, and non-`human|` tactical stores are still maintained for aggregate observations, migration, UI, or compatibility, but do not currently add a runtime actor score beyond the three `loadoutStats` bonuses. Hardcoded tower/loadout capability labels and factual prerequisite gates define candidate meaning and safety; they are not strategic value scores. Factual tower capabilities are inspected from live runtime construction and include timed income intervals for cobra, buccaneer, and farm banks; loadout aggregates preserve max-valued range/area/timing signals instead of diluting them across unrelated slots; farm sell candidates preserve bank proceeds and economy state now exposes stored bank, collectible banana cash/expiry, and matchup/timing context.
 
@@ -23,7 +23,7 @@ Hosted Vs AI and candidate self-play matches train and run inference from the li
 
 Actor learning updates only the selected action, using its TD advantage against the state-value estimate. It does not upload or train rejected alternatives and does not fabricate emergency labels. Browser Lab counterfactual training is deferred until the runtime has rewindable seeded randomness and clocks, synchronous gameplay stepping, timer and network isolation, identity-preserving restoration of every mutable object and reference, and post-restore state-hash verification for every initially supported action family. Frozen evaluation remains the authority for promotion.
 
-Completed standard Local matches can submit two `human-demo-v1` perspectives. Each demonstration contains aggregate play-style features, loadout signatures, final lives, map, bounded duration, and at most 128 quantized chronological semantic events such as placement, upgrade, sale, send, eco, collection, aiming, boost, and derived waits. It contains no neural vectors, names, raw input history, or replay history. The endpoint validates event chronology and tower lifecycles, deduplicates semantic keys backed by current actor candidates, updates `tacticalFamilyStats`, and increments only the dedicated `totalHumanDemonstrations` accounting counter. Follow/lock aiming and eco toggles have matching candidates; standard target-priority changes and waits remain validation context until equivalent actor candidates exist. Runtime priors require at least four samples and add at most `+/-0.05` to candidate ranking; demonstrations never update policy tensors, player profiles, loadout outcomes, general tactical counts, or loadout counters.
+Completed standard Local matches can submit two `human-demo-v1` perspectives. Each demonstration contains aggregate play-style features, loadout signatures, final lives, map, bounded duration, and at most 128 quantized chronological semantic events such as placement, upgrade, sale, send, eco, collection, aiming, boost, and derived waits. It contains no neural vectors, names, raw input history, or replay history. The endpoint validates event chronology and tower lifecycles, deduplicates semantic keys backed by current actor candidates, updates `tacticalFamilyStats`, and increments only the dedicated `totalHumanDemonstrations` accounting counter. Follow/lock aiming and eco toggles have matching candidates; standard target-priority changes and waits remain validation context until equivalent actor candidates exist. Runtime priors require at least four samples and add at most `+/-0.05` to candidate ranking; demonstrations never update policy tensors, loadout outcomes, general tactical counts, or loadout counters.
 
 Localhost and file-based sessions remain session-only.
 
@@ -40,6 +40,20 @@ Retryable failed contributions remain in a bounded `localStorage` queue and retr
 ## Browser Lab
 
 The Browser Lab trains a Temporary Lab Copy. It cannot replace the Hosted Model, even when trainer credentials exist. On the hosted site, each eligible completed learning perspective may publish the same bounded, server-validated contribution used by normal play; localhost, file-based, and explicitly session-only runs do not publish.
+
+## AI Lab Overview
+
+The AI Training Lab reports the temporary browser-session candidate, not the Hosted Model. Its status values mean:
+
+- `Matches`: completed self-play matches in this Lab session, including learning and frozen-evaluation matches.
+- `Phase`: the current generation phase, with 128 learning matches followed by 64 frozen evaluation matches.
+- `Eval`: the active or most recently completed frozen evaluation score; its wins, losses, and ties are retained after the evaluation finishes.
+- `Lab Promotions`: candidates promoted inside this temporary session copy after passing its score gate.
+- `Rejected`: candidates reset to the session champion after failing the rejection gate.
+- `Avg Round`: the average final round reached by completed session matches.
+- `Top Training Archetypes`: candidate-side strategy selections and wins from learning matches only; frozen opponents are excluded.
+- `Decision Training`: the live session policy's update count split across loadout, strategy, placement, upgrade, sale, eco, rush, and boost families.
+- `Hosted` and `GitHub Trainer` values: authoritative hosted-model and workflow status, refreshed separately from the temporary Lab session.
 
 One Lab generation consists of:
 

@@ -144,6 +144,21 @@ function valid_counter_vector($value, int $length): bool {
     return true;
 }
 
+function decision_sample_count($policy): int {
+    $samples = $policy['decision']['trainingSamples'] ?? null;
+    if (!is_array($samples)) {
+        return 0;
+    }
+    $total = 0;
+    foreach ($samples as $sampleCount) {
+        if (!valid_nonnegative_integer($sampleCount) || $total > AI_MAX_SAFE_INTEGER - $sampleCount) {
+            return 0;
+        }
+        $total += $sampleCount;
+    }
+    return $total;
+}
+
 function valid_strategy($strategy): bool {
     if (!is_array($strategy) || !exact_keys($strategy, ['hiddenSize1', 'hiddenSize2', 'W1', 'b1', 'W2', 'b2', 'W3', 'b3'])) {
         return false;
@@ -365,14 +380,18 @@ function integer_tree_has_headroom($value, int $increments, int $depth = 0): boo
     return true;
 }
 
-function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false, bool $schema12 = false): bool {
+function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false, bool $schema12 = false, bool $legacyPlayerProfile = false): bool {
+    $hasPlayerProfile = $legacy || $schema9 || $schema10 || $schema11 || $schema12 || $legacyPlayerProfile;
     $modelKeys = [
         'version', 'modelFamily', 'totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples',
-        'totalLoadoutSamples', 'totalHumanDemonstrations', 'playerProfile', 'strategyStats', 'loadoutStats',
+        'totalLoadoutSamples', 'totalHumanDemonstrations', 'strategyStats', 'loadoutStats',
         'placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats',
         'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats', 'totalTacticalSamples', 'candidateGeneration',
         'championGeneration', 'policy', 'championPolicy', 'populationPolicies',
     ];
+    if ($hasPlayerProfile) {
+        array_splice($modelKeys, 6, 0, ['playerProfile']);
+    }
     if (!$legacy) {
         $modelKeys[] = 'totalDecisionSamples';
     }
@@ -394,12 +413,14 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     if ($model['totalPolicySamples'] !== $model['totalGames'] + $model['totalSyntheticEpisodes']) {
         return false;
     }
-    $profile = $model['playerProfile'] ?? null;
-    if (!is_array($profile)
-        || !exact_keys($profile, ['games', 'features'])
-        || !valid_nonnegative_integer($profile['games'] ?? null)
-        || !valid_unit_vector($profile['features'] ?? null, AI_FEATURE_COUNT)) {
-        return false;
+    if ($hasPlayerProfile) {
+        $profile = $model['playerProfile'] ?? null;
+        if (!is_array($profile)
+            || !exact_keys($profile, ['games', 'features'])
+            || !valid_nonnegative_integer($profile['games'] ?? null)
+            || !valid_unit_vector($profile['features'] ?? null, AI_FEATURE_COUNT)) {
+            return false;
+        }
     }
     if (!isset($model['strategyStats'])
         || !is_array($model['strategyStats'])
@@ -430,6 +451,10 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     }
     $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : ($schema11 ? 'valid_schema11_policy' : ($schema12 ? 'valid_schema12_policy' : 'valid_policy'))));
     if (!$policyValidator($model['policy'] ?? null) || !$policyValidator($model['championPolicy'] ?? null)) {
+        return false;
+    }
+    if (!$legacy && !$schema9 && !$schema10 && !$schema11 && !$schema12
+        && $model['totalDecisionSamples'] !== decision_sample_count($model['policy'])) {
         return false;
     }
     foreach (['loadoutStats', 'placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats', 'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats'] as $storeName) {
@@ -503,6 +528,10 @@ function valid_schema12_model($model): bool {
     return valid_model_for_schema($model, false, false, false, false, true);
 }
 
+function valid_schema13_with_player_profile($model): bool {
+    return valid_model_for_schema($model, false, false, false, false, false, true);
+}
+
 function valid_fresh_model($model): bool {
     if (!valid_model($model)) {
         return false;
@@ -511,9 +540,6 @@ function valid_fresh_model($model): bool {
         if ((int)($model[$counter] ?? 0) !== 0) {
             return false;
         }
-    }
-    if ((int)($model['playerProfile']['games'] ?? 0) !== 0 || !valid_vector($model['playerProfile']['features'] ?? null, AI_FEATURE_COUNT, 0.0)) {
-        return false;
     }
     foreach (['loadoutStats', 'placementStats', 'loadoutPlacementStats', 'timingStats', 'loadoutStrategyStats', 'crosspathStats', 'loadoutCounterStats', 'tacticalStats', 'tacticalFamilyStats'] as $storeName) {
         if (($model[$storeName] ?? null) !== []) {
@@ -764,15 +790,16 @@ function strip_reserved_human_priors(array &$model): void {
 
 function migrate_legacy_model(array $legacyModel): array {
     $model = $legacyModel;
+    unset($model['playerProfile']);
     $model['version'] = AI_MODEL_SCHEMA;
     $model['modelFamily'] = AI_MODEL_FAMILY;
     $model['placementStats'] = [];
     $model['loadoutPlacementStats'] = [];
     strip_reserved_human_priors($model);
-    $model['totalDecisionSamples'] = 0;
     $model['policy'] = migrate_legacy_policy($legacyModel['policy']);
     $model['championPolicy'] = migrate_legacy_policy($legacyModel['championPolicy']);
     $model['populationPolicies'] = array_map('migrate_legacy_policy', array_slice($legacyModel['populationPolicies'], -2));
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
     return $model;
 }
 
@@ -810,15 +837,16 @@ function migrate_schema10_policy(array $oldPolicy): array {
 
 function migrate_schema10_model(array $oldModel): array {
     $model = $oldModel;
+    unset($model['playerProfile']);
     $model['version'] = AI_MODEL_SCHEMA;
     $model['modelFamily'] = AI_MODEL_FAMILY;
     $model['placementStats'] = [];
     $model['loadoutPlacementStats'] = [];
     strip_reserved_human_priors($model);
-    $model['totalDecisionSamples'] = 0;
     $model['policy'] = migrate_schema10_policy($oldModel['policy']);
     $model['championPolicy'] = migrate_schema10_policy($oldModel['championPolicy']);
     $model['populationPolicies'] = array_map('migrate_schema10_policy', array_slice($oldModel['populationPolicies'], -2));
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
     return $model;
 }
 
@@ -834,15 +862,16 @@ function migrate_schema9_policy(array $oldPolicy): array {
 
 function migrate_schema9_model(array $oldModel): array {
     $model = $oldModel;
+    unset($model['playerProfile']);
     $model['version'] = AI_MODEL_SCHEMA;
     $model['modelFamily'] = AI_MODEL_FAMILY;
     $model['placementStats'] = [];
     $model['loadoutPlacementStats'] = [];
     strip_reserved_human_priors($model);
-    $model['totalDecisionSamples'] = 0;
     $model['policy'] = migrate_schema9_policy($oldModel['policy']);
     $model['championPolicy'] = migrate_schema9_policy($oldModel['championPolicy']);
     $model['populationPolicies'] = array_map('migrate_schema9_policy', array_slice($oldModel['populationPolicies'], -2));
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
     return $model;
 }
 
@@ -867,6 +896,7 @@ function migrate_schema11_policy(array $oldPolicy): array {
 
 function migrate_schema11_model(array $oldModel): array {
     $model = $oldModel;
+    unset($model['playerProfile']);
     $model['version'] = AI_MODEL_SCHEMA;
     $model['modelFamily'] = AI_MODEL_FAMILY;
     $model['placementStats'] = [];
@@ -875,6 +905,7 @@ function migrate_schema11_model(array $oldModel): array {
     $model['policy'] = migrate_schema11_policy($oldModel['policy']);
     $model['championPolicy'] = migrate_schema11_policy($oldModel['championPolicy']);
     $model['populationPolicies'] = array_map('migrate_schema11_policy', $oldModel['populationPolicies']);
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
     return $model;
 }
 
@@ -899,15 +930,23 @@ function migrate_schema12_policy(array $oldPolicy): array {
 
 function migrate_schema12_model(array $oldModel): array {
     $model = $oldModel;
+    unset($model['playerProfile']);
     $model['version'] = AI_MODEL_SCHEMA;
     $model['modelFamily'] = AI_MODEL_FAMILY;
-    $model['totalDecisionSamples'] = 0;
     $model['placementStats'] = [];
     $model['loadoutPlacementStats'] = [];
     strip_reserved_human_priors($model);
     $model['policy'] = migrate_schema12_policy($oldModel['policy']);
     $model['championPolicy'] = migrate_schema12_policy($oldModel['championPolicy']);
     $model['populationPolicies'] = array_map('migrate_schema12_policy', $oldModel['populationPolicies']);
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
+    return $model;
+}
+
+function migrate_schema13_model(array $oldModel): array {
+    $model = $oldModel;
+    unset($model['playerProfile']);
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
     return $model;
 }
 
@@ -1027,7 +1066,6 @@ function valid_contribution($request): bool {
         'baseRevision',
         'strategyIndex',
         'selectionFeatures',
-        'matchFeatures',
         'aiLives',
         'enemyLives',
         'loadoutKey',
@@ -1042,6 +1080,9 @@ function valid_contribution($request): bool {
     }
     if (array_key_exists('placementSamples', $request)) {
         $expectedKeys[] = 'placementSamples';
+    }
+    if (array_key_exists('matchFeatures', $request)) {
+        $expectedKeys[] = 'matchFeatures';
     }
     if (!exact_keys($request, $expectedKeys)) {
         return false;
@@ -1068,9 +1109,11 @@ function valid_contribution($request): bool {
     if (!is_bool($selfPlay)) {
         return false;
     }
-    $matchFeatures = $request['matchFeatures'] ?? null;
-    if ((!$selfPlay && !valid_unit_vector($matchFeatures, AI_FEATURE_COUNT)) || ($selfPlay && $matchFeatures !== null)) {
-        return false;
+    if (array_key_exists('matchFeatures', $request)) {
+        if (($selfPlay && $request['matchFeatures'] !== null)
+            || (!$selfPlay && !valid_unit_vector($request['matchFeatures'], AI_FEATURE_COUNT))) {
+            return false;
+        }
     }
     foreach (['aiLives', 'enemyLives'] as $livesKey) {
         if (!valid_number($request[$livesKey] ?? null, 100000.0) || (float)$request[$livesKey] < 0) {
@@ -1936,6 +1979,9 @@ function normalize_model_accounting(array &$model): void {
     if (isset($model['loadoutStats']) && is_array($model['loadoutStats'])) {
         $model['totalLoadoutSamples'] = loadout_sample_count($model['loadoutStats']);
     }
+    if (isset($model['policy']) && is_array($model['policy'])) {
+        $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
+    }
 }
 
 function model_for_response(array $model): array {
@@ -1990,16 +2036,6 @@ function apply_public_contribution(array &$model, array $request): void {
         }
     }
     limit_policy_parameter_delta($model['policy'], $baselinePolicy, AI_MAX_CONTRIBUTION_POLICY_DELTA_NORM);
-
-    if (!$request['selfPlay']) {
-        $profileGames = max(0, (int)($model['playerProfile']['games'] ?? 0)) + 1;
-        for ($feature = 0; $feature < AI_FEATURE_COUNT; $feature++) {
-            $previous = (float)$model['playerProfile']['features'][$feature];
-            $next = (float)$request['matchFeatures'][$feature];
-            $model['playerProfile']['features'][$feature] = $previous + ($next - $previous) / $profileGames;
-        }
-        $model['playerProfile']['games'] = $profileGames;
-    }
 
     $tacticalSamples = 0;
     foreach ($request['observations'] as $observation) {
@@ -2180,16 +2216,44 @@ function migrate_state_locked(array $state, string $stateFile): array {
         return $state;
     }
     normalize_model_accounting($legacyModel);
+    if (valid_model($legacyModel)) {
+        $revision = (int)($state['revision'] ?? 0);
+        $epoch = state_contribution_epoch($state);
+        if ($revision >= AI_MAX_SAFE_INTEGER) {
+            fail_json(409, 'state_counter_exhausted', 'The AI state has exhausted a safe integer counter.');
+        }
+        if (($state['modelDigest'] ?? '') === model_digest($legacyModel)) {
+            return $state;
+        }
+        return write_model_state(
+            $stateFile,
+            $revision + 1,
+            $legacyModel,
+            normalized_contribution_guard($state),
+            $epoch
+        );
+    }
+    $isSchema13WithProfile = valid_schema13_with_player_profile($legacyModel);
     $isSchema12 = valid_schema12_model($legacyModel);
     $isSchema11 = !$isSchema12 && valid_schema11_model($legacyModel);
     $isSchema10 = !$isSchema12 && !$isSchema11 && valid_schema10_model($legacyModel);
     $isSchema9 = !$isSchema12 && !$isSchema11 && !$isSchema10 && valid_schema9_model($legacyModel);
-    if (!$isSchema12 && !$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
+    if (!$isSchema13WithProfile && !$isSchema12 && !$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
         return $state;
     }
-    $model = $isSchema12
-        ? migrate_schema12_model($legacyModel)
-        : ($isSchema11 ? migrate_schema11_model($legacyModel) : ($isSchema10 ? migrate_schema10_model($legacyModel) : ($isSchema9 ? migrate_schema9_model($legacyModel) : migrate_legacy_model($legacyModel))));
+    if ($isSchema13WithProfile) {
+        $model = migrate_schema13_model($legacyModel);
+    } elseif ($isSchema12) {
+        $model = migrate_schema12_model($legacyModel);
+    } elseif ($isSchema11) {
+        $model = migrate_schema11_model($legacyModel);
+    } elseif ($isSchema10) {
+        $model = migrate_schema10_model($legacyModel);
+    } elseif ($isSchema9) {
+        $model = migrate_schema9_model($legacyModel);
+    } else {
+        $model = migrate_legacy_model($legacyModel);
+    }
     if (!valid_model($model)) {
         fail_json(500, 'migration_failed_validation', 'The legacy AI model could not be migrated safely.');
     }

@@ -223,7 +223,7 @@ function validatePolicy(policy, label, strategyCount) {
 
 const MODEL_KEYS = [
     "version", "modelFamily", "totalGames", "totalSyntheticEpisodes", "totalPolicySamples",
-    "totalLoadoutSamples", "totalHumanDemonstrations", "playerProfile", "strategyStats", "loadoutStats",
+    "totalLoadoutSamples", "totalHumanDemonstrations", "strategyStats", "loadoutStats",
     "placementStats", "loadoutPlacementStats", "timingStats", "loadoutStrategyStats", "crosspathStats",
     "loadoutCounterStats", "tacticalStats", "tacticalFamilyStats", "totalTacticalSamples", "totalDecisionSamples", "candidateGeneration",
     "championGeneration", "policy", "championPolicy", "populationPolicies",
@@ -240,11 +240,6 @@ function validateModel(model, expectedSchemaVersion, expectedFamily, label = "mo
         assertInteger(model[key], `${label}.${key}`)
     }
     if(model.totalPolicySamples != model.totalGames + model.totalSyntheticEpisodes) fail(`${label}.totalPolicySamples is inconsistent`)
-
-    assertExactKeys(model.playerProfile, ["games", "features"], `${label}.playerProfile`)
-    assertInteger(model.playerProfile.games, `${label}.playerProfile.games`)
-    if(!Array.isArray(model.playerProfile.features) || model.playerProfile.features.length != FEATURE_COUNT) fail(`${label}.playerProfile.features must contain ${FEATURE_COUNT} values`)
-    model.playerProfile.features.forEach((value, index) => assertNumber(value, `${label}.playerProfile.features[${index}]`, 0, 1))
 
     if(!Array.isArray(model.strategyStats) || model.strategyStats.length != STRATEGY_COUNT) fail(`${label}.strategyStats must contain ${STRATEGY_COUNT} records`)
     model.strategyStats.forEach((record, index) => {
@@ -284,6 +279,8 @@ function validateModel(model, expectedSchemaVersion, expectedFamily, label = "mo
     const strategyCount = model.strategyStats.length
     validatePolicy(model.policy, `${label}.policy`, strategyCount)
     validatePolicy(model.championPolicy, `${label}.championPolicy`, strategyCount)
+    const decisionSampleTotal = model.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
+    if(model.totalDecisionSamples != decisionSampleTotal) fail(`${label}.totalDecisionSamples is inconsistent with policy decision training samples`)
     if(!Array.isArray(model.populationPolicies) || model.populationPolicies.length > 2) fail(`${label}.populationPolicies must contain at most two policy bundles`)
     model.populationPolicies.forEach((policy, index) => validatePolicy(policy, `${label}.populationPolicies[${index}]`, strategyCount))
     assertFiniteTree(model, label)
@@ -633,6 +630,7 @@ function materializePolicyOnlyCandidate(result, baseline) {
     const model = clone(baseline.model)
     const selectedPolicy = clone(result.candidate.model.policy)
     model.policy = selectedPolicy
+    model.totalDecisionSamples = selectedPolicy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     model.championPolicy = clone(selectedPolicy)
     model.populationPolicies = retainedPopulationPolicies(baseline.model)
     model.championGeneration = baseline.model.championGeneration + 1
@@ -675,8 +673,7 @@ function aggregateTrainResultPolicies(results, baseline) {
     policy.decision.trainingSamples = policy.decision.trainingSamples.map((baselineCount, familyIndex) => {
         const learnedSamples = validated.reduce((sum, result) => {
             const candidateCount = result.candidate.model.policy.decision.trainingSamples[familyIndex]
-            if(candidateCount < baselineCount) fail(`train result ${result.resultId} reduced decision trainingSamples[${familyIndex}]`)
-            return sum + candidateCount - baselineCount
+            return sum + Math.max(0, candidateCount - baselineCount)
         }, 0)
         if(baselineCount + learnedSamples > Number.MAX_SAFE_INTEGER) fail(`aggregated decision trainingSamples[${familyIndex}] exceeds the safe integer range`)
         return baselineCount + learnedSamples
@@ -690,6 +687,7 @@ function materializeAggregatedPolicyCandidate(results, baseline) {
     const model = clone(baseline.model)
     const policy = aggregateTrainResultPolicies(results, baseline)
     model.policy = policy
+    model.totalDecisionSamples = policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     model.championPolicy = clone(policy)
     model.populationPolicies = retainedPopulationPolicies(baseline.model)
     model.championGeneration = baseline.model.championGeneration + 1
@@ -715,6 +713,7 @@ function validatePolicyOnlyCandidate(candidate, baseline, label = "candidate") {
     const expected = clone(baseline.model)
     expected.policy = clone(candidate.model.policy)
     expected.championPolicy = clone(candidate.model.policy)
+    expected.totalDecisionSamples = candidate.model.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     expected.populationPolicies = retainedPopulationPolicies(baseline.model)
     expected.championGeneration = baseline.model.championGeneration + 1
     expected.candidateGeneration = expected.championGeneration

@@ -106,6 +106,7 @@ var AI_DECISION_FAMILY = {
     rush: 6,
     boost: 7,
 }
+var AI_DECISION_FAMILY_LABELS = ["Loadout", "Strategy", "Placement", "Upgrade", "Sale", "Eco", "Rush", "Boost"]
 var AI_POLICY_PARAMETER_LIMIT = 4
 var AI_LEARNING_SCHEMA_VERSION = 13
 var AI_MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v5"
@@ -1060,6 +1061,15 @@ function isValidAIPolicy(policy) {
     return isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, AI_DECISION_CANDIDATE_INPUT_SIZE) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WStateToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WMemoryToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.bMemory, AI_DECISION_MEMORY_SIZE) && isValidAIMatrix(decision.WMemoryToState, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.WValue, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bValue) && Math.abs(decision.bValue) <= AI_POLICY_PARAMETER_LIMIT && isValidAIMatrix(decision.WSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.bSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
 }
 
+function getAIDecisionTrainingSampleTotal(policy) {
+    var trainingSamples = policy && policy.decision && Array.isArray(policy.decision.trainingSamples) ? policy.decision.trainingSamples : []
+    var total = 0
+    for(var i = 0; i < trainingSamples.length; i++) {
+        total += Math.max(0, Math.floor(Number(trainingSamples[i]) || 0))
+    }
+    return total
+}
+
 function getAIPolicyParameterCount(policy) {
     if(isValidAIPolicy(policy) == false) {
         return 0
@@ -1353,10 +1363,6 @@ function createDefaultAILearning() {
         totalPolicySamples: 0,
         totalLoadoutSamples: 0,
         totalHumanDemonstrations: 0,
-        playerProfile: {
-            games: 0,
-            features: aiCreateVector(AI_FEATURE_KEYS.length, 0),
-        },
         strategyStats: strategyStats,
         loadoutStats: {},
         placementStats: {},
@@ -1378,7 +1384,7 @@ function createDefaultAILearning() {
 }
 
 function isValidAILearningData(candidate) {
-    return candidate && candidate.policy && candidate.playerProfile && Array.isArray(candidate.strategyStats)
+    return candidate && candidate.policy && Array.isArray(candidate.strategyStats)
 }
 
 function normalizeAILearningData(candidate) {
@@ -1392,28 +1398,8 @@ function normalizeAILearningData(candidate) {
         return createDefaultAILearning()
     }
     var sourceVersion = Number(candidate.version) || 0
-    var losslessDecisionMigration = sourceVersion == 11 && candidate.modelFamily == "semantic-recurrent-actor-critic-v3"
-    var resetDecisionTraining = (candidate.version != AI_LEARNING_SCHEMA_VERSION || candidate.modelFamily != AI_MODEL_FAMILY) && !losslessDecisionMigration
 
-    if(!candidate.playerProfile || typeof candidate.playerProfile != "object") {
-        candidate.playerProfile = {
-            games: 0,
-            features: aiCreateVector(AI_FEATURE_KEYS.length, 0),
-        }
-    }
-    candidate.playerProfile.games = Math.max(0, Math.floor(Number(candidate.playerProfile.games) || 0))
-    if(!candidate.playerProfile.features || Array.isArray(candidate.playerProfile.features) == false) {
-        candidate.playerProfile.features = aiCreateVector(AI_FEATURE_KEYS.length, 0)
-    }
-    while(candidate.playerProfile.features.length < AI_FEATURE_KEYS.length) {
-        candidate.playerProfile.features.push(0)
-    }
-    if(candidate.playerProfile.features.length > AI_FEATURE_KEYS.length) {
-        candidate.playerProfile.features = candidate.playerProfile.features.slice(0, AI_FEATURE_KEYS.length)
-    }
-    for(var featureIndex = 0; featureIndex < candidate.playerProfile.features.length; featureIndex++) {
-        candidate.playerProfile.features[featureIndex] = clamp(Number(candidate.playerProfile.features[featureIndex]) || 0, 0, 1)
-    }
+    delete candidate.playerProfile
     if(!candidate.placementStats || typeof candidate.placementStats != "object") {
         candidate.placementStats = {}
     }
@@ -1513,7 +1499,7 @@ function normalizeAILearningData(candidate) {
     candidate.totalLoadoutSamples = Math.max(preservedTotalLoadoutSamples, totalLoadoutSamples)
     candidate.totalHumanDemonstrations = Math.max(0, Math.floor(Number(candidate.totalHumanDemonstrations) || 0))
     candidate.totalTacticalSamples = Math.max(0, Math.floor(Number(candidate.totalTacticalSamples) || 0))
-    candidate.totalDecisionSamples = resetDecisionTraining ? 0 : Math.max(0, Math.floor(Number(candidate.totalDecisionSamples) || 0))
+    candidate.totalDecisionSamples = getAIDecisionTrainingSampleTotal(candidate.policy)
     candidate.candidateGeneration = Math.max(0, Math.floor(Number(candidate.candidateGeneration) || 0))
     candidate.championGeneration = Math.max(0, Math.floor(Number(candidate.championGeneration) || 0))
     candidate.modelFamily = AI_MODEL_FAMILY
@@ -2010,13 +1996,12 @@ function saveAILearning() {
     return saveAILearningSnapshot()
 }
 
-function getHistoricalPlayerFeatureVector() {
-    ensureAILearningLoaded()
-    return aiLearning.playerProfile.features.slice(0, AI_FEATURE_KEYS.length)
+function getNeutralStrategySelectionFeatures() {
+    return aiCreateVector(AI_FEATURE_KEYS.length, 0)
 }
 
 function buildAIStrategySelectionFeatures(observedLoadoutSummary) {
-    var features = getHistoricalPlayerFeatureVector()
+    var features = getNeutralStrategySelectionFeatures()
     if(!observedLoadoutSummary || observedLoadoutSummary.hasAnySelection == false) {
         return features
     }
@@ -3028,11 +3013,6 @@ function trainAIPolicy(features, chosenIndex, reward, policyOverride) {
     return true
 }
 
-function blendFeatureAverage(previousValue, nextValue, sampleCount) {
-    var alpha = 1 / Math.max(1, sampleCount)
-    return previousValue + (nextValue - previousValue) * alpha
-}
-
 function getAILearningRecord(store, key) {
     return store[key] || null
 }
@@ -3554,37 +3534,6 @@ function getFeatureIndex(featureName) {
     return -1
 }
 
-function updatePlayerProfileFeatures(featureVector) {
-    ensureAILearningLoaded()
-    aiLearning.playerProfile.games++
-    for(var i = 0; i < AI_FEATURE_KEYS.length; i++) {
-        aiLearning.playerProfile.features[i] = blendFeatureAverage(aiLearning.playerProfile.features[i], featureVector[i], aiLearning.playerProfile.games)
-    }
-}
-
-function computeMatchFeatureVector() {
-    var vector = aiCreateVector(AI_FEATURE_KEYS.length, 0)
-    if(!aiMatchTelemetry) {
-        return vector
-    }
-
-    vector[getFeatureIndex("farm")] = clamp(aiMatchTelemetry.playerFarmPeak / 3, 0, 1)
-    vector[getFeatureIndex("eco")] = clamp((aiMatchTelemetry.playerEcoPeak - 250) / 1800, 0, 1)
-    vector[getFeatureIndex("rush")] = clamp(aiMatchTelemetry.playerPressurePeak / 34, 0, 1)
-    vector[getFeatureIndex("heavy")] = clamp(aiMatchTelemetry.playerHeavyPressurePeak / 4, 0, 1)
-    vector[getFeatureIndex("late")] = clamp(aiMatchTelemetry.roundPeak / 40, 0, 1)
-    vector[getFeatureIndex("support")] = clamp(aiMatchTelemetry.playerSupportPeak / 4, 0, 1)
-    vector[getFeatureIndex("camo")] = clamp(aiMatchTelemetry.playerCamoPeak / 4, 0, 1)
-    vector[getFeatureIndex("greed")] = clamp(aiMatchTelemetry.playerGreedMoments / 6, 0, 1)
-    var observedLoadoutFeatures = getObservedLoadoutFeatureVector(aiMatchTelemetry.observedLoadoutSummary)
-    for(var i = 0; i < AI_FEATURE_KEYS.length; i++) {
-        if(AI_FEATURE_KEYS[i].indexOf("pre") == 0) {
-            vector[i] = observedLoadoutFeatures[i]
-        }
-    }
-    return vector
-}
-
 function updateLocalMatchCollectionTelemetry() {
     if(selectedMenuMode != "local" || aiEnabled || practiceMode || bossMode || gameStarted == false || gameOver) {
         return
@@ -3890,7 +3839,7 @@ function getAIMatchReward(aiLives, enemyLives) {
     return clamp(result * 0.9 + lifeMargin * 0.1, -1, 1)
 }
 
-function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatures, selfPlayActive) {
+function createAIPublicMatchContribution(aiLives, enemyLives, reward, selfPlayActive) {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.contributionEnabled == false || !aiMatchTelemetry) {
         return null
     }
@@ -3959,7 +3908,6 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatu
         contributionEpoch: Math.max(1, Math.floor(aiMatchTelemetry.contributionEpoch)),
         strategyIndex: aiMatchTelemetry.strategyIndex,
         selectionFeatures: aiMatchTelemetry.selectionFeatures.slice(0, AI_FEATURE_KEYS.length).map(function(value) { return clamp(Number(value) || 0, 0, 1) }),
-        matchFeatures: selfPlayActive ? null : matchFeatures.slice(0, AI_FEATURE_KEYS.length).map(function(value) { return clamp(Number(value) || 0, 0, 1) }),
         aiLives: aiLives,
         enemyLives: enemyLives,
         loadoutKey: aiMatchTelemetry.aiLoadoutKey || "",
@@ -3999,12 +3947,8 @@ function finalizeAIMatchLearning() {
         return
     }
     finalizeAIPlacementOutcomesForSide(aiSide)
-    var matchFeatures = computeMatchFeatureVector()
-    var publicContribution = createAIPublicMatchContribution(aiLives, enemyLives, reward, matchFeatures, selfPlayActive)
+    var publicContribution = createAIPublicMatchContribution(aiLives, enemyLives, reward, selfPlayActive)
     trainAIPolicy(aiMatchTelemetry.selectionFeatures, aiMatchTelemetry.strategyIndex, reward, aiLearning.policy)
-    if(selfPlayActive == false) {
-        updatePlayerProfileFeatures(matchFeatures)
-    }
     trainAIDecisionsFromMatch(aiSide, reward)
     finalizeAITacticalLearning(aiSide, reward)
     updateAITowerLearningFromMatch(reward)
@@ -4606,7 +4550,7 @@ function getAITrainerStatusMetrics() {
 
 function getAIStatsSourceDescription() {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false) {
-        return "Session 26,440-parameter semantic-intent-spatial actor-critic: local learning is discarded when this browser session closes."
+        return "Session 31,048-parameter semantic-intent-spatial actor-critic: local learning is discarded when this browser session closes."
     }
     if(aiPersistenceState.loadInFlight) {
         return "Hosted Model: refreshing authoritative statistics from the backend."
@@ -4615,7 +4559,7 @@ function getAIStatsSourceDescription() {
         return "Hosted Model unavailable: showing the latest valid model loaded in this tab."
     }
     if(aiPersistenceState.contributionEnabled) {
-        return "Hosted 26,440-parameter semantic-intent-spatial actor-critic: bounded contributions, human tactical priors, and verified self-play."
+        return "Hosted 31,048-parameter semantic-intent-spatial actor-critic: bounded contributions, human tactical priors, and verified self-play."
     }
     return "Hosted Model: read-only statistics from the authoritative backend."
 }
@@ -4644,7 +4588,7 @@ function getAIStatsOverviewMetrics() {
         { label: "Hosted Champion", value: "v" + aiLearning.championGeneration },
         { label: "Match Perspectives", value: aiLearning.totalGames.toLocaleString() },
         { label: "Human Demos", value: aiLearning.totalHumanDemonstrations.toLocaleString() },
-        { label: "Decision Samples", value: aiLearning.totalDecisionSamples.toLocaleString() },
+        { label: "Decision Updates", value: getAIDecisionTrainingSampleTotal(aiLearning.policy).toLocaleString() },
         { label: "Loadout Samples", value: aiLearning.totalLoadoutSamples.toLocaleString() },
         { label: "Counter Records", value: Object.keys(aiLearning.loadoutCounterStats).length.toLocaleString() },
     ]
@@ -4784,8 +4728,8 @@ function drawAIStatsScreen() {
     var rightY = contentTop
 
     drawAIStatsCard(leftX, overviewY, leftWidth, topSectionHeight, "Overview", "rgba(94, 197, 255, 0.92)")
-    drawAIStatsCard(leftX, featureY, panelWidth - innerPadding * 2, featureHeight, AI_CROSS_MATCH_LEARNING_ENABLED ? "Hosted Player Profile" : "Session Player Profile", "rgba(110, 220, 168, 0.92)")
-    drawAIStatsCard(rightX, rightY, rightWidth, topSectionHeight, "Top Archetype Records", "rgba(255, 189, 92, 0.92)")
+    drawAIStatsCard(leftX, featureY, panelWidth - innerPadding * 2, featureHeight, "Decision Training", "rgba(110, 220, 168, 0.92)")
+    drawAIStatsCard(rightX, rightY, rightWidth, topSectionHeight, "Hosted Outcome Records", "rgba(255, 189, 92, 0.92)")
 
     var infoX = leftX + leftWidth * 0.05
     var infoY = overviewY + 54
@@ -4826,27 +4770,37 @@ function drawAIStatsScreen() {
     var featureColumnGap = featureCardWidth * 0.02
     var featureColumnWidth = (featureInnerWidth - featureColumnGap * (featureColumns - 1)) / featureColumns
     var featureBaseX = leftX + featureCardWidth * 0.04
-    var featureBaseY = featureY + 44
-    var featureRows = Math.ceil(AI_FEATURE_KEYS.length / featureColumns)
+    var featureBaseY = featureY + 58
+    var featureRows = Math.ceil(AI_DECISION_FAMILY_LABELS.length / featureColumns)
     var featureRowHeight = clamp((featureHeight - 58) / Math.max(1, featureRows), 18, 24)
-    for(var featureIndex = 0; featureIndex < AI_FEATURE_KEYS.length; featureIndex++) {
+    ctx.textAlign = "left"
+    ctx.font = "11px Arial"
+    ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
+    ctx.fillText("Bars show policy decision updates by family; this is the live hosted model.", featureBaseX, featureY + 43, featureInnerWidth)
+    var decisionSampleTotal = getAIDecisionTrainingSampleTotal(aiLearning.policy)
+    for(var featureIndex = 0; featureIndex < AI_DECISION_FAMILY_LABELS.length; featureIndex++) {
         var featureColumn = Math.floor(featureIndex / featureRows)
         var featureRow = featureIndex % featureRows
-        var featureKey = AI_FEATURE_KEYS[featureIndex]
-        drawAIStatsFeatureBar(featureBaseX + featureColumn * (featureColumnWidth + featureColumnGap), featureBaseY + featureRow * featureRowHeight, featureColumnWidth, AI_FEATURE_LABELS[featureKey], aiLearning.playerProfile.features[featureIndex], featurePalette[featureIndex % featurePalette.length])
+        var familySamples = aiLearning.policy.decision.trainingSamples[featureIndex] || 0
+        var familyLabel = AI_DECISION_FAMILY_LABELS[featureIndex] + " (" + familySamples.toLocaleString() + ")"
+        drawAIStatsFeatureBar(featureBaseX + featureColumn * (featureColumnWidth + featureColumnGap), featureBaseY + featureRow * featureRowHeight, featureColumnWidth, familyLabel, decisionSampleTotal > 0 ? familySamples / decisionSampleTotal : 0, featurePalette[featureIndex % featurePalette.length])
     }
 
     var strategyListX = rightX + rightWidth * 0.04
-    var strategyListY = rightY + 50
+    var strategyListY = rightY + 58
     var strategyListWidth = rightWidth * 0.92
     var strategyRowSpacing = 40
-    var topStrategyLimit = clamp(Math.floor((topSectionHeight - 56) / strategyRowSpacing), 4, 6)
+    var topStrategyLimit = clamp(Math.floor((topSectionHeight - 64) / strategyRowSpacing), 4, 6)
     var topStrategyIndices = getTopStrategyIndicesForStats(topStrategyLimit)
+    ctx.textAlign = "left"
+    ctx.font = "10px Arial"
+    ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
+    ctx.fillText("Hosted/public outcomes; distributed worker training is shown at left.", strategyListX, rightY + 45, strategyListWidth)
     if(topStrategyIndices.length == 0) {
         ctx.textAlign = "center"
         ctx.font = "14px Arial"
         ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
-        ctx.fillText("No community match perspectives recorded yet.", rightX + rightWidth / 2, strategyListY + 30, rightWidth * 0.82)
+        ctx.fillText("No hosted outcome records recorded yet.", rightX + rightWidth / 2, strategyListY + 30, rightWidth * 0.82)
     }
     for(var strategyRow = 0; strategyRow < topStrategyIndices.length; strategyRow++) {
         var strategyIndex = topStrategyIndices[strategyRow]
@@ -7792,5 +7746,8 @@ document.addEventListener("visibilitychange", updateAIPregameObservePauseState)
 addEventListener("blur", updateAIPregameObservePauseState)
 addEventListener("focus", handleAIWindowFocus)
 nativeSetInterval(function() {
-    if(document.hidden == false && frontMenuState == "stats") refreshAITrainerStatus(false)
+    if(document.hidden == false && frontMenuState == "stats") {
+        refreshAILearningFromBackend(false)
+        refreshAITrainerStatus(false)
+    }
 }, AI_TRAINING_STATUS_REFRESH_INTERVAL)

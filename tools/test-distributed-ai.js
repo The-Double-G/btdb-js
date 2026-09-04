@@ -53,6 +53,7 @@ const {
     assertMigrationRetention,
     migrateSchema11Model,
     migrateSchema12Model,
+    migrateSchema13Model,
     validateMigrationSource,
 } = require("./distributed-ai/run-worker")
 const {
@@ -167,7 +168,6 @@ function model() {
         totalPolicySamples: 0,
         totalLoadoutSamples: 0,
         totalHumanDemonstrations: 0,
-        playerProfile: { games: 0, features: vector(17) },
         strategyStats: Array.from({ length: 75 }, () => ({ games: 0, wins: 0, losses: 0, ties: 0, syntheticEpisodes: 0, lastReward: 0 })),
         loadoutStats: {},
         placementStats: {},
@@ -369,6 +369,7 @@ async function main() {
     assert.equal(Object.values(policyParameterCounts(exactPolicy)).reduce((sum, count) => sum + count, 0), 31048)
 
     const schema11Model = model()
+    schema11Model.playerProfile = { games: 3, features: vector(17, 0.2) }
     schema11Model.version = 11
     schema11Model.modelFamily = "semantic-recurrent-actor-critic-v3"
     schema11Model.totalDecisionSamples = 37
@@ -399,16 +400,20 @@ async function main() {
     expectedMigration.placementStats = {}
     expectedMigration.loadoutPlacementStats = {}
     expectedMigration.tacticalFamilyStats = {}
+    delete expectedMigration.playerProfile
+    expectedMigration.totalDecisionSamples = expectedMigration.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     expectedMigration.policy = expectedSchema12Policy(schema11Model.policy)
     expectedMigration.championPolicy = expectedSchema12Policy(schema11Model.championPolicy)
     expectedMigration.populationPolicies = schema11Model.populationPolicies.map(expectedSchema12Policy)
     assert.deepEqual(safeMigration, expectedMigration)
-    assert.deepEqual(Object.keys(safeMigration).sort(), Object.keys(schema11Model).sort())
+    assert.deepEqual(Object.keys(safeMigration).sort(), Object.keys(schema11Model).filter(key => key != "playerProfile").sort())
+    assert.equal(Object.prototype.hasOwnProperty.call(safeMigration, "playerProfile"), false)
     assert.deepEqual(safeMigration.tacticalFamilyStats, {})
     assert.equal(Object.prototype.hasOwnProperty.call(safeMigration, "humanTacticalStats"), false)
     validateModel(safeMigration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
 
     const schema12Model = model()
+    schema12Model.playerProfile = { games: 4, features: vector(17, 0.3) }
     schema12Model.version = 12
     schema12Model.modelFamily = "semantic-intent-spatial-recurrent-actor-critic-v4"
     schema12Model.totalDecisionSamples = 37
@@ -419,6 +424,12 @@ async function main() {
     assert.equal(schema12Migration.totalDecisionSamples, 0)
     assertMigrationRetention(schema12Model, schema12Migration)
     validateModel(schema12Migration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
+    const schema13ProfileModel = model()
+    schema13ProfileModel.playerProfile = { games: 4, features: vector(17, 0.3) }
+    const schema13Migration = migrateSchema13Model(schema13ProfileModel)
+    assert.equal(Object.prototype.hasOwnProperty.call(schema13Migration, "playerProfile"), false)
+    assertMigrationRetention(schema13ProfileModel, schema13Migration)
+    validateModel(schema13Migration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
 
     const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
     validateCheckpoint(base)
@@ -495,11 +506,20 @@ async function main() {
     assert.deepEqual(materialized.model.policy.strategy, trainC.candidate.model.policy.strategy)
     assert.deepEqual(materialized.model.policy.decision, trainC.candidate.model.policy.decision)
     assert.equal(materialized.model.policy.decision.trainingSamples[0], trainC.seed)
-    assert.equal(materialized.model.totalDecisionSamples, base.model.totalDecisionSamples)
+    assert.equal(materialized.model.totalDecisionSamples, trainC.seed)
     assert.deepEqual(materialized.model.placementStats, base.model.placementStats)
     assert.equal(materialized.model.championGeneration, base.model.championGeneration + 1)
     assert.equal(materialized.model.candidateGeneration, materialized.model.championGeneration)
     assert.deepEqual(materialized.model.populationPolicies, [base.model.championPolicy])
+    const resetBaseModel = model()
+    resetBaseModel.policy.decision.trainingSamples[2] = 20
+    resetBaseModel.totalDecisionSamples = 20
+    const resetBase = createCheckpoint({ gameVersion: "v-test", model: resetBaseModel, mode: "initialize", seed: 2, shard: "reset-base", matches: 0 })
+    const resetResult = trainResult("reset", 0, low, resetBase)
+    const resetAggregate = aggregateTrainResultPolicies([resetResult], resetBase)
+    assert.equal(resetAggregate.decision.trainingSamples[2], 20)
+    const resetCandidate = materializeAggregatedPolicyCandidate([resetResult], resetBase)
+    assert.equal(resetCandidate.model.totalDecisionSamples, 20)
     const aggregatedPolicy = aggregateTrainResultPolicies([trainA, trainB, trainC], base)
     const aggregationRawWeights = [trainA, trainB, trainC].map(result => Math.exp((result.metrics.builtInEvaluationScore - trainC.metrics.builtInEvaluationScore) * 8))
     const aggregationWeightTotal = aggregationRawWeights.reduce((sum, weight) => sum + weight, 0)
@@ -511,9 +531,10 @@ async function main() {
     assert.deepEqual(aggregatedCandidate.model.policy, aggregatedPolicy)
     assert.equal(aggregatedCandidate.provenance.shard, "aggregate-3")
     assert.equal(aggregatedCandidate.provenance.matches, TRAINING_MATCHES * 3)
+    assert.equal(aggregatedCandidate.model.totalDecisionSamples, trainA.seed + trainB.seed + trainC.seed)
 
     const contaminatedModel = structuredClone(materialized.model)
-    contaminatedModel.totalDecisionSamples++
+    contaminatedModel.placementStats.contaminated = { samples: 1, score: 0, mean: 0, m2: 0 }
     const contaminated = createCheckpoint({
         gameVersion: materialized.gameVersion,
         model: contaminatedModel,
@@ -650,7 +671,6 @@ async function main() {
 
     const hostedModel = model()
     hostedModel.totalHumanDemonstrations = 2
-    hostedModel.playerProfile.games = 2
     const hostedEnvelope = {
         ok: true,
         protocolVersion: 1,

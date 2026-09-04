@@ -4,13 +4,13 @@
   "gameVersion": "v2.6.0",
   "modelSchemaVersion": 13,
   "modelFamily": "semantic-intent-spatial-recurrent-actor-critic-v5",
-  "modelDigest": "sha256:74258c7e2d6eec21900651f73d9b2b8d877d09965201888a9af1334021091a17",
-  "checkpointId": "sha256:1b8c9eb6f2239e900a416092793c6b02e290e57298600846a6c0d0ae4e06dc1c",
-  "parentCheckpointId": "sha256:6c4723cc9affce1d1b7795ca074b4fed15dd33f6dd51a82a8888d5012b3b1fc4",
+  "modelDigest": "sha256:ac6ddc76b3466cd65d32baf3a14c83a99c3860c6fca1289fc4ad55f4a8b8d9a9",
+  "checkpointId": "sha256:b2383c828e63ece3fcabb3e5277c69cf15436835c0e7fce77f300183c2a45aa6",
+  "parentCheckpointId": "sha256:1b8c9eb6f2239e900a416092793c6b02e290e57298600846a6c0d0ae4e06dc1c",
   "provenance": {
     "mode": "migrate",
-    "seed": 2600832,
-    "shard": "migrate-schema12",
+    "seed": 0,
+    "shard": "schema13-profile",
     "matches": 0
   },
   "model": {
@@ -21,28 +21,6 @@
     "totalPolicySamples": 46,
     "totalLoadoutSamples": 48,
     "totalHumanDemonstrations": 2,
-    "playerProfile": {
-      "games": 9,
-      "features": [
-        0.2962962962962963,
-        0.3598950617283964,
-        1,
-        0.16666666666666666,
-        0.4,
-        0,
-        0.08333333333333333,
-        0,
-        0.3380614657210403,
-        0.657210401891253,
-        0.291358024691358,
-        0.39766081871345027,
-        0.3400516795865633,
-        0.216548463356974,
-        0.5555555555555557,
-        1,
-        0.4444444444444444
-      ]
-    },
     "strategyStats": [
       {
         "games": 2,
@@ -134923,6 +134901,6 @@
         }
       }
     ],
-    "totalDecisionSamples": 0
+    "totalDecisionSamples": 166176
   }
 }

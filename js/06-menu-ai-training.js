@@ -86,6 +86,10 @@ function createAITrainingState() {
         evaluationWins: 0,
         evaluationLosses: 0,
         evaluationTies: 0,
+        lastEvaluationGames: 0,
+        lastEvaluationWins: 0,
+        lastEvaluationLosses: 0,
+        lastEvaluationTies: 0,
         lastEvaluationScore: 0,
         promotions: 0,
         rejectedCandidates: 0,
@@ -94,7 +98,7 @@ function createAITrainingState() {
         trueSelfPlayProgressKey: "",
         trueSelfPlayProgressAt: 0,
         trueSelfPlayRecentRounds: [],
-        trueSelfPlayRecentLeftWinRates: [],
+        trueSelfPlayRecentCandidateWinRates: [],
         lastChosenStrategyIndex: 0,
         lastBestStrategyIndex: 0,
         pendingSaveEpisodes: 0,
@@ -895,10 +899,6 @@ function syncAITrainingTrueSelfPlayProgressWatchdog() {
     setAITrainingNotice("Recovered a stalled self-play match.", 1800)
 }
 
-function getAITrainingAverageFeatureValue(featureIndex) {
-    return aiLearning.playerProfile.features[featureIndex]
-}
-
 function getAITrainingEvaluationDisplay() {
     if(aiTrainingState.evaluationGames > 0) {
         return {
@@ -923,7 +923,7 @@ function getAITrainingTopStrategyIndices(limit, counts) {
         if(counts[b] != counts[a]) {
             return counts[b] - counts[a]
         }
-        return aiLearning.strategyStats[b].lastReward - aiLearning.strategyStats[a].lastReward
+        return aiTrainingState.sessionBestStrategyCounts[b] - aiTrainingState.sessionBestStrategyCounts[a]
     })
     return indices.slice(0, limit)
 }
@@ -957,13 +957,13 @@ function drawAITrainingTrendChart(x, y, width, height) {
     if(height <= 18) {
         return
     }
-    var rewardSeries = aiTrainingState.trueSelfPlayRecentRounds
-    var supportSeries = aiTrainingState.trueSelfPlayRecentLeftWinRates
+    var roundSeries = aiTrainingState.trueSelfPlayRecentRounds
+    var winRateSeries = aiTrainingState.trueSelfPlayRecentCandidateWinRates
     ctx.fillStyle = "rgba(255, 255, 255, 0.04)"
     ctx.fillRect(x, y, width, height)
     ctx.strokeStyle = "rgba(255, 255, 255, 0.08)"
     ctx.strokeRect(x, y, width, height)
-    if(rewardSeries.length <= 0) {
+    if(roundSeries.length <= 0) {
         ctx.fillStyle = "rgba(198, 210, 233, 0.82)"
         ctx.font = "13px Arial"
         ctx.textAlign = "center"
@@ -976,22 +976,18 @@ function drawAITrainingTrendChart(x, y, width, height) {
     var rewardMaxHeight = Math.max(8, rewardZeroY - rewardTop - 4)
     var supportAreaY = y + height * 0.76
     var supportAreaHeight = Math.max(5, height * 0.12)
-    var barWidth = width / Math.max(1, rewardSeries.length)
-    for(var i = 0; i < rewardSeries.length; i++) {
-        var rewardValue = rewardSeries[i] / 40
-        var supportRate = supportSeries[i] || 0
-        var normalizedHeight = clamp(Math.abs(rewardValue) / 1.2, 0.06, 1)
+    var barWidth = width / Math.max(1, roundSeries.length)
+    for(var i = 0; i < roundSeries.length; i++) {
+        var roundValue = roundSeries[i]
+        var winRate = winRateSeries[i] || 0
+        var normalizedHeight = clamp(roundValue / 40, 0.06, 1)
         var columnHeight = normalizedHeight * rewardMaxHeight
         var columnX = x + i * barWidth + Math.max(1, barWidth * 0.14)
         var columnWidth = Math.max(3, barWidth * 0.68)
         ctx.fillStyle = "rgba(118, 225, 167, 0.92)"
-        if(rewardValue >= 0) {
-            ctx.fillRect(columnX, rewardZeroY - columnHeight, columnWidth, columnHeight)
-        } else {
-            ctx.fillRect(columnX, rewardZeroY, columnWidth, columnHeight)
-        }
+        ctx.fillRect(columnX, rewardZeroY - columnHeight, columnWidth, columnHeight)
         ctx.fillStyle = "rgba(98, 197, 255, 0.9)"
-        ctx.fillRect(columnX, supportAreaY, columnWidth, clamp(supportRate, 0, 1) * supportAreaHeight)
+        ctx.fillRect(columnX, supportAreaY, columnWidth, clamp(winRate, 0, 1) * supportAreaHeight)
     }
     ctx.strokeStyle = "rgba(255, 255, 255, 0.14)"
     ctx.beginPath()
@@ -1098,30 +1094,22 @@ function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, exclud
 }
 
 function registerAITrainingTrueSelfPlaySelections() {
-    var leftContext = aiContextsBySide[PLAYER_SIDE.left]
-    var rightContext = aiContextsBySide[PLAYER_SIDE.right]
-    if(leftContext && leftContext.aiStrategySelection) {
-        aiTrainingState.sessionStrategyPickCounts[leftContext.aiStrategySelection.index]++
-    }
-    if(rightContext && rightContext.aiStrategySelection) {
-        aiTrainingState.sessionStrategyPickCounts[rightContext.aiStrategySelection.index]++
+    var candidateContext = aiContextsBySide[aiTrainingState.candidateSide]
+    if(candidateContext && candidateContext.aiProfile && candidateContext.aiProfile.learningEnabled && candidateContext.aiStrategySelection) {
+        aiTrainingState.sessionStrategyPickCounts[candidateContext.aiStrategySelection.index]++
     }
 }
 
 function rollbackAITrainingTrueSelfPlaySelections() {
-    var leftContext = aiContextsBySide[PLAYER_SIDE.left]
-    var rightContext = aiContextsBySide[PLAYER_SIDE.right]
-    if(leftContext && leftContext.aiStrategySelection) {
-        aiTrainingState.sessionStrategyPickCounts[leftContext.aiStrategySelection.index] = Math.max(0, aiTrainingState.sessionStrategyPickCounts[leftContext.aiStrategySelection.index] - 1)
-    }
-    if(rightContext && rightContext.aiStrategySelection) {
-        aiTrainingState.sessionStrategyPickCounts[rightContext.aiStrategySelection.index] = Math.max(0, aiTrainingState.sessionStrategyPickCounts[rightContext.aiStrategySelection.index] - 1)
+    var candidateContext = aiContextsBySide[aiTrainingState.candidateSide]
+    if(candidateContext && candidateContext.aiProfile && candidateContext.aiProfile.learningEnabled && candidateContext.aiStrategySelection) {
+        aiTrainingState.sessionStrategyPickCounts[candidateContext.aiStrategySelection.index] = Math.max(0, aiTrainingState.sessionStrategyPickCounts[candidateContext.aiStrategySelection.index] - 1)
     }
 }
 
 function recordAITrainingTrueSelfPlayWinningStrategy(side) {
     var context = aiContextsBySide[side]
-    if(!context || !context.aiStrategySelection) {
+    if(side != aiTrainingState.candidateSide || !context || !context.aiProfile || !context.aiProfile.learningEnabled || !context.aiStrategySelection) {
         return
     }
     aiTrainingState.sessionBestStrategyCounts[context.aiStrategySelection.index]++
@@ -1132,6 +1120,10 @@ function finishAITrainingEvaluation() {
     var games = Math.max(1, aiTrainingState.evaluationGames)
     var score = (aiTrainingState.evaluationWins + aiTrainingState.evaluationTies * 0.5) / games
     aiTrainingState.lastEvaluationScore = score
+    aiTrainingState.lastEvaluationGames = aiTrainingState.evaluationGames
+    aiTrainingState.lastEvaluationWins = aiTrainingState.evaluationWins
+    aiTrainingState.lastEvaluationLosses = aiTrainingState.evaluationLosses
+    aiTrainingState.lastEvaluationTies = aiTrainingState.evaluationTies
     if(score >= 0.58) {
         if(isValidAIPolicy(aiLearning.championPolicy)) {
             aiLearning.populationPolicies.push(cloneAIPolicy(aiLearning.championPolicy))
@@ -1153,6 +1145,7 @@ function finishAITrainingEvaluation() {
     } else {
         setAITrainingNotice("Evaluation inconclusive at " + Math.round(score * 100) + "% training continues.", 2600)
     }
+    aiLearning.totalDecisionSamples = getAIDecisionTrainingSampleTotal(aiLearning.policy)
     aiTrainingState.candidateTrainingMatches = 0
     aiTrainingState.evaluationActive = false
     aiTrainingState.evaluationGames = 0
@@ -1227,20 +1220,20 @@ function recordAITrainingTrueSelfPlayMatchResult() {
     aiTrainingState.trueSelfPlayMatches++
     aiTrainingState.trueSelfPlayLastRound = Math.max(1, Math.floor(round / 2))
     aiTrainingState.trueSelfPlayRoundTotal += aiTrainingState.trueSelfPlayLastRound
+    var candidateLives = aiTrainingState.candidateSide == PLAYER_SIDE.left ? leftLives : rightLives
+    var opponentLives = aiTrainingState.candidateSide == PLAYER_SIDE.left ? rightLives : leftLives
     if(leftLives > rightLives) {
         aiTrainingState.trueSelfPlayLeftWins++
-        aiTrainingState.trueSelfPlayLastWinner = "Left AI"
+        aiTrainingState.trueSelfPlayLastWinner = candidateLives > opponentLives ? "Candidate AI" : "Opponent AI"
         recordAITrainingTrueSelfPlayWinningStrategy(PLAYER_SIDE.left)
     } else if(rightLives > leftLives) {
         aiTrainingState.trueSelfPlayRightWins++
-        aiTrainingState.trueSelfPlayLastWinner = "Right AI"
+        aiTrainingState.trueSelfPlayLastWinner = candidateLives > opponentLives ? "Candidate AI" : "Opponent AI"
         recordAITrainingTrueSelfPlayWinningStrategy(PLAYER_SIDE.right)
     } else {
         aiTrainingState.trueSelfPlayTies++
         aiTrainingState.trueSelfPlayLastWinner = "Tie"
     }
-    var candidateLives = aiTrainingState.candidateSide == PLAYER_SIDE.left ? leftLives : rightLives
-    var opponentLives = aiTrainingState.candidateSide == PLAYER_SIDE.left ? rightLives : leftLives
     if(aiTrainingState.evaluationActive) {
         aiTrainingState.evaluationGames++
         if(candidateLives > opponentLives) {
@@ -1257,7 +1250,7 @@ function recordAITrainingTrueSelfPlayMatchResult() {
         aiTrainingState.candidateTrainingMatches++
     }
     pushAITrainingHistoryValue(aiTrainingState.trueSelfPlayRecentRounds, aiTrainingState.trueSelfPlayLastRound, 22)
-    pushAITrainingHistoryValue(aiTrainingState.trueSelfPlayRecentLeftWinRates, leftLives > rightLives ? 1 : rightLives > leftLives ? 0 : 0.5, 22)
+    pushAITrainingHistoryValue(aiTrainingState.trueSelfPlayRecentCandidateWinRates, candidateLives > opponentLives ? 1 : candidateLives < opponentLives ? 0 : 0.5, 22)
 }
 
 var baseFinalizeAIMatchLearning = finalizeAIMatchLearning
@@ -1550,7 +1543,7 @@ function drawAITrainingScreen() {
     ctx.fillText("AI Training Lab", canvas.width / 2, panelY + panelHeight * 0.08, panelWidth * 0.5)
     ctx.font = "15px Arial"
     ctx.fillStyle = "rgba(214, 228, 255, 0.86)"
-    ctx.fillText("Browser-session candidates train against a frozen session champion; community sync is reported separately.", canvas.width / 2, panelY + panelHeight * 0.125, panelWidth * 0.82)
+    ctx.fillText("This session trains the candidate; frozen evaluation checks it; Hosted and GitHub status are separate.", canvas.width / 2, panelY + panelHeight * 0.125, panelWidth * 0.82)
     if(aiTrainingState.noticeUntil > realNow()) {
         ctx.font = "14px Arial"
         ctx.fillStyle = "#ffd774"
@@ -1595,16 +1588,16 @@ function drawAITrainingScreen() {
     var statusWidth = contentWidth * 0.34
     var trendWidth = contentWidth - statusWidth - sectionGap
     var trendX = contentX + statusWidth + sectionGap
-    drawAIStatsCard(contentX, middleY, statusWidth, middleHeight, "Run Status", "rgba(98, 197, 255, 0.92)")
-    drawAIStatsCard(trendX, middleY, trendWidth, middleHeight, "Self-Play Trend", "rgba(255, 189, 92, 0.92)")
+    drawAIStatsCard(contentX, middleY, statusWidth, middleHeight, "Session Run Status", "rgba(98, 197, 255, 0.92)")
+    drawAIStatsCard(trendX, middleY, trendWidth, middleHeight, "Round Length / Win Rate", "rgba(255, 189, 92, 0.92)")
 
     var bottomY = middleY + middleHeight + sectionGap
     var bottomHeight = panelY + panelHeight - bottomY - 14
     var strategyWidth = contentWidth * 0.38
     var featureWidth = contentWidth - strategyWidth - sectionGap
     var featureX = contentX + strategyWidth + sectionGap
-    drawAIStatsCard(contentX, bottomY, strategyWidth, bottomHeight, "Top Archetypes", "rgba(255, 189, 92, 0.92)")
-    drawAIStatsCard(featureX, bottomY, featureWidth, bottomHeight, "Session Player Profile", "rgba(116, 232, 170, 0.92)")
+    drawAIStatsCard(contentX, bottomY, strategyWidth, bottomHeight, "Top Training Archetypes", "rgba(255, 189, 92, 0.92)")
+    drawAIStatsCard(featureX, bottomY, featureWidth, bottomHeight, "Decision Training", "rgba(116, 232, 170, 0.92)")
 
     ctx.textAlign = "left"
     var statusTextX = contentX + statusWidth * 0.06
@@ -1624,7 +1617,7 @@ function drawAITrainingScreen() {
     ]
     statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
     statusLines.push("Lab champion generation: " + aiLearning.championGeneration.toLocaleString())
-    statusLines.push("Decision samples: " + aiLearning.totalDecisionSamples.toLocaleString())
+    statusLines.push("Decision updates: " + getAIDecisionTrainingSampleTotal(aiLearning.policy).toLocaleString())
     statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())
     var statusTextY = middleY + 40
     var statusLineHeight = 11
@@ -1645,9 +1638,12 @@ function drawAITrainingScreen() {
     var trendMetricGap = trendWidth * 0.018
     var trendMetricY = middleY + 48
     var trendMetricHeight = 32
-    drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Wins", aiTrainingState.evaluationWins.toLocaleString(), "#7fe0a2")
-    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Losses", aiTrainingState.evaluationLosses.toLocaleString(), "#ff9f8f")
-    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Ties", aiTrainingState.evaluationTies.toLocaleString(), "#62c5ff")
+    var evaluationWins = aiTrainingState.evaluationGames > 0 ? aiTrainingState.evaluationWins : aiTrainingState.lastEvaluationWins
+    var evaluationLosses = aiTrainingState.evaluationGames > 0 ? aiTrainingState.evaluationLosses : aiTrainingState.lastEvaluationLosses
+    var evaluationTies = aiTrainingState.evaluationGames > 0 ? aiTrainingState.evaluationTies : aiTrainingState.lastEvaluationTies
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Wins", evaluationWins.toLocaleString(), "#7fe0a2")
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap), trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Losses", evaluationLosses.toLocaleString(), "#ff9f8f")
+    drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 2, trendMetricY, trendMetricWidth, trendMetricHeight, "Eval Ties", evaluationTies.toLocaleString(), "#62c5ff")
     drawAIStatsMetricCell(trendX + trendWidth * 0.04 + (trendMetricWidth + trendMetricGap) * 3, trendMetricY, trendMetricWidth, trendMetricHeight, "Lab Champion", "v" + aiLearning.championGeneration, "#f7c76d")
     var trendChartY = trendMetricY + trendMetricHeight + 8
     var trendChartHeight = Math.max(0, middleY + middleHeight - 12 - trendChartY)
@@ -1660,6 +1656,9 @@ function drawAITrainingScreen() {
     var rowGap = 6
     var listX = contentX + strategyWidth * 0.05
     var listWidth = strategyWidth * 0.9
+    ctx.font = "10px Arial"
+    ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
+    ctx.fillText("Candidate learning matches only; frozen evaluation is excluded.", listX, bottomY + 43, listWidth)
     if(topStrategyIndices.length == 0) {
         ctx.textAlign = "center"
         ctx.font = "12px Arial"
@@ -1687,7 +1686,7 @@ function drawAITrainingScreen() {
         ctx.fillText(getStrategyDisplayName(AI_STRATEGY_LIBRARY[strategyIndex]), listX + 44, strategyRowY + 14, listWidth * 0.62)
         ctx.font = "10px Arial"
         ctx.fillStyle = "rgba(214, 226, 255, 0.82)"
-        ctx.fillText("Picked " + pickCount + "  Match wins " + bestCount, listX + 44, strategyRowY + 24, listWidth * 0.72)
+        ctx.fillText("Selected " + pickCount + "  Candidate wins " + bestCount, listX + 44, strategyRowY + 24, listWidth * 0.72)
     }
 
     ctx.textAlign = "left"
@@ -1696,19 +1695,25 @@ function drawAITrainingScreen() {
     ctx.fillText("Last winner: " + (aiTrainingState.trueSelfPlayLastWinner || "None yet"), listX, bottomY + bottomHeight - 40, listWidth)
     ctx.fillText("Avg round: " + averageSelfPlayRound.toFixed(1), listX, bottomY + bottomHeight - 22, listWidth)
 
+    ctx.font = "10px Arial"
+    ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
+    ctx.fillText("Bars show each decision family's share of session policy updates.", featureX + featureWidth * 0.05, bottomY + 43, featureWidth * 0.9)
     var featureColumns = 3
     var featureInnerWidth = featureWidth * 0.9
     var featureColumnGap = featureWidth * 0.03
     var featureColumnWidth = (featureInnerWidth - featureColumnGap * (featureColumns - 1)) / featureColumns
     var featureBaseX = featureX + featureWidth * 0.05
-    var featureBaseY = bottomY + 48
-    var featureRows = Math.ceil(AI_FEATURE_KEYS.length / featureColumns)
+    var featureBaseY = bottomY + 58
+    var featureRows = Math.ceil(AI_DECISION_FAMILY_LABELS.length / featureColumns)
     var featureRowHeight = clamp((bottomHeight - 68) / Math.max(1, featureRows), 18, 23)
     var featurePalette = ["#62c5ff", "#7fe0a2", "#f7c76d", "#f08ba7", "#b698ff", "#7bd8d4"]
-    for(var featureIndex = 0; featureIndex < AI_FEATURE_KEYS.length; featureIndex++) {
+    var decisionSampleTotal = getAIDecisionTrainingSampleTotal(aiLearning.policy)
+    for(var featureIndex = 0; featureIndex < AI_DECISION_FAMILY_LABELS.length; featureIndex++) {
         var featureColumn = Math.floor(featureIndex / featureRows)
         var featureRow = featureIndex % featureRows
-        drawAIStatsFeatureBar(featureBaseX + featureColumn * (featureColumnWidth + featureColumnGap), featureBaseY + featureRow * featureRowHeight, featureColumnWidth, AI_FEATURE_LABELS[AI_FEATURE_KEYS[featureIndex]], getAITrainingAverageFeatureValue(featureIndex), featurePalette[featureIndex % featurePalette.length])
+        var familySamples = aiLearning.policy.decision.trainingSamples[featureIndex] || 0
+        var familyLabel = AI_DECISION_FAMILY_LABELS[featureIndex] + " (" + familySamples.toLocaleString() + ")"
+        drawAIStatsFeatureBar(featureBaseX + featureColumn * (featureColumnWidth + featureColumnGap), featureBaseY + featureRow * featureRowHeight, featureColumnWidth, familyLabel, decisionSampleTotal > 0 ? familySamples / decisionSampleTotal : 0, featurePalette[featureIndex % featurePalette.length])
     }
 }
 

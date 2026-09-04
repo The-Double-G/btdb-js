@@ -516,7 +516,7 @@ async function main() {
                 strategyIndex: 0,
                 tacticalTrace: [],
             }
-            const recoveredSessionContribution = createAIPublicMatchContribution(150, 0, 1, [], true)
+            const recoveredSessionContribution = createAIPublicMatchContribution(150, 0, 1, true)
             setAIPublicContributionQueue([{ contributionId: "session-sync", contributionEpoch: 2 }])
             const recoveredSessionQueuedSaveState = getAITrainingSaveButtonState()
             const originalSessionFlush = flushAIPublicContributionQueue
@@ -564,7 +564,7 @@ async function main() {
                 strategyIndex: 0,
                 tacticalTrace: [],
             }
-            const credentialedLabContribution = createAIPublicMatchContribution(150, 0, 1, [], true)
+            const credentialedLabContribution = createAIPublicMatchContribution(150, 0, 1, true)
             aiLearning.championGeneration = 22
             aiLearning.candidateGeneration = 22
             let credentialedLabFetches = 0
@@ -671,6 +671,7 @@ async function main() {
                 totalTacticalSamples: migratedModel.totalTacticalSamples,
                 totalDecisionSamples: migratedModel.totalDecisionSamples,
                 totalHumanDemonstrations: migratedModel.totalHumanDemonstrations,
+                profileRemoved: !Object.prototype.hasOwnProperty.call(migratedModel, "playerProfile"),
                 candidateGeneration: migratedModel.candidateGeneration,
                 championGeneration: migratedModel.championGeneration,
                 tacticalStoreRetained: !!migratedModel.tacticalStats.retained,
@@ -700,6 +701,7 @@ async function main() {
             const oldCandidateEmbedding = aiDecisionEncode(schema11Candidate, schema11Policy.decision.WCandidate1, schema11Policy.decision.bCandidate1, schema11Policy.decision.WCandidate2, schema11Policy.decision.bCandidate2).embedding
             const newCandidateEmbedding = aiDecisionEncode(schema12Candidate, schema12Policy.decision.WCandidate1, schema12Policy.decision.bCandidate1, schema12Policy.decision.WCandidate2, schema12Policy.decision.bCandidate2).embedding
             const schema11Model = JSON.parse(JSON.stringify(migratedModel))
+            schema11Model.playerProfile = { games: 3, features: Array(AI_FEATURE_KEYS.length).fill(0.4) }
             schema11Model.version = 11
             schema11Model.modelFamily = "semantic-recurrent-actor-critic-v3"
             schema11Model.policy = schema11Policy
@@ -720,7 +722,8 @@ async function main() {
                 outputPreserved: oldStateEmbedding.every((value, index) => Math.abs(value - newStateEmbedding[index]) < 1e-12) && oldCandidateEmbedding.every((value, index) => Math.abs(value - newCandidateEmbedding[index]) < 1e-12),
                 recurrentValueSurvivalPreserved: JSON.stringify(schema12Policy.decision.WStateToMemory) == JSON.stringify(schema11Policy.decision.WStateToMemory) && JSON.stringify(schema12Policy.decision.WValue) == JSON.stringify(schema11Policy.decision.WValue) && JSON.stringify(schema12Policy.decision.WSurvival) == JSON.stringify(schema11Policy.decision.WSurvival),
                 familyTrainingPreserved: JSON.stringify(schema12Policy.decision.trainingSamples) == JSON.stringify(schema11Policy.decision.trainingSamples) && JSON.stringify(schema12Policy.decision.familyBias) == JSON.stringify(schema11Policy.decision.familyBias),
-                totalDecisionSamplesPreserved: normalizedSchema11Model.totalDecisionSamples == 321,
+                totalDecisionSamplesSynchronized: normalizedSchema11Model.totalDecisionSamples == getAIDecisionTrainingSampleTotal(normalizedSchema11Model.policy),
+                profileRemoved: !Object.prototype.hasOwnProperty.call(normalizedSchema11Model, "playerProfile"),
                 spatialStoresReset: Object.keys(normalizedSchema11Model.placementStats).length == 0 && Object.keys(normalizedSchema11Model.loadoutPlacementStats).length == 0,
                 reservedHumanPriorsReset: Object.keys(normalizedSchema11Model.tacticalFamilyStats).every(key => key.indexOf("human|") != 0),
             }
@@ -1304,7 +1307,7 @@ async function main() {
                 strategyIndex: 0,
                 tacticalTrace: aiProfile.tacticalTrace,
             }
-            const boundedContribution = createAIPublicMatchContribution(150, 0, 1, Array(AI_FEATURE_KEYS.length).fill(0.5), false)
+            const boundedContribution = createAIPublicMatchContribution(150, 0, 1, false)
             const contributionContract = {
                 exists: !!boundedContribution,
                 count: boundedContribution ? boundedContribution.decisionSamples.length : -1,
@@ -1717,6 +1720,7 @@ async function main() {
             totalTacticalSamples: 13,
             totalDecisionSamples: 0,
             totalHumanDemonstrations: 9,
+            profileRemoved: true,
             candidateGeneration: 6,
             championGeneration: 5,
             tacticalStoreRetained: true,
@@ -1733,7 +1737,8 @@ async function main() {
             outputPreserved: true,
             recurrentValueSurvivalPreserved: true,
             familyTrainingPreserved: true,
-            totalDecisionSamplesPreserved: true,
+            totalDecisionSamplesSynchronized: true,
+            profileRemoved: true,
             spatialStoresReset: true,
             reservedHumanPriorsReset: true,
         })
@@ -1949,7 +1954,7 @@ async function main() {
             { label: "Promotion", value: "Champion v5" },
             { label: "Progress", value: "Live · now" },
         ])
-        assert.deepEqual(result.overviewLabels, ["Hosted Champion", "Match Perspectives", "Human Demos", "Decision Samples", "Loadout Samples", "Counter Records"])
+        assert.deepEqual(result.overviewLabels, ["Hosted Champion", "Match Perspectives", "Human Demos", "Decision Updates", "Loadout Samples", "Counter Records"])
         assert.equal(result.queuedContributionMessage, "Saving...")
         assert.equal(result.acceptedContributionMessage, "Saved! You can close now.")
         assert.match(result.ineligibleContributionMessage, /No global AI contribution/)

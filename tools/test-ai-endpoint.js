@@ -213,7 +213,6 @@ function createModel() {
         totalLoadoutSamples: 0,
         totalHumanDemonstrations: 0,
         totalDecisionSamples: 0,
-        playerProfile: { games: 0, features: vector(featureCount) },
         strategyStats: Array.from({ length: strategyCount }, () => ({ games: 0, wins: 0, losses: 0, ties: 0, syntheticEpisodes: 0, lastReward: 0 })),
         loadoutStats: {},
         placementStats: {},
@@ -268,6 +267,7 @@ function createSchema11Policy(seed = 0) {
 
 function createSchema11Model() {
     const model = createModel()
+    model.playerProfile = { games: 3, features: vector(featureCount, 0.2) }
     model.version = 11
     model.modelFamily = "semantic-recurrent-actor-critic-v3"
     model.totalDecisionSamples = 29
@@ -382,7 +382,6 @@ function createContribution(id, baseRevision, contributionEpoch, decisionSamples
         contributionEpoch,
         strategyIndex: 3,
         selectionFeatures: vector(featureCount, 0.25),
-        matchFeatures: vector(featureCount, 0.5),
         aiLives: 80,
         enemyLives: 0,
         loadoutKey: "bomb,farm,wizard||bloonboost.png,towerboost.png",
@@ -672,7 +671,7 @@ async function main() {
         assert.equal(envelope.contributionEpoch, 5)
         assert.equal(envelope.model.version, 13)
         assert.equal(envelope.model.modelFamily, "semantic-intent-spatial-recurrent-actor-critic-v5")
-        assert.equal(envelope.model.totalDecisionSamples, 29)
+        assert.equal(envelope.model.totalDecisionSamples, 17)
         assert.equal(envelope.model.totalHumanDemonstrations, 3)
         assert.equal(envelope.model.candidateGeneration, 12)
         assert.equal(envelope.model.championGeneration, 11)
@@ -683,9 +682,10 @@ async function main() {
             assert.deepEqual(envelope.model[key], schema11Model[key])
         }
         assert.deepEqual(envelope.model.tacticalFamilyStats, { "preserved-family": schema11Model.tacticalFamilyStats["preserved-family"] })
-        for (const key of ["totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations", "totalTacticalSamples", "totalDecisionSamples", "candidateGeneration", "championGeneration", "playerProfile", "strategyStats", "loadoutStats"]) {
+        for (const key of ["totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations", "totalTacticalSamples", "candidateGeneration", "championGeneration", "strategyStats", "loadoutStats"]) {
             assert.deepEqual(envelope.model[key], schema11Model[key])
         }
+        assert.equal(Object.prototype.hasOwnProperty.call(envelope.model, "playerProfile"), false)
         assert.match(envelope.policyDigest, /^sha256:[a-f0-9]{64}$/)
         assert.match(envelope.championPolicyDigest, /^sha256:[a-f0-9]{64}$/)
         assert.match(envelope.promotionBaseDigest, /^sha256:[a-f0-9]{64}$/)
@@ -780,6 +780,25 @@ async function main() {
         assert.equal(migratedState.revision, 21)
         assert.equal(migratedState.contributionEpoch, 9)
         assert.deepEqual(migratedState.contributionGuard, { recent: [], rates: [] })
+        const profilefulCurrentModel = structuredClone(envelope.model)
+        profilefulCurrentModel.playerProfile = { games: 8, features: vector(featureCount, 0.4) }
+        const profilefulCurrentState = {
+            protocolVersion: 1,
+            revision: 30,
+            modelDigest: hostedDigest(profilefulCurrentModel),
+            updatedAt: "2026-01-03T00:00:00Z",
+            model: profilefulCurrentModel,
+            contributionGuard: { recent: { stale: 1 }, rates: {} },
+            contributionEpoch: 9,
+        }
+        fs.writeFileSync(statePath, `${JSON.stringify(profilefulCurrentState)}\n`)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+        assert.equal(envelope.revision, 31)
+        assert.equal(envelope.contributionEpoch, 10)
+        assert.equal(Object.prototype.hasOwnProperty.call(envelope.model, "playerProfile"), false)
+        assert.equal(envelope.model.totalDecisionSamples, 0)
+        migratedState = JSON.parse(fs.readFileSync(statePath, "utf8"))
+        assert.deepEqual(migratedState.contributionGuard, { recent: [], rates: [] })
         const migratedEpoch = envelope.contributionEpoch
 
         const contributionHeaders = {
@@ -831,14 +850,17 @@ async function main() {
         assert.equal(envelope.modelDigest, hostedDigest(envelope.model))
         createHostedSnapshot(envelope)
 
-        const modelBeforeExhaustionTest = structuredClone(envelope.model)
-        const exhaustedCounterModel = structuredClone(envelope.model)
-        exhaustedCounterModel.totalDecisionSamples = Number.MAX_SAFE_INTEGER
-        assert.equal((await postJson(endpoints[0], "commit", trainerHeaders, { expectedRevision: envelope.revision, model: exhaustedCounterModel })).status, 200)
+        const modelBeforeCounterTest = structuredClone(envelope.model)
+        const counterModel = structuredClone(envelope.model)
+        counterModel.policy.decision.trainingSamples[0] = 100
+        counterModel.totalDecisionSamples = counterModel.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
+        const counterCommitResponse = await postJson(endpoints[0], "commit", trainerHeaders, { expectedRevision: envelope.revision, model: counterModel })
+        assert.equal(counterCommitResponse.status, 200, await counterCommitResponse.text())
         envelope = await readEnvelope(endpoints[0], commonHeaders)
-        const exhaustedContribution = createContribution("0000000000000000000000000000000d", envelope.revision, migratedEpoch, [createDecisionSample()])
-        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, exhaustedContribution)).status, 409)
-        assert.equal((await postJson(endpoints[0], "commit", trainerHeaders, { expectedRevision: envelope.revision, model: modelBeforeExhaustionTest })).status, 200)
+        const counterContribution = createContribution("0000000000000000000000000000000d", envelope.revision, migratedEpoch, [createDecisionSample()])
+        assert.equal((await postJson(endpoints[0], "contribute", contributionHeaders, counterContribution)).status, 200)
+        envelope = await readEnvelope(endpoints[0], commonHeaders)
+        assert.equal((await postJson(endpoints[0], "commit", trainerHeaders, { expectedRevision: envelope.revision, model: modelBeforeCounterTest })).status, 200)
         envelope = await readEnvelope(endpoints[0], commonHeaders)
 
         const malformed = createContribution("00000000000000000000000000000002", envelope.revision, migratedEpoch, [createDecisionSample({ extra: true })])
@@ -969,7 +991,6 @@ async function main() {
         const championBeforeHuman = structuredClone(envelope.model.championPolicy)
         const historyBeforeHuman = structuredClone(envelope.model.populationPolicies)
         const tacticalSamplesBeforeHuman = envelope.model.totalTacticalSamples
-        const profileBeforeHuman = structuredClone(envelope.model.playerProfile)
         const loadoutStatsBeforeHuman = structuredClone(envelope.model.loadoutStats)
         const loadoutCounterStatsBeforeHuman = structuredClone(envelope.model.loadoutCounterStats)
         const loadoutSamplesBeforeHuman = envelope.model.totalLoadoutSamples
@@ -986,7 +1007,7 @@ async function main() {
         assert.deepEqual(envelope.model.championPolicy, championBeforeHuman)
         assert.deepEqual(envelope.model.populationPolicies, historyBeforeHuman)
         assert.equal(envelope.model.totalTacticalSamples, tacticalSamplesBeforeHuman)
-        assert.deepEqual(envelope.model.playerProfile, profileBeforeHuman)
+        assert.equal(Object.prototype.hasOwnProperty.call(envelope.model, "playerProfile"), false)
         assert.deepEqual(envelope.model.loadoutStats, loadoutStatsBeforeHuman)
         assert.deepEqual(envelope.model.loadoutCounterStats, loadoutCounterStatsBeforeHuman)
         assert.equal(envelope.model.totalLoadoutSamples, loadoutSamplesBeforeHuman)

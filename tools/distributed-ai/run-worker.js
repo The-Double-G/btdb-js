@@ -171,8 +171,8 @@ async function normalizedModel(page, model) {
 
 function validateMigrationSource(checkpoint) {
     if(!checkpoint || checkpoint.kind != "btdb-ai-checkpoint" || checkpoint.formatVersion != FORMAT_VERSION) fail("Migration source has an unsupported kind or format version")
-    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : checkpoint.modelSchemaVersion == 12 ? SCHEMA_12_FAMILY : null
-    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, schema 11 and ${SCHEMA_11_FAMILY}, or schema 12 and ${SCHEMA_12_FAMILY}`)
+    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : checkpoint.modelSchemaVersion == 12 ? SCHEMA_12_FAMILY : checkpoint.modelSchemaVersion == MODEL_SCHEMA_VERSION && checkpoint.model && Object.prototype.hasOwnProperty.call(checkpoint.model, "playerProfile") ? MODEL_FAMILY : null
+    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, schema 11 and ${SCHEMA_11_FAMILY}, schema 12 and ${SCHEMA_12_FAMILY}, or schema 13 with a legacy player profile`)
     if(!checkpoint.model || checkpoint.model.version != checkpoint.modelSchemaVersion || checkpoint.model.modelFamily != checkpoint.modelFamily) fail("Migration source model identity is inconsistent")
     if(digest(checkpoint.model) != checkpoint.modelDigest) fail("Migration source modelDigest does not match its model")
     const identity = {}
@@ -205,6 +205,7 @@ function migrateSchema11Model(source) {
     if(!source || source.version != 11 || source.modelFamily != SCHEMA_11_FAMILY) fail(`Migration requires schema 11 and ${SCHEMA_11_FAMILY}`)
     if(!Array.isArray(source.populationPolicies) || source.populationPolicies.length > 2) fail("Schema 11 migration source has an invalid policy population")
     const migrated = JSON.parse(JSON.stringify(source))
+    delete migrated.playerProfile
     migrated.version = MODEL_SCHEMA_VERSION
     migrated.modelFamily = MODEL_FAMILY
     migrated.placementStats = {}
@@ -213,6 +214,7 @@ function migrateSchema11Model(source) {
     migrated.policy = migrateSchema11Policy(source.policy, "model.policy")
     migrated.championPolicy = migrateSchema11Policy(source.championPolicy, "model.championPolicy")
     migrated.populationPolicies = source.populationPolicies.map((policy, index) => migrateSchema11Policy(policy, `model.populationPolicies[${index}]`))
+    migrated.totalDecisionSamples = migrated.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     return migrated
 }
 
@@ -232,19 +234,35 @@ function migrateSchema12Model(source) {
     if(!source || source.version != 12 || source.modelFamily != SCHEMA_12_FAMILY) fail(`Migration requires schema 12 and ${SCHEMA_12_FAMILY}`)
     if(!Array.isArray(source.populationPolicies) || source.populationPolicies.length > 2) fail("Schema 12 migration source has an invalid policy population")
     const migrated = JSON.parse(JSON.stringify(source))
+    delete migrated.playerProfile
     migrated.version = MODEL_SCHEMA_VERSION
     migrated.modelFamily = MODEL_FAMILY
     migrated.placementStats = {}
     migrated.loadoutPlacementStats = {}
     migrated.tacticalFamilyStats = Object.fromEntries(Object.entries(source.tacticalFamilyStats).filter(([key]) => !key.startsWith("human|")))
-    migrated.totalDecisionSamples = 0
     migrated.policy = migrateSchema12Policy(source.policy, "model.policy")
     migrated.championPolicy = migrateSchema12Policy(source.championPolicy, "model.championPolicy")
     migrated.populationPolicies = source.populationPolicies.map((policy, index) => migrateSchema12Policy(policy, `model.populationPolicies[${index}]`))
+    migrated.totalDecisionSamples = migrated.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
+    return migrated
+}
+
+function migrateSchema13Model(source) {
+    if(!source || source.version != MODEL_SCHEMA_VERSION || source.modelFamily != MODEL_FAMILY || !Object.prototype.hasOwnProperty.call(source, "playerProfile")) fail("Migration requires schema 13 with a legacy player profile")
+    const migrated = JSON.parse(JSON.stringify(source))
+    delete migrated.playerProfile
+    migrated.totalDecisionSamples = migrated.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     return migrated
 }
 
 function assertMigrationRetention(source, migrated) {
+    if(source.version == MODEL_SCHEMA_VERSION) {
+        const expected = JSON.parse(JSON.stringify(source))
+        delete expected.playerProfile
+        expected.totalDecisionSamples = migrated.totalDecisionSamples
+        if(digest(expected) != digest(migrated)) fail("Schema 13 migration changed data beyond legacy player-profile removal and decision accounting normalization")
+        return
+    }
     if(source.version == 12) {
         if(digest(migrateSchema12Model(source)) != digest(migrated)) fail("Schema 12 migration changed data beyond identity, policy input expansion, incompatible stores, and reserved human priors")
         return
@@ -255,13 +273,13 @@ function assertMigrationRetention(source, migrated) {
     }
     const modelKeys = [
         "totalGames", "totalSyntheticEpisodes", "totalPolicySamples", "totalLoadoutSamples", "totalHumanDemonstrations",
-        "playerProfile", "strategyStats", "loadoutStats", "timingStats",
+        "strategyStats", "loadoutStats", "timingStats",
         "loadoutStrategyStats", "crosspathStats", "loadoutCounterStats", "tacticalStats", "tacticalFamilyStats",
         "totalTacticalSamples", "candidateGeneration", "championGeneration",
     ]
     for(const key of modelKeys) if(digest(source[key]) != digest(migrated[key])) fail(`Migration did not preserve model.${key}`)
     if(Object.keys(migrated.placementStats).length != 0 || Object.keys(migrated.loadoutPlacementStats).length != 0) fail("Migration did not reset perspective-sensitive placement stores")
-    if(migrated.totalDecisionSamples != 0) fail("Migration did not reset totalDecisionSamples")
+    if(migrated.totalDecisionSamples != migrated.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)) fail("Migration did not synchronize totalDecisionSamples")
 
     const retainedDecisionKeys = [
         "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount",
@@ -286,8 +304,8 @@ async function migrate(source, seed, shard, output) {
         const normalized = await normalizedModel(runtime.page, source.model)
         const repeated = await normalizedModel(runtime.page, source.model)
         if(digest(normalized) != digest(repeated)) fail("Schema migration is not deterministic")
-        const model = source.modelSchemaVersion == 12 ? migrateSchema12Model(source.model) : source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
-        if((source.modelSchemaVersion == 11 || source.modelSchemaVersion == 12) && digest(model) != digest(normalized)) fail("Explicit schema migration does not match runtime normalization")
+        const model = source.modelSchemaVersion == MODEL_SCHEMA_VERSION ? migrateSchema13Model(source.model) : source.modelSchemaVersion == 12 ? migrateSchema12Model(source.model) : source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
+        if((source.modelSchemaVersion == 11 || source.modelSchemaVersion == 12 || source.modelSchemaVersion == MODEL_SCHEMA_VERSION) && digest(model) != digest(normalized)) fail("Explicit schema migration does not match runtime normalization")
         assertMigrationRetention(source.model, model)
         validateModel(model, model.version, model.modelFamily)
         const checkpoint = createCheckpoint({
@@ -623,6 +641,7 @@ module.exports = {
     closeRuntime,
     migrateSchema11Model,
     migrateSchema12Model,
+    migrateSchema13Model,
     openRuntime,
     stepUntilMatches,
     validateMigrationSource,
