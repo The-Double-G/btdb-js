@@ -23,6 +23,7 @@ const AI_MAX_DECISION_SAMPLES = 12;
 const AI_MAX_PLACEMENT_SAMPLES = 24;
 const AI_MAX_DECISION_SAMPLE_AGE = 1000000;
 const AI_MAX_CONTRIBUTION_POLICY_DELTA_NORM = 0.35;
+const AI_MAX_PROMOTION_STRATEGY_DELTA = 10000;
 const AI_CONTRIBUTION_RATE_LIMIT = 120;
 const AI_CONTRIBUTION_WINDOW_SECONDS = 3600;
 const AI_CONTRIBUTION_TOKEN_SECONDS = 21600;
@@ -643,6 +644,45 @@ function retained_population_policies(array $model): array {
     return array_slice($policies, -2);
 }
 
+function valid_strategy_stats($strategyStats): bool {
+    if (!is_array($strategyStats) || !is_list_array($strategyStats) || count($strategyStats) !== AI_STRATEGY_COUNT) {
+        return false;
+    }
+    foreach ($strategyStats as $record) {
+        if (!is_array($record) || !exact_keys($record, ['games', 'wins', 'losses', 'ties', 'syntheticEpisodes', 'lastReward'])) {
+            return false;
+        }
+        foreach (['games', 'wins', 'losses', 'ties', 'syntheticEpisodes'] as $counter) {
+            if (!valid_nonnegative_integer($record[$counter] ?? null)) {
+                return false;
+            }
+        }
+        if ($record['games'] < $record['wins'] + $record['losses'] + $record['ties']
+            || !valid_number($record['lastReward'] ?? null, 1.0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function strategy_stats_delta(array $candidate, array $baseline): ?array {
+    if (!valid_strategy_stats($candidate) || !valid_strategy_stats($baseline)) {
+        return null;
+    }
+    $delta = [];
+    foreach ($candidate as $index => $record) {
+        $delta[$index] = [];
+        foreach (['games', 'wins', 'losses', 'ties', 'syntheticEpisodes'] as $counter) {
+            $difference = $record[$counter] - $baseline[$index][$counter];
+            if ($difference < 0 || $difference > AI_MAX_PROMOTION_STRATEGY_DELTA) {
+                return null;
+            }
+            $delta[$index][$counter] = $difference;
+        }
+    }
+    return $delta;
+}
+
 function valid_policy_promotion($request): bool {
     if (!is_array($request) || !exact_keys($request, [
         'protocolVersion',
@@ -652,6 +692,8 @@ function valid_policy_promotion($request): bool {
         'expectedPromotionBaseDigest',
         'expectedPolicyDigest',
         'expectedChampionGeneration',
+        'expectedStrategyStats',
+        'strategyStats',
         'policy',
     ])) {
         return false;
@@ -666,6 +708,8 @@ function valid_policy_promotion($request): bool {
         && valid_digest($request['expectedPolicyDigest'] ?? null)
         && is_int($request['expectedChampionGeneration'] ?? null)
         && $request['expectedChampionGeneration'] >= 0
+        && valid_strategy_stats($request['expectedStrategyStats'] ?? null)
+        && valid_strategy_stats($request['strategyStats'] ?? null)
         && valid_policy($request['policy'] ?? null);
 }
 
@@ -2514,6 +2558,12 @@ if ($action === 'promote') {
     }
 
     $currentModel = $current['model'];
+    $strategyStatsDelta = strategy_stats_delta($request['strategyStats'], $request['expectedStrategyStats']);
+    if ($strategyStatsDelta === null) {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        fail_json(422, 'invalid_strategy_stats_delta', 'The promoted strategy outcome records are not a bounded baseline-relative update.');
+    }
     $currentRevision = (int)$current['revision'];
     $currentEpoch = state_contribution_epoch($current);
     $currentChampionGeneration = (int)($currentModel['championGeneration'] ?? 0);
@@ -2562,6 +2612,38 @@ if ($action === 'promote') {
         fail_json(409, 'model_counter_exhausted', 'The AI model has exhausted a safe integer counter.');
     }
     $nextModel = $currentModel;
+    foreach ($strategyStatsDelta as $index => $recordDelta) {
+        foreach (['games', 'wins', 'losses', 'ties', 'syntheticEpisodes'] as $counter) {
+            $currentValue = $nextModel['strategyStats'][$index][$counter];
+            if ($currentValue > AI_MAX_SAFE_INTEGER - $recordDelta[$counter]) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+                fail_json(409, 'model_counter_exhausted', 'The AI model has exhausted a safe integer counter.');
+            }
+            $nextModel['strategyStats'][$index][$counter] = $currentValue + $recordDelta[$counter];
+        }
+        if ($recordDelta['games'] > 0) {
+            $nextModel['strategyStats'][$index]['lastReward'] = $request['strategyStats'][$index]['lastReward'];
+        }
+    }
+    $nextModel['totalGames'] = 0;
+    $nextModel['totalSyntheticEpisodes'] = 0;
+    foreach ($nextModel['strategyStats'] as $record) {
+        if ($nextModel['totalGames'] > AI_MAX_SAFE_INTEGER - $record['games']
+            || $nextModel['totalSyntheticEpisodes'] > AI_MAX_SAFE_INTEGER - $record['syntheticEpisodes']) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            fail_json(409, 'model_counter_exhausted', 'The AI model has exhausted a safe integer counter.');
+        }
+        $nextModel['totalGames'] += $record['games'];
+        $nextModel['totalSyntheticEpisodes'] += $record['syntheticEpisodes'];
+    }
+    if ($nextModel['totalGames'] > AI_MAX_SAFE_INTEGER - $nextModel['totalSyntheticEpisodes']) {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        fail_json(409, 'model_counter_exhausted', 'The AI model has exhausted a safe integer counter.');
+    }
+    $nextModel['totalPolicySamples'] = $nextModel['totalGames'] + $nextModel['totalSyntheticEpisodes'];
     $nextModel['populationPolicies'] = retained_population_policies($currentModel);
     $nextModel['championPolicy'] = $request['policy'];
     if (!$candidatePolicyPreserved) {

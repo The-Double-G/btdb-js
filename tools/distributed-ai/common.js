@@ -42,6 +42,8 @@ const EVALUATION_AGGREGATE_FORMAT_VERSION = 2
 const ABSOLUTE_DEFENSE_MINIMUM_LIVES = 50
 const ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES = 25
 const ABSOLUTE_DEFENSE_MINIMUM_RATE = 0.75
+const MAX_PROMOTION_STRATEGY_DELTA = 10000
+const STRATEGY_STAT_KEYS = ["games", "wins", "losses", "ties", "syntheticEpisodes"]
 
 function maxRecoveredStalls(matches) {
     return Math.max(MAX_RECOVERED_STALLS, Math.ceil(matches / 8))
@@ -221,6 +223,30 @@ function validatePolicy(policy, label, strategyCount) {
     if(parameterCount != POLICY_PARAMETER_COUNT) fail(`${label} must contain exactly ${POLICY_PARAMETER_COUNT} policy parameters`)
 }
 
+function validateStrategyStats(strategyStats, label = "strategyStats") {
+    if(!Array.isArray(strategyStats) || strategyStats.length != STRATEGY_COUNT) fail(`${label} must contain ${STRATEGY_COUNT} records`)
+    strategyStats.forEach((record, index) => {
+        const recordLabel = `${label}[${index}]`
+        assertExactKeys(record, STRATEGY_STAT_KEYS.concat("lastReward"), recordLabel)
+        for(const key of STRATEGY_STAT_KEYS) assertInteger(record[key], `${recordLabel}.${key}`)
+        if(record.games < record.wins + record.losses + record.ties) fail(`${recordLabel}.games is smaller than its outcomes`)
+        assertNumber(record.lastReward, `${recordLabel}.lastReward`, -1, 1)
+    })
+    return strategyStats
+}
+
+function validateStrategyStatsDelta(candidateStats, baselineStats, label = "strategyStats") {
+    validateStrategyStats(candidateStats, `${label}.candidate`)
+    validateStrategyStats(baselineStats, `${label}.baseline`)
+    for(let index = 0; index < STRATEGY_COUNT; index++) {
+        for(const key of STRATEGY_STAT_KEYS) {
+            const delta = candidateStats[index][key] - baselineStats[index][key]
+            if(delta < 0 || delta > MAX_PROMOTION_STRATEGY_DELTA) fail(`${label}[${index}].${key} is outside the allowed training delta`)
+        }
+    }
+    return candidateStats
+}
+
 const MODEL_KEYS = [
     "version", "modelFamily", "totalGames", "totalSyntheticEpisodes", "totalPolicySamples",
     "totalLoadoutSamples", "totalHumanDemonstrations", "strategyStats", "loadoutStats",
@@ -242,13 +268,7 @@ function validateModel(model, expectedSchemaVersion, expectedFamily, label = "mo
     if(model.totalPolicySamples != model.totalGames + model.totalSyntheticEpisodes) fail(`${label}.totalPolicySamples is inconsistent`)
 
     if(!Array.isArray(model.strategyStats) || model.strategyStats.length != STRATEGY_COUNT) fail(`${label}.strategyStats must contain ${STRATEGY_COUNT} records`)
-    model.strategyStats.forEach((record, index) => {
-        const recordLabel = `${label}.strategyStats[${index}]`
-        assertExactKeys(record, ["games", "wins", "losses", "ties", "syntheticEpisodes", "lastReward"], recordLabel)
-        for(const key of ["games", "wins", "losses", "ties", "syntheticEpisodes"]) assertInteger(record[key], `${recordLabel}.${key}`)
-        if(record.games < record.wins + record.losses + record.ties) fail(`${recordLabel}.games is smaller than its outcomes`)
-        assertNumber(record.lastReward, `${recordLabel}.lastReward`, -1, 1)
-    })
+    validateStrategyStats(model.strategyStats, `${label}.strategyStats`)
     const totalGames = model.strategyStats.reduce((sum, record) => sum + record.games, 0)
     const totalSynthetic = model.strategyStats.reduce((sum, record) => sum + record.syntheticEpisodes, 0)
     if(model.totalGames != totalGames || model.totalSyntheticEpisodes != totalSynthetic) fail(`${label} strategy totals are inconsistent`)
@@ -426,7 +446,7 @@ function createHostedSnapshot(envelope) {
 
 const POLICY_PROMOTION_REQUEST_KEYS = [
     "protocolVersion", "promotionId", "sourceRevision", "expectedContributionEpoch", "expectedPromotionBaseDigest",
-    "expectedPolicyDigest", "expectedChampionGeneration", "policy",
+    "expectedPolicyDigest", "expectedChampionGeneration", "expectedStrategyStats", "strategyStats", "policy",
 ]
 
 function validatePolicyPromotionRequest(request, label = "policy promotion request") {
@@ -438,6 +458,8 @@ function validatePolicyPromotionRequest(request, label = "policy promotion reque
     assertDigest(request.expectedPromotionBaseDigest, `${label}.expectedPromotionBaseDigest`)
     assertDigest(request.expectedPolicyDigest, `${label}.expectedPolicyDigest`)
     assertInteger(request.expectedChampionGeneration, `${label}.expectedChampionGeneration`)
+    validateStrategyStats(request.expectedStrategyStats, `${label}.expectedStrategyStats`)
+    validateStrategyStats(request.strategyStats, `${label}.strategyStats`)
     validatePolicy(request.policy, `${label}.policy`, STRATEGY_COUNT)
     return request
 }
@@ -453,6 +475,8 @@ function buildPolicyPromotionRequest(manifest, candidate, baseline) {
         expectedPromotionBaseDigest: manifest.promotionBaseDigest,
         expectedPolicyDigest: manifest.sourcePolicyDigest,
         expectedChampionGeneration: manifest.championGeneration,
+        expectedStrategyStats: clone(baseline.model.strategyStats),
+        strategyStats: clone(candidate.model.strategyStats),
         policy: clone(candidate.model.policy),
     })
 }
@@ -631,6 +655,10 @@ function materializePolicyOnlyCandidate(result, baseline) {
     const selectedPolicy = clone(result.candidate.model.policy)
     model.policy = selectedPolicy
     model.totalDecisionSamples = selectedPolicy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
+    model.strategyStats = clone(result.candidate.model.strategyStats)
+    model.totalGames = result.candidate.model.totalGames
+    model.totalSyntheticEpisodes = result.candidate.model.totalSyntheticEpisodes
+    model.totalPolicySamples = result.candidate.model.totalPolicySamples
     model.championPolicy = clone(selectedPolicy)
     model.populationPolicies = retainedPopulationPolicies(baseline.model)
     model.championGeneration = baseline.model.championGeneration + 1
@@ -682,12 +710,30 @@ function aggregateTrainResultPolicies(results, baseline) {
     return policy
 }
 
+function aggregateTrainResultStrategyStats(results, baseline) {
+    const strategyStats = clone(baseline.model.strategyStats)
+    for(const [resultIndex, result] of results.entries()) {
+        validateStrategyStatsDelta(result.candidate.model.strategyStats, baseline.model.strategyStats, `train result ${resultIndex}.strategyStats`)
+        for(let strategyIndex = 0; strategyIndex < STRATEGY_COUNT; strategyIndex++) {
+            const source = result.candidate.model.strategyStats[strategyIndex]
+            const target = strategyStats[strategyIndex]
+            for(const key of STRATEGY_STAT_KEYS) target[key] += source[key] - baseline.model.strategyStats[strategyIndex][key]
+            if(source.games > baseline.model.strategyStats[strategyIndex].games) target.lastReward = source.lastReward
+        }
+    }
+    return validateStrategyStats(strategyStats, "aggregated strategyStats")
+}
+
 function materializeAggregatedPolicyCandidate(results, baseline) {
     const selected = selectBestTrainResult(results, baseline)
     const model = clone(baseline.model)
     const policy = aggregateTrainResultPolicies(results, baseline)
     model.policy = policy
     model.totalDecisionSamples = policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
+    model.strategyStats = aggregateTrainResultStrategyStats(results, baseline)
+    model.totalGames = model.strategyStats.reduce((sum, record) => sum + record.games, 0)
+    model.totalSyntheticEpisodes = model.strategyStats.reduce((sum, record) => sum + record.syntheticEpisodes, 0)
+    model.totalPolicySamples = model.totalGames + model.totalSyntheticEpisodes
     model.championPolicy = clone(policy)
     model.populationPolicies = retainedPopulationPolicies(baseline.model)
     model.championGeneration = baseline.model.championGeneration + 1
@@ -709,10 +755,15 @@ function validatePolicyOnlyCandidate(candidate, baseline, label = "candidate") {
     if(candidate.parentCheckpointId != baseline.checkpointId) fail(`${label} does not descend from the supplied baseline`)
     if(candidate.gameVersion != baseline.gameVersion || candidate.modelSchemaVersion != baseline.modelSchemaVersion || candidate.modelFamily != baseline.modelFamily) fail(`${label} is incompatible with the supplied baseline`)
     if(digest(candidate.model.policy) != digest(candidate.model.championPolicy)) fail(`${label} policy and championPolicy must match`)
+    validateStrategyStatsDelta(candidate.model.strategyStats, baseline.model.strategyStats, `${label}.strategyStats`)
     if(baseline.model.championGeneration >= Number.MAX_SAFE_INTEGER) fail("baseline championGeneration cannot be incremented")
     const expected = clone(baseline.model)
     expected.policy = clone(candidate.model.policy)
     expected.championPolicy = clone(candidate.model.policy)
+    expected.strategyStats = clone(candidate.model.strategyStats)
+    expected.totalGames = candidate.model.totalGames
+    expected.totalSyntheticEpisodes = candidate.model.totalSyntheticEpisodes
+    expected.totalPolicySamples = candidate.model.totalPolicySamples
     expected.totalDecisionSamples = candidate.model.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
     expected.populationPolicies = retainedPopulationPolicies(baseline.model)
     expected.championGeneration = baseline.model.championGeneration + 1

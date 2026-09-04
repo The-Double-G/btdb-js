@@ -7,7 +7,7 @@ Every generation starts from one immutable snapshot of the authoritative Hosted 
 1. Prepare fetches and validates the schema-13 model and credential-free source manifest.
 2. Deterministic Chromium workers train independent complete policy bundles from that exact snapshot.
 3. The selector validates every unique shard against the same baseline and computes a deterministic policy average. A shard's normalized weight is proportional to `exp((built-in evaluation score - maximum shard score) * 8)`.
-4. Materialization clones the hosted baseline and changes only the aggregated policy bundle, generations, and bounded two-policy history. Neural tensors are score-weighted averages, while each per-family training counter is the baseline count plus the sum of every shard's learned increment. Shard statistics and stores are discarded.
+4. Materialization clones the hosted baseline and changes the aggregated policy bundle, strategy outcome records, generations, and bounded two-policy history. Neural tensors are score-weighted averages, each per-family training counter is the baseline count plus the sum of every shard's learned increment, and candidate-side strategy outcomes are accumulated across shards. Other shard stores are discarded.
 5. Separate workers evaluate that exact candidate against the snapshot's frozen champion with learning and exploration disabled.
 6. Aggregation requires balanced maps, candidate sides, and probe/responder roles, plus an absolute defensive-competence benchmark.
 7. Exact-commit CI runs before a protected publisher can atomically promote the bundle to the Hosted Model.

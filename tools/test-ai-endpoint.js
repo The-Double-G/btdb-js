@@ -1126,8 +1126,14 @@ async function main() {
             expectedPromotionBaseDigest: envelope.promotionBaseDigest,
             expectedPolicyDigest: envelope.policyDigest,
             expectedChampionGeneration: envelope.model.championGeneration,
+            expectedStrategyStats: structuredClone(envelope.model.strategyStats),
+            strategyStats: structuredClone(envelope.model.strategyStats),
             policy: structuredClone(envelope.model.championPolicy),
         }
+        promotionRequest.strategyStats[3].games += 2
+        promotionRequest.strategyStats[3].wins += 1
+        promotionRequest.strategyStats[3].losses += 1
+        promotionRequest.strategyStats[3].lastReward = 0.25
         promotionRequest.policy.decision.familyBias[7] = -0.35
         const malformedPromotion = structuredClone(promotionRequest)
         malformedPromotion.policy.decision.extra = 1
@@ -1152,6 +1158,9 @@ async function main() {
         envelope = await readEnvelope(endpoints[0], commonHeaders)
         assert.deepEqual(envelope.model.policy, beforePromotion.model.policy)
         assert.deepEqual(envelope.model.championPolicy, promotionRequest.policy)
+        assert.equal(envelope.model.strategyStats[3].games, beforePromotion.model.strategyStats[3].games + 2)
+        assert.equal(envelope.model.strategyStats[3].wins, beforePromotion.model.strategyStats[3].wins + 1)
+        assert.equal(envelope.model.strategyStats[3].losses, beforePromotion.model.strategyStats[3].losses + 1)
         assert.equal(envelope.model.populationPolicies.length, 2)
         assert.deepEqual(envelope.model.populationPolicies[1], previousChampion)
         assert.equal(envelope.model.candidateGeneration, 5)

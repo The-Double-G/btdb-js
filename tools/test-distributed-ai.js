@@ -223,6 +223,13 @@ function trainResult(shard, seed, internalOutcomes, sourceCheckpoint) {
     candidateModel.policy.decision.familyBias[0] = -seed / 2000
     candidateModel.policy.decision.trainingSamples[0] = seed
     candidateModel.totalDecisionSamples = seed
+    const trainingWins = outcomes.slice(0, TRAINING_LEARNING_MATCHES).filter(outcome => outcome == "win").length
+    const trainingLosses = outcomes.slice(0, TRAINING_LEARNING_MATCHES).filter(outcome => outcome == "loss").length
+    const trainingTies = TRAINING_LEARNING_MATCHES - trainingWins - trainingLosses
+    const strategyIndex = seed % 75
+    candidateModel.strategyStats[strategyIndex] = { games: TRAINING_LEARNING_MATCHES, wins: trainingWins, losses: trainingLosses, ties: trainingTies, syntheticEpisodes: 0, lastReward: trainingWins > trainingLosses ? 1 : trainingWins < trainingLosses ? -1 : 0 }
+    candidateModel.totalGames = TRAINING_LEARNING_MATCHES
+    candidateModel.totalPolicySamples = TRAINING_LEARNING_MATCHES
     candidateModel.placementStats.learned = { samples: 1, score: 0.5, mean: 0.5, m2: 0 }
     const candidate = createCheckpoint({
         gameVersion: sourceCheckpoint.gameVersion,
@@ -532,6 +539,10 @@ async function main() {
     assert.equal(aggregatedCandidate.provenance.shard, "aggregate-3")
     assert.equal(aggregatedCandidate.provenance.matches, TRAINING_MATCHES * 3)
     assert.equal(aggregatedCandidate.model.totalDecisionSamples, trainA.seed + trainB.seed + trainC.seed)
+    assert.equal(aggregatedCandidate.model.totalGames, TRAINING_LEARNING_MATCHES * 3)
+    assert.equal(aggregatedCandidate.model.strategyStats[10].games, TRAINING_LEARNING_MATCHES)
+    assert.equal(aggregatedCandidate.model.strategyStats[11].games, TRAINING_LEARNING_MATCHES)
+    assert.equal(aggregatedCandidate.model.strategyStats[12].games, TRAINING_LEARNING_MATCHES)
 
     const contaminatedModel = structuredClone(materialized.model)
     contaminatedModel.placementStats.contaminated = { samples: 1, score: 0, mean: 0, m2: 0 }
@@ -710,10 +721,12 @@ async function main() {
     const hostedCandidate = materializePolicyOnlyCandidate(hostedTrain, hostedSnapshot.checkpoint)
     const promotionRequest = buildPolicyPromotionRequest(hostedSnapshot.manifest, hostedCandidate, hostedSnapshot.checkpoint)
     validatePolicyPromotionRequest(promotionRequest)
-    assert.deepEqual(Object.keys(promotionRequest).sort(), ["expectedChampionGeneration", "expectedContributionEpoch", "expectedPolicyDigest", "expectedPromotionBaseDigest", "policy", "promotionId", "protocolVersion", "sourceRevision"].sort())
+    assert.deepEqual(Object.keys(promotionRequest).sort(), ["expectedChampionGeneration", "expectedContributionEpoch", "expectedPolicyDigest", "expectedPromotionBaseDigest", "expectedStrategyStats", "policy", "promotionId", "protocolVersion", "sourceRevision", "strategyStats"].sort())
     assert.deepEqual(promotionRequest.policy, hostedCandidate.model.policy)
     assert.deepEqual(promotionRequest.policy.strategy, hostedCandidate.model.policy.strategy)
     assert.deepEqual(promotionRequest.policy.decision, hostedCandidate.model.policy.decision)
+    assert.deepEqual(promotionRequest.expectedStrategyStats, hostedSnapshot.checkpoint.model.strategyStats)
+    assert.deepEqual(promotionRequest.strategyStats, hostedCandidate.model.strategyStats)
     assert.equal(promotionRequest.promotionId, hostedCandidate.checkpointId)
     assert.equal(Object.prototype.hasOwnProperty.call(promotionRequest, "model"), false)
     const incompletePromotion = structuredClone(promotionRequest)

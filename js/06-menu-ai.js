@@ -4795,7 +4795,7 @@ function drawAIStatsScreen() {
     ctx.textAlign = "left"
     ctx.font = "10px Arial"
     ctx.fillStyle = "rgba(214, 226, 255, 0.78)"
-    ctx.fillText("Hosted/public outcomes; distributed worker training is shown at left.", strategyListX, rightY + 45, strategyListWidth)
+    ctx.fillText("Hosted/public outcomes plus accepted GitHub training deltas.", strategyListX, rightY + 45, strategyListWidth)
     if(topStrategyIndices.length == 0) {
         ctx.textAlign = "center"
         ctx.font = "14px Arial"
