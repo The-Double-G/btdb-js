@@ -158,6 +158,21 @@ jobs:
             transaction_name="${ref##*/}"
             transaction_run_id="${transaction_name%%-*}"
             if ! jq -e --arg id "$transaction_run_id" '[.[] | select((.id | tostring) == $id)] | length > 0' <<<"$active" >/dev/null; then
+              if [[ "$transaction_run_id" =~ ^[0-9]+$ ]]; then
+                publish_failure=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$transaction_run_id/jobs" \
+                  -f per_page=100 --jq '[.jobs[] | select(.name == "publish-hosted")][0] | if . == null then "" else (.status + ":" + (.conclusion // "")) end')
+                if [ "$publish_failure" = "completed:failure" ]; then
+                  failure_log=$(gh run view "$transaction_run_id" --repo "$GITHUB_REPOSITORY" --log-failed 2>/dev/null || true)
+                  if printf '%s' "$failure_log" | grep -Eq 'HTTP (400|409|422|500): (invalid_promotion|promotion_failed_validation|promotion_conflict)'; then
+                    echo "Removing stale non-published promotion transaction $ref."
+                    if ! gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/$ref" >/dev/null; then
+                      echo "Unable to remove stale promotion branch $ref." >&2
+                      exit 1
+                    fi
+                    continue
+                  fi
+                fi
+              fi
               stale_retained="$stale_retained$ref\n"
             fi
           done
@@ -167,6 +182,7 @@ jobs:
             echo "Reconcile or remove the retained branch before continuous training resumes." >&2
             exit 1
           fi
+          retained=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/ai-promotion/" --jq '.[].ref')
           if [ -n "$retained" ]; then
             echo "An active promotion transaction is still finalizing; waiting for it to finish."
             exit 0
