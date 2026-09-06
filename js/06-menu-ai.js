@@ -7248,18 +7248,6 @@ function updateAIMatchTelemetry() {
     }
 }
 
-function shouldProtectAITowerFromSale(tower, matchup) {
-    if(!tower) return true
-    var visibleRound = getCurrentVisibleRound()
-    var placedRound = Number(tower.aiPlacedRound)
-    var emergencyFarmSale = matchup && matchup.dangerHigh && tower.towerType == "farm"
-    if(!emergencyFarmSale && Number.isFinite(placedRound) && visibleRound < 5) return true
-    var now = gameNow()
-    if(Number.isFinite(Number(tower.aiPlacedAt)) && now - Number(tower.aiPlacedAt) < 12000) return true
-    if(Number.isFinite(Number(tower.aiLastUpgradeAt)) && now - Number(tower.aiLastUpgradeAt) < 15000) return true
-    return false
-}
-
 function getBestAIEconomyUtilityOption(side, matchup) {
     var bestOption = null
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.sell, matchup)
@@ -7269,7 +7257,6 @@ function getBestAIEconomyUtilityOption(side, matchup) {
     for(var i = 0; i < towers.length; i++) {
         var tower = towers[i]
         if(!tower || tower.playerSide != side) continue
-        if(shouldProtectAITowerFromSale(tower, matchup)) continue
         var sellValue = getAITowerSellValueEstimate(tower)
         var sellBank = tower.towerType == "farm" && tower.path2Upgrades >= 3 ? Math.max(0, Number(tower.towerVar) || 0) : 0
         var sellProceeds = sellValue + sellBank

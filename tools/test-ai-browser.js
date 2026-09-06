@@ -1112,7 +1112,7 @@ async function main() {
                     moneyUnchanged: players[aiSide].money == moneyBefore,
                     placed: !!farmer,
                     placementAllowedWithoutFarm: !!option && !!farmer,
-                    newTowerSaleExcluded: farmerSaleCandidate == null,
+                    newTowerSaleIncluded: !!farmerSaleCandidate && farmerSaleCandidate.type == "sell" && farmerSaleCandidate.tower == farmer,
                     requestedSaleAccepted,
                     requestedSaleTargetPreserved,
                     directSaleAllowed,
@@ -1544,8 +1544,8 @@ async function main() {
                     const leftFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { type: "dart", x: leftX, y: 100 })
                     const rightFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.right, AI_DECISION_FAMILY.placement, { type: "dart", x: rightX, y: 100 })
                     const mirroredPlacementX = leftFeatures[AI_DECISION_FAMILY_COUNT + 2] == rightFeatures[AI_DECISION_FAMILY_COUNT + 2]
-                    const saleProtected = shouldProtectAITowerFromSale({ towerType: "dart", aiPlacedRound: 1, aiPlacedAt: gameNow(), aiLastUpgradeAt: gameNow() }, { dangerHigh: false })
-                    return { targetRefreshedAfterRemoval, missingTargetInvalidated, ecoHandleReset, mirroredPlacementX, saleProtected }
+                    const saleGuardRemoved = typeof shouldProtectAITowerFromSale == "undefined"
+                    return { targetRefreshedAfterRemoval, missingTargetInvalidated, ecoHandleReset, mirroredPlacementX, saleGuardRemoved }
                 } finally {
                     bloons = originalBloonsForTargetTest
                     ecoIntervalId = originalEcoIntervalId
@@ -1713,7 +1713,7 @@ async function main() {
             missingTargetInvalidated: true,
             ecoHandleReset: true,
             mirroredPlacementX: true,
-            saleProtected: true,
+            saleGuardRemoved: true,
         })
         assert.equal(result.sameEpochRefreshSucceeded, true)
         assert.deepEqual(result.sameEpochRefresh, { games: 7, generation: 4, revision: 4 })
@@ -1877,7 +1877,7 @@ async function main() {
             moneyUnchanged: true,
             placed: true,
             placementAllowedWithoutFarm: true,
-            newTowerSaleExcluded: true,
+            newTowerSaleIncluded: true,
             requestedSaleAccepted: true,
             requestedSaleTargetPreserved: true,
             directSaleAllowed: true,
