@@ -2595,8 +2595,14 @@ function animate() {
                                 bloons[projectiles[i].target].dpsTickRate = projectiles[i].dpsTickRate
                                 bloons[projectiles[i].target].dpsTowerID = projectiles[i].parentID
                             }
-                            bloons[projectiles[i].target].health -= projectiles[i].damage
-                            bloons[projectiles[i].target].spawnBloons()
+                            var projectileTarget = bloons[projectiles[i].target]
+                            var projectileOverkill = projectileTarget.health > 0 && projectileTarget.health - projectiles[i].damage <= 0
+                            projectileTarget.health -= projectiles[i].damage
+                            if(projectileOverkill && projectileTarget.spawnOverkillChildren) {
+                                projectileTarget.spawnOverkillChildren()
+                            } else {
+                                projectileTarget.spawnBloons()
+                            }
                             if(bloons[projectiles[i].target].health <= 8 && bloons[projectiles[i].target].pathPos > 0) {
                                 images.push(new Images(bloons[projectiles[i].target].x, bloons[projectiles[i].target].y, 25, "pop.png", gameNow() + 100, ""))
                             }
@@ -3213,8 +3219,14 @@ function animate() {
                                     bloons[k].dpsTickRate = projectiles[i].dpsTickRate
                                     bloons[k].dpsTowerID = projectiles[i].parentID
                                 }
-                                bloons[k].health -= projectiles[i].damage
-                                bloons[k].spawnBloons()
+                                var frameTarget = bloons[k]
+                                var frameOverkill = frameTarget.health > 0 && frameTarget.health - projectiles[i].damage <= 0
+                                frameTarget.health -= projectiles[i].damage
+                                if(frameOverkill && frameTarget.spawnOverkillChildren) {
+                                    frameTarget.spawnOverkillChildren()
+                                } else {
+                                    frameTarget.spawnBloons()
+                                }
                                 if(bloons[k].health <= 8 && bloons[k].pathPos > 0) {
                                     images.push(new Images(bloons[k].x, bloons[k].y, 25, "pop.png", gameNow() + 100, ""))
                                 }
@@ -3259,10 +3271,16 @@ function animate() {
                         }
                     }
                 }
-                bloons[i].health -= bloons[i].dpsDamage
+                var dpsTarget = bloons[i]
+                var dpsOverkill = dpsTarget.health > 0 && dpsTarget.health - dpsTarget.dpsDamage <= 0
+                dpsTarget.health -= dpsTarget.dpsDamage
                 bloons[i].dpsTicks--
                 bloons[i].dpsLastTick += bloons[i].dpsTickRate
-                bloons[i].spawnBloons()
+                if(dpsOverkill && dpsTarget.spawnOverkillChildren) {
+                    dpsTarget.spawnOverkillChildren()
+                } else {
+                    dpsTarget.spawnBloons()
+                }
                 if(bloons[i] && bloons[i].health <= 8 && bloons[i].pathPos > 0) {
                     images.push(new Images(bloons[i].x, bloons[i].y, 25, "pop.png", gameNow() + 100, ""))
                 }

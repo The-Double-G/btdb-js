@@ -1521,6 +1521,8 @@ async function main() {
 
             const runtimeSafetyContract = (() => {
                 const originalBloonsForTargetTest = bloons
+                const originalTowersForOverkillTest = towers.slice()
+                const originalRoundForOverkillTest = round
                 const originalEcoIntervalId = ecoIntervalId
                 const originalRuntimeTasks = runtimeTasks
                 const originalRuntimeTaskScheduleBaseAt = runtimeTaskScheduleBaseAt
@@ -1533,6 +1535,18 @@ async function main() {
                     const targetRefreshedAfterRemoval = refreshProjectileTargetIndex(targetedProjectile) && targetedProjectile.target == 0 && bloons[targetedProjectile.target].bloonID == 202
                     bloons = []
                     const missingTargetInvalidated = refreshProjectileTargetIndex(targetedProjectile) == false && targetedProjectile.targetLost == true
+                    towers.length = 0
+                    round = 0
+                    bloons = []
+                    const overkillParent = new Bloon(-1000, 0, 25, 40, 1, 1, 1, 218, PLAYER_SIDE.left, true, true, 0, 0, 0, 0, 0, 0)
+                    const overkillOpponent = new Bloon(-1000, 0, 25, 40, 1, 1, 1, 1, PLAYER_SIDE.right, true, true, 0, 0, 0, 0, 0, 0)
+                    overkillParent.health = -282
+                    bloons.push(overkillParent, overkillOpponent)
+                    const opponentHealthBeforeOverkill = overkillOpponent.health
+                    const overkillChildrenSpawned = overkillParent.spawnOverkillChildren()
+                    const overkillChildren = bloons.filter(bloon => bloon !== overkillParent && bloon !== overkillOpponent && bloon.playerSide == PLAYER_SIDE.left)
+                    const overkillChildrenSameSide = overkillChildren.length == 3 && overkillChildren.every(bloon => bloon.health == 18)
+                    const overkillOpponentUntouched = overkillOpponent.health == opponentHealthBeforeOverkill
                     ecoIntervalId = 7
                     runtimeTasks = { stale: true }
                     clearAITrainingGameplayRuntimeTasks()
@@ -1545,9 +1559,11 @@ async function main() {
                     const rightFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.right, AI_DECISION_FAMILY.placement, { type: "dart", x: rightX, y: 100 })
                     const mirroredPlacementX = leftFeatures[AI_DECISION_FAMILY_COUNT + 2] == rightFeatures[AI_DECISION_FAMILY_COUNT + 2]
                     const saleGuardRemoved = typeof shouldProtectAITowerFromSale == "undefined"
-                    return { targetRefreshedAfterRemoval, missingTargetInvalidated, ecoHandleReset, mirroredPlacementX, saleGuardRemoved }
+                    return { targetRefreshedAfterRemoval, missingTargetInvalidated, overkillChildrenSpawned, overkillChildrenSameSide, overkillOpponentUntouched, ecoHandleReset, mirroredPlacementX, saleGuardRemoved }
                 } finally {
                     bloons = originalBloonsForTargetTest
+                    towers.splice(0, towers.length, ...originalTowersForOverkillTest)
+                    round = originalRoundForOverkillTest
                     ecoIntervalId = originalEcoIntervalId
                     runtimeTasks = originalRuntimeTasks
                     runtimeTaskScheduleBaseAt = originalRuntimeTaskScheduleBaseAt
@@ -1711,6 +1727,9 @@ async function main() {
         assert.deepEqual(result.runtimeSafetyContract, {
             targetRefreshedAfterRemoval: true,
             missingTargetInvalidated: true,
+            overkillChildrenSpawned: true,
+            overkillChildrenSameSide: true,
+            overkillOpponentUntouched: true,
             ecoHandleReset: true,
             mirroredPlacementX: true,
             saleGuardRemoved: true,

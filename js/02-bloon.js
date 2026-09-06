@@ -1358,6 +1358,39 @@ class Bloon {
         }
     }
 
+    spawnOverkillChildren() {
+        if(this.isBoss) {
+            return false
+        }
+
+        var childHealth = 0
+        if(this.spawnBFBs == true) {
+            childHealth = round > 50 ? 68 + Math.ceil(900 * this.healthFactor) : 918
+        } else if(this.spawnMOABs == true) {
+            childHealth = round > 50 ? 68 + Math.ceil(200 * this.healthFactor) : 218
+        } else if(this.spawnCeramics == true) {
+            childHealth = round > 50 ? 68 : 18
+        } else if(this.spawnRainbows == true) {
+            childHealth = 8
+        } else if(this.spawnZebras == true) {
+            childHealth = 7
+        } else if(this.spawnBlacks == true) {
+            childHealth = 6
+        } else if(this.spawnPinks == true) {
+            childHealth = 5
+        }
+
+        if(childHealth <= 0) {
+            return false
+        }
+
+        var lethalHealth = this.health
+        this.health = childHealth
+        this.spawnBloons()
+        this.health = lethalHealth
+        return true
+    }
+
     collisionCheck(obj) {
         if(obj.x + obj.radius * 0.707 >= this.x - this.radius * 0.707 && obj.x - obj.radius * 0.707 <= this.x + this.radius * 0.707 && obj.y + obj.radius * 0.707 >= this.y - this.radius * 0.707 && obj.y - obj.radius * 0.707 <= this.y + this.radius * 0.707) {
             return true
