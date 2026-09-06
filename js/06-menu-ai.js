@@ -2324,7 +2324,7 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     var genericFeatures = [
         clamp(candidateCost / money, 0, 2) - 1,
         clamp(Math.log1p(candidateCost) / Math.log(100001), 0, 1),
-        clamp((Number(metadata.x) || 0) / width, 0, 1),
+         hasPosition ? getAIPerspectivePlacementX(side, candidateX) : 0,
         clamp((Number(metadata.y) || 0) / height, 0, 1),
         clamp(Number(metadata.position) || 0, 0, 1),
         clamp((Number(metadata.count) || 0) / Math.max(1, Number(metadata.countScale) || 16), 0, 1),
@@ -5282,19 +5282,25 @@ function getAISpotScore(side, x, y, radius, range, role, offsetIndex, towerType,
 function findAISpot(side, radius, range, role, offsetIndex, towerType) {
     var bounds = getSideBounds(side, radius)
     var step = role == "farm" || role == "farmer" ? 28 : 32
-    var matchup = role == "farm" || role == "farmer" ? null : getCurrentPlayerMatchupStyle(side)
+    var matchup = getCurrentPlayerMatchupStyle(side)
     var candidates = []
+    var pathCandidates = []
     for(var y = bounds.minY; y <= bounds.maxY; y += step) {
         for(var x = bounds.minX; x <= bounds.maxX; x += step) {
             if(canPlaceTowerAt(side, x, y, radius) == false) {
                 continue
             }
-            candidates.push({
+            var candidate = {
                 x: x,
                 y: y,
-            })
+            }
+            candidates.push(candidate)
+            if(role != "farm" && role != "farmer" && getPlacementCoverageStats(side, x, y, range).coverageCount > 0) {
+                pathCandidates.push(candidate)
+            }
         }
     }
+    if(pathCandidates.length > 0) candidates = pathCandidates
     if(candidates.length > 1 && Number.isFinite(Number(offsetIndex))) {
         var offset = ((Number(offsetIndex) % candidates.length) + candidates.length) % candidates.length
         if(offset > 0) candidates = candidates.slice(offset).concat(candidates.slice(0, offset))
@@ -5322,6 +5328,7 @@ function findAISpot(side, radius, range, role, offsetIndex, towerType) {
             index: candidateIndex,
             maxIndex: Math.max(1, candidates.length - 1),
         }, matchup, stateFeatures)
+        candidate.decision.score += clamp(getAISpotScore(side, candidate.x, candidate.y, radius, range, role, offsetIndex, towerType, matchup) / 106, -1, 1) * 0.08
         if(!bestCandidate || isAIDecisionScoreBetter(candidate.decision, bestCandidate.decision)) bestCandidate = candidate
     }
     return { x: bestCandidate.x, y: bestCandidate.y, decisionSample: bestCandidate.decision }
@@ -6675,7 +6682,7 @@ function aiSelectEcoSend(side, matchup) {
         var bloon = displayBloons[i]
         var bloonRoundUnlock = bloon ? Number(bloon.roundUnlock) : NaN
         var currentVisibleRound = typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : (typeof round != "undefined" ? Math.floor(round / 2) : 0)
-        if(!bloon || bloon.image == "locked.png" || (Number.isFinite(bloonRoundUnlock) && bloonRoundUnlock > currentVisibleRound) || bloon.eco <= 0) {
+        if(!bloon || bloon.image == "locked.png" || (Number.isFinite(bloonRoundUnlock) && bloonRoundUnlock > currentVisibleRound) || bloon.eco <= 0 || bloon.cost > players[side].money) {
             continue
         }
 
@@ -7241,6 +7248,18 @@ function updateAIMatchTelemetry() {
     }
 }
 
+function shouldProtectAITowerFromSale(tower, matchup) {
+    if(!tower) return true
+    var visibleRound = getCurrentVisibleRound()
+    var placedRound = Number(tower.aiPlacedRound)
+    var emergencyFarmSale = matchup && matchup.dangerHigh && tower.towerType == "farm"
+    if(!emergencyFarmSale && Number.isFinite(placedRound) && visibleRound < 5) return true
+    var now = gameNow()
+    if(Number.isFinite(Number(tower.aiPlacedAt)) && now - Number(tower.aiPlacedAt) < 12000) return true
+    if(Number.isFinite(Number(tower.aiLastUpgradeAt)) && now - Number(tower.aiLastUpgradeAt) < 15000) return true
+    return false
+}
+
 function getBestAIEconomyUtilityOption(side, matchup) {
     var bestOption = null
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.sell, matchup)
@@ -7250,6 +7269,7 @@ function getBestAIEconomyUtilityOption(side, matchup) {
     for(var i = 0; i < towers.length; i++) {
         var tower = towers[i]
         if(!tower || tower.playerSide != side) continue
+        if(shouldProtectAITowerFromSale(tower, matchup)) continue
         var sellValue = getAITowerSellValueEstimate(tower)
         var sellBank = tower.towerType == "farm" && tower.path2Upgrades >= 3 ? Math.max(0, Number(tower.towerVar) || 0) : 0
         var sellProceeds = sellValue + sellBank

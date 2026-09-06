@@ -757,6 +757,7 @@ function rebuildPregameUIAssets() {
 
 function clearAITrainingGameplayRuntimeTasks() {
     runtimeTasks = {}
+    ecoIntervalId = null
     runtimeTaskScheduleBaseAt = 0
     gameTimeNow = realNow()
     runtimeLastTick = realNow()

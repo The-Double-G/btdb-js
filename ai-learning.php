@@ -2649,6 +2649,7 @@ if ($action === 'promote') {
     if (!$candidatePolicyPreserved) {
         $nextModel['policy'] = $request['policy'];
     }
+    $nextModel['totalDecisionSamples'] = decision_sample_count($nextModel['policy']);
     $nextModel['championGeneration'] = $currentChampionGeneration + 1;
     $nextModel['candidateGeneration'] = $nextModel['championGeneration'];
     if (!valid_model($nextModel)) {

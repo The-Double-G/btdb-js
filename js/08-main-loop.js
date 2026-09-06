@@ -2410,7 +2410,7 @@ function animate() {
         rebuildFrameTowerLookup()
         for(var k = 0; k < bloons.length; k++) {
             for(var i = 0; i < projectiles.length; i++) {
-                if(projectiles[i].target != -1 && projectiles[i].targetHit == false) {
+                if(projectiles[i].target != -1 && projectiles[i].targetHit == false && refreshProjectileTargetIndex(projectiles[i])) {
                     if(bloons[projectiles[i].target] && projectiles[i] && projectiles[i].touchingBloon(bloons[projectiles[i].target]) && bloons[projectiles[i].target].playerSide == projectiles[i].playerSide && projectiles[i].hitBloons.has(bloons[projectiles[i].target].bloonID) == false) {
                         if(projectiles[i].canRicochet == true && projectiles[i].pathPos == -1000) {
                             projectiles[i].pathPos = bloons[projectiles[i].target].pathPos
@@ -2627,7 +2627,7 @@ function animate() {
                         }
                     }
                 }
-                if(bloons[k] && projectiles[i] && projectiles[i].touchingBloon(bloons[k]) && bloons[k].playerSide == projectiles[i].playerSide && projectiles[i].hitBloons.has(bloons[k].bloonID) == false) {
+                if(bloons[k] && projectiles[i] && projectiles[i].targetLost != true && projectiles[i].touchingBloon(bloons[k]) && bloons[k].playerSide == projectiles[i].playerSide && projectiles[i].hitBloons.has(bloons[k].bloonID) == false) {
                         if(projectiles[i].canRicochet == true && projectiles[i].pathPos == -1000) {
                             projectiles[i].pathPos = bloons[k].pathPos
                         } else if(projectiles[i].image == "003farmerproj.png") {

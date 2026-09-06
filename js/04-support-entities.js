@@ -1,4 +1,22 @@
 // Projectiles, UI helpers, subtowers, and support entities
+function refreshProjectileTargetIndex(projectile) {
+    if(!projectile || projectile.target == -1 || projectile.targetBloonID == -1) return projectile && projectile.target != -1
+    if(typeof bloons == "undefined" || Array.isArray(bloons) == false) return false
+    if(bloons[projectile.target] && bloons[projectile.target].bloonID == projectile.targetBloonID) return true
+    for(var bloonIndex = 0; bloonIndex < bloons.length; bloonIndex++) {
+        if(bloons[bloonIndex] && bloons[bloonIndex].bloonID == projectile.targetBloonID) {
+            projectile.target = bloonIndex
+            return true
+        }
+    }
+    projectile.target = -1
+    projectile.targetHit = true
+    projectile.targetLost = true
+    projectile.pierce = 0
+    projectile.lifespan = typeof gameNow == "function" ? gameNow() : 0
+    return false
+}
+
 class Projectile {
     constructor(x, y, dx, dy, radius, image, damage, pierce, knockback, moabKnockback, parentID, playerSide, canRicochet, target, dpsDamage, dpsType, dpsTicks, dpsLastTick, dpsTickRate) {
         this.x = x
@@ -27,6 +45,9 @@ class Projectile {
         this.bounceCount = 0
         this.lifespan = -1
         this.target = target
+        this.targetBloonID = -1
+        if(target != -1 && typeof bloons != "undefined" && bloons[target] && Number.isFinite(Number(bloons[target].bloonID))) this.targetBloonID = bloons[target].bloonID
+        this.targetLost = false
         this.targetHit = false
         this.hitBloons = new Set()
         this.spawnedFrags = false

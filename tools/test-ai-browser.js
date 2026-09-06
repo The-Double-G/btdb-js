@@ -1112,7 +1112,7 @@ async function main() {
                     moneyUnchanged: players[aiSide].money == moneyBefore,
                     placed: !!farmer,
                     placementAllowedWithoutFarm: !!option && !!farmer,
-                    saleCandidateIncludesFarmer: farmerSaleCandidate && farmerSaleCandidate.type == "sell" && farmerSaleCandidate.tower == farmer,
+                    newTowerSaleExcluded: farmerSaleCandidate == null,
                     requestedSaleAccepted,
                     requestedSaleTargetPreserved,
                     directSaleAllowed,
@@ -1519,6 +1519,43 @@ async function main() {
                 bloons = originalProgressBloons
             }
 
+            const runtimeSafetyContract = (() => {
+                const originalBloonsForTargetTest = bloons
+                const originalEcoIntervalId = ecoIntervalId
+                const originalRuntimeTasks = runtimeTasks
+                const originalRuntimeTaskScheduleBaseAt = runtimeTaskScheduleBaseAt
+                const originalGameTimeNow = gameTimeNow
+                const originalRuntimeLastTick = runtimeLastTick
+                try {
+                    bloons = [{ bloonID: 101 }, { bloonID: 202 }]
+                    const targetedProjectile = new Projectile(0, 0, 0, 0, 1, "", 1, 1, 0, 0, 0, PLAYER_SIDE.left, false, 1, 0, 0, 0, 0, 0)
+                    bloons.splice(0, 1)
+                    const targetRefreshedAfterRemoval = refreshProjectileTargetIndex(targetedProjectile) && targetedProjectile.target == 0 && bloons[targetedProjectile.target].bloonID == 202
+                    bloons = []
+                    const missingTargetInvalidated = refreshProjectileTargetIndex(targetedProjectile) == false && targetedProjectile.targetLost == true
+                    ecoIntervalId = 7
+                    runtimeTasks = { stale: true }
+                    clearAITrainingGameplayRuntimeTasks()
+                    const ecoHandleReset = ecoIntervalId == null && Object.keys(runtimeTasks).length == 0
+                    const leftBounds = getSideBounds(PLAYER_SIDE.left, 0)
+                    const rightBounds = getSideBounds(PLAYER_SIDE.right, 0)
+                    const leftX = leftBounds.minX + (leftBounds.maxX - leftBounds.minX) * 0.25
+                    const rightX = rightBounds.maxX - (rightBounds.maxX - rightBounds.minX) * 0.25
+                    const leftFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { type: "dart", x: leftX, y: 100 })
+                    const rightFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.right, AI_DECISION_FAMILY.placement, { type: "dart", x: rightX, y: 100 })
+                    const mirroredPlacementX = leftFeatures[AI_DECISION_FAMILY_COUNT + 2] == rightFeatures[AI_DECISION_FAMILY_COUNT + 2]
+                    const saleProtected = shouldProtectAITowerFromSale({ towerType: "dart", aiPlacedRound: 1, aiPlacedAt: gameNow(), aiLastUpgradeAt: gameNow() }, { dangerHigh: false })
+                    return { targetRefreshedAfterRemoval, missingTargetInvalidated, ecoHandleReset, mirroredPlacementX, saleProtected }
+                } finally {
+                    bloons = originalBloonsForTargetTest
+                    ecoIntervalId = originalEcoIntervalId
+                    runtimeTasks = originalRuntimeTasks
+                    runtimeTaskScheduleBaseAt = originalRuntimeTaskScheduleBaseAt
+                    gameTimeNow = originalGameTimeNow
+                    runtimeLastTick = originalRuntimeLastTick
+                }
+            })()
+
             return {
                 aimActionCompleted: initialAimActionCompleted,
                 aimTarget: { x: aimX, y: aimY },
@@ -1563,6 +1600,7 @@ async function main() {
                 overviewLabels,
                 policyContract,
                 progressKeyTracksBloonMovement,
+                runtimeSafetyContract,
                 candidateFeatureContracts,
                 placementFeatureContract,
                 placementPressureContract,
@@ -1670,6 +1708,13 @@ async function main() {
         assert.equal(result.lastEvaluation.score, 0.58)
         assert.equal(result.legacyContributionQueueRemoved, true)
         assert.equal(result.progressKeyTracksBloonMovement, true)
+        assert.deepEqual(result.runtimeSafetyContract, {
+            targetRefreshedAfterRemoval: true,
+            missingTargetInvalidated: true,
+            ecoHandleReset: true,
+            mirroredPlacementX: true,
+            saleProtected: true,
+        })
         assert.equal(result.sameEpochRefreshSucceeded, true)
         assert.deepEqual(result.sameEpochRefresh, { games: 7, generation: 4, revision: 4 })
         assert.equal(result.resetEpochRefreshSucceeded, true)
@@ -1832,7 +1877,7 @@ async function main() {
             moneyUnchanged: true,
             placed: true,
             placementAllowedWithoutFarm: true,
-            saleCandidateIncludesFarmer: true,
+            newTowerSaleExcluded: true,
             requestedSaleAccepted: true,
             requestedSaleTargetPreserved: true,
             directSaleAllowed: true,
