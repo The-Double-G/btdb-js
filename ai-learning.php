@@ -1775,6 +1775,14 @@ function decision_cosine_embedding_deltas(array $forward, float $outputDelta): a
     return ['state' => $stateDeltas, 'candidate' => $candidateDeltas];
 }
 
+function decision_learning_weight(array $sample, float $target, int $survivalClass): float {
+    $targetMagnitude = clamp_number(abs($target), 0.0, 1.0);
+    $intervalMagnitude = clamp_number(abs((float)($sample['intervalReward'] ?? 0.0)), 0.0, 1.0);
+    $terminalWeight = !empty($sample['terminal']) ? 0.25 : 0.0;
+    $survivalWeight = $survivalClass === 0 ? 0.4 : ($survivalClass === 1 ? 0.2 : 0.0);
+    return clamp_number(0.75 + $targetMagnitude * 0.55 + $intervalMagnitude * 0.2 + $terminalWeight + $survivalWeight, 0.75, 2.5);
+}
+
 function decision_transition_discount(array $sample): float {
     $seconds = max(0.0, ((float)$sample['settledAtMs'] - (float)$sample['startedAtMs']) / 1000.0);
     return pow(AI_DECISION_DISCOUNT_PER_SECOND, $seconds);
@@ -1873,7 +1881,7 @@ function train_candidate_decision(array &$model, array $sample, float $target, i
     }
 
     $sampleCount = (float)$decision['trainingSamples'][$familyIndex];
-    $learningRate = (float)$policy['decisionLearningRate'] / sqrt(1.0 + $sampleCount / 500.0);
+    $learningRate = (float)$policy['decisionLearningRate'] / sqrt(1.0 + $sampleCount / 500.0) * decision_learning_weight($sample, $target, $survivalClass);
     for ($embedding = 0; $embedding < AI_DECISION_EMBEDDING; $embedding++) {
         $decision['WValue'][$embedding] = clamp_number((float)$decision['WValue'][$embedding] + $learningRate * $valueDelta * $chosen['stateEmbedding'][$embedding], -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
     }

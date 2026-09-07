@@ -39,6 +39,16 @@ const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
 const EVALUATION_AGGREGATE_FORMAT_VERSION = 2
+const QUALITY_COMPARISON_KIND = "btdb-ai-quality-comparison"
+const QUALITY_COMPARISON_FORMAT_VERSION = 1
+const QUALITY_MAX_SURVIVAL_REGRESSION = 0.05
+const QUALITY_MAX_SEVERE_COLLAPSE_REGRESSION = 0.05
+const QUALITY_MAX_AVERAGE_LIVES_REGRESSION = 15
+const QUALITY_MAX_DEFENSE_REGRESSION = 0.05
+const QUALITY_MAX_DEFENSE_LIVES_REGRESSION = 15
+const QUALITY_MAX_RESPONDER_SCORE_REGRESSION = 0.05
+const QUALITY_MAX_WORST_BUCKET_REGRESSION = 0.05
+const QUALITY_TOLERANCE_CALIBRATION_GAMES = 64
 const ABSOLUTE_DEFENSE_MINIMUM_LIVES = 50
 const ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES = 25
 const ABSOLUTE_DEFENSE_MINIMUM_RATE = 0.75
@@ -1020,7 +1030,139 @@ function validateEvaluationAggregate(aggregate, label = "evaluation aggregate") 
     return aggregate
 }
 
-function validatePromotionBundle(candidate, evaluation, baseline, minimumScore = 0.58, minimumGames = 64) {
+const QUALITY_COMPARISON_KEYS = [
+    "kind", "formatVersion", "comparisonId", "candidateAggregateId", "baselineAggregateId",
+    "candidateCheckpointId", "baselineCheckpointId", "games", "thresholds", "candidate", "baseline", "deltas", "passed",
+]
+const QUALITY_THRESHOLD_KEYS = [
+    "minimumGames", "maxSurvivalRegression", "maxSevereCollapseRegression", "maxAverageLivesRegression",
+    "maxDefenseRegression", "maxDefenseLivesRegression", "maxResponderScoreRegression", "maxWorstBucketRegression",
+]
+const QUALITY_METRIC_KEYS = [
+    "overallScore", "worstBucketScore", "survivalRate", "severeCollapseRate", "averageCandidateLives",
+    "defenseProtectionRate", "defenseMinimumLives", "responderScore",
+]
+
+function qualityThresholds(minimumGames) {
+    const sampleScale = Math.min(10, Math.max(1, Math.sqrt(QUALITY_TOLERANCE_CALIBRATION_GAMES / minimumGames)))
+    return {
+        minimumGames,
+        maxSurvivalRegression: Math.min(0.5, QUALITY_MAX_SURVIVAL_REGRESSION * sampleScale),
+        maxSevereCollapseRegression: Math.min(0.5, QUALITY_MAX_SEVERE_COLLAPSE_REGRESSION * sampleScale),
+        maxAverageLivesRegression: Math.min(75, QUALITY_MAX_AVERAGE_LIVES_REGRESSION * sampleScale),
+        maxDefenseRegression: Math.min(0.5, QUALITY_MAX_DEFENSE_REGRESSION * sampleScale),
+        maxDefenseLivesRegression: Math.min(75, QUALITY_MAX_DEFENSE_LIVES_REGRESSION * sampleScale),
+        maxResponderScoreRegression: Math.min(0.5, QUALITY_MAX_RESPONDER_SCORE_REGRESSION * sampleScale),
+        maxWorstBucketRegression: Math.min(0.5, QUALITY_MAX_WORST_BUCKET_REGRESSION * sampleScale),
+    }
+}
+
+function qualityMetricSnapshot(aggregate) {
+    const buckets = [...Object.values(aggregate.byMap), ...Object.values(aggregate.bySide), ...Object.values(aggregate.byRole)]
+    return {
+        overallScore: aggregate.overall.score,
+        worstBucketScore: Math.min(...buckets.map(bucket => bucket.score)),
+        survivalRate: aggregate.safety.survivalRate,
+        severeCollapseRate: aggregate.safety.severeCollapseRate,
+        averageCandidateLives: aggregate.safety.averageCandidateLives,
+        defenseProtectionRate: aggregate.absoluteDefense.protectionRate,
+        defenseMinimumLives: aggregate.absoluteDefense.minimumCandidateLives,
+        responderScore: aggregate.byRole.responder.score,
+    }
+}
+
+function validateQualityMetric(metric, label) {
+    assertExactKeys(metric, QUALITY_METRIC_KEYS, label)
+    for(const key of ["overallScore", "worstBucketScore", "survivalRate", "severeCollapseRate", "defenseProtectionRate", "responderScore"]) {
+        assertNumber(metric[key], `${label}.${key}`, 0, 1)
+    }
+    for(const key of ["averageCandidateLives", "defenseMinimumLives"]) assertNumber(metric[key], `${label}.${key}`, 0)
+    return metric
+}
+
+function validateQualityDeltas(deltas, label) {
+    assertExactKeys(deltas, QUALITY_METRIC_KEYS, label)
+    for(const key of ["overallScore", "worstBucketScore", "survivalRate", "severeCollapseRate", "defenseProtectionRate", "responderScore"]) {
+        assertNumber(deltas[key], `${label}.${key}`, -1, 1)
+    }
+    for(const key of ["averageCandidateLives", "defenseMinimumLives"]) assertNumber(deltas[key], `${label}.${key}`, -150, 150)
+    return deltas
+}
+
+function qualityComparisonIdentity(comparison) {
+    const identity = {}
+    for(const key of Object.keys(comparison)) if(key != "comparisonId") identity[key] = comparison[key]
+    return identity
+}
+
+function qualityComparisonPassed(candidate, baseline, thresholds, games) {
+    return games >= thresholds.minimumGames
+        && candidate.survivalRate >= baseline.survivalRate - thresholds.maxSurvivalRegression
+        && candidate.severeCollapseRate <= baseline.severeCollapseRate + thresholds.maxSevereCollapseRegression
+        && candidate.averageCandidateLives >= baseline.averageCandidateLives - thresholds.maxAverageLivesRegression
+        && candidate.defenseProtectionRate >= baseline.defenseProtectionRate - thresholds.maxDefenseRegression
+        && candidate.defenseMinimumLives >= baseline.defenseMinimumLives - thresholds.maxDefenseLivesRegression
+        && candidate.responderScore >= baseline.responderScore - thresholds.maxResponderScoreRegression
+        && candidate.worstBucketScore >= baseline.worstBucketScore - thresholds.maxWorstBucketRegression
+}
+
+function validateQualityComparison(comparison, label = "quality comparison") {
+    assertExactKeys(comparison, QUALITY_COMPARISON_KEYS, label)
+    if(comparison.kind !== QUALITY_COMPARISON_KIND || comparison.formatVersion !== QUALITY_COMPARISON_FORMAT_VERSION) fail(`${label} has an unsupported kind or format version`)
+    for(const key of ["comparisonId", "candidateAggregateId", "baselineAggregateId", "candidateCheckpointId", "baselineCheckpointId"]) assertDigest(comparison[key], `${label}.${key}`)
+    assertInteger(comparison.games, `${label}.games`, 1)
+    assertExactKeys(comparison.thresholds, QUALITY_THRESHOLD_KEYS, `${label}.thresholds`)
+    assertInteger(comparison.thresholds.minimumGames, `${label}.thresholds.minimumGames`, 1)
+    for(const key of QUALITY_THRESHOLD_KEYS.filter(key => key != "minimumGames")) {
+        const maximum = key.includes("Lives") ? Infinity : 1
+        assertNumber(comparison.thresholds[key], `${label}.thresholds.${key}`, 0, maximum)
+    }
+    if(canonicalStringify(comparison.thresholds) != canonicalStringify(qualityThresholds(comparison.thresholds.minimumGames))) fail(`${label}.thresholds are inconsistent`)
+    validateQualityMetric(comparison.candidate, `${label}.candidate`)
+    validateQualityMetric(comparison.baseline, `${label}.baseline`)
+    validateQualityDeltas(comparison.deltas, `${label}.deltas`)
+    for(const key of QUALITY_METRIC_KEYS) {
+        const expected = comparison.candidate[key] - comparison.baseline[key]
+        if(Math.abs(comparison.deltas[key] - expected) > 1e-12) fail(`${label}.deltas.${key} is inconsistent`)
+    }
+    const expectedPassed = qualityComparisonPassed(comparison.candidate, comparison.baseline, comparison.thresholds, comparison.games)
+    if(comparison.passed !== expectedPassed) fail(`${label}.passed is inconsistent`)
+    if(comparison.comparisonId != digest(qualityComparisonIdentity(comparison))) fail(`${label}.comparisonId does not match its contents`)
+    return comparison
+}
+
+function compareEvaluationQuality(candidateAggregate, baselineAggregate, minimumGames = candidateAggregate && candidateAggregate.thresholds ? candidateAggregate.thresholds.minimumGames : 1) {
+    validateEvaluationAggregate(candidateAggregate, "candidate evaluation")
+    validateEvaluationAggregate(baselineAggregate, "baseline evaluation")
+    if(candidateAggregate.formatVersion !== EVALUATION_AGGREGATE_FORMAT_VERSION || baselineAggregate.formatVersion !== EVALUATION_AGGREGATE_FORMAT_VERSION) fail("Quality comparison requires format-2 evaluation aggregates")
+    if(candidateAggregate.gameVersion !== baselineAggregate.gameVersion || candidateAggregate.modelSchemaVersion !== baselineAggregate.modelSchemaVersion) fail("Quality comparison evaluations are incompatible")
+    if(candidateAggregate.baselineCheckpointId !== baselineAggregate.candidateCheckpointId || baselineAggregate.baselineCheckpointId !== baselineAggregate.candidateCheckpointId) fail("Quality comparison evaluations do not share the same baseline checkpoint")
+    if(candidateAggregate.overall.games !== baselineAggregate.overall.games) fail("Quality comparison evaluations must contain the same number of games")
+    assertInteger(minimumGames, "minimumGames", 1)
+    const thresholds = qualityThresholds(minimumGames)
+    const candidate = qualityMetricSnapshot(candidateAggregate)
+    const baseline = qualityMetricSnapshot(baselineAggregate)
+    const deltas = Object.fromEntries(QUALITY_METRIC_KEYS.map(key => [key, candidate[key] - baseline[key]]))
+    const comparison = {
+        kind: QUALITY_COMPARISON_KIND,
+        formatVersion: QUALITY_COMPARISON_FORMAT_VERSION,
+        comparisonId: "",
+        candidateAggregateId: candidateAggregate.aggregateId,
+        baselineAggregateId: baselineAggregate.aggregateId,
+        candidateCheckpointId: candidateAggregate.candidateCheckpointId,
+        baselineCheckpointId: baselineAggregate.candidateCheckpointId,
+        games: candidateAggregate.overall.games,
+        thresholds,
+        candidate,
+        baseline,
+        deltas,
+        passed: qualityComparisonPassed(candidate, baseline, thresholds, candidateAggregate.overall.games),
+    }
+    comparison.comparisonId = digest(qualityComparisonIdentity(comparison))
+    return validateQualityComparison(comparison)
+}
+
+function validatePromotionBundle(candidate, evaluation, baseline, minimumScore = 0.58, minimumGames = 64, quality = null, baselineEvaluation = null) {
     assertNumber(minimumScore, "minimumScore", 0, 1)
     assertInteger(minimumGames, "minimumGames", 1)
     validatePolicyOnlyCandidate(candidate, baseline)
@@ -1031,6 +1173,16 @@ function validatePromotionBundle(candidate, evaluation, baseline, minimumScore =
     if(evaluation.formatVersion !== EVALUATION_AGGREGATE_FORMAT_VERSION) fail("Evaluation lacks format-2 absolute defensive competence evidence")
     if(evaluation.passed !== true) fail("Evaluation did not pass its declared thresholds and coverage")
     if(evaluation.overall.score < minimumScore || evaluation.overall.games < minimumGames) fail(`Evaluation does not meet the promotion minimum of ${minimumGames} games and score ${minimumScore}`)
+    if(quality !== null) {
+        validateQualityComparison(quality)
+        if(quality.candidateAggregateId !== evaluation.aggregateId || quality.candidateCheckpointId !== candidate.checkpointId || quality.baselineCheckpointId !== baseline.checkpointId) fail("Quality comparison does not identify the current promotion bundle")
+        if(quality.passed !== true) fail("Quality comparison detected a gameplay safety regression")
+        if(quality.games < minimumGames) fail(`Quality comparison does not meet the promotion minimum of ${minimumGames} games`)
+        if(baselineEvaluation !== null) {
+            const expectedQuality = compareEvaluationQuality(evaluation, baselineEvaluation, quality.thresholds.minimumGames)
+            if(canonicalStringify(expectedQuality) != canonicalStringify(quality)) fail("Quality comparison does not match the bundled baseline evaluation")
+        }
+    }
     return { candidate, evaluation, baseline }
 }
 
@@ -1332,6 +1484,8 @@ module.exports = {
     MODEL_SCHEMA_VERSION,
     POLICY_FORMAT_VERSION,
     POLICY_PARAMETER_COUNT,
+    QUALITY_COMPARISON_FORMAT_VERSION,
+    QUALITY_COMPARISON_KIND,
     ROOT,
     SELECTION_REPORT_KIND,
     TRAIN_RESULT_KIND,
@@ -1343,6 +1497,7 @@ module.exports = {
     assertFiniteTree,
     canonicalStringify,
     clone,
+    compareEvaluationQuality,
     computeMetrics,
     createCheckpoint,
     createHostedPromotionReceipt,
@@ -1369,6 +1524,7 @@ module.exports = {
     validateCheckpoint,
     validateEvaluationAggregate,
     validateEvaluationResult,
+    validateQualityComparison,
     validateHostedEnvelope,
     validateHostedPromotionReceipt,
     validateHostedPromotionResponse,

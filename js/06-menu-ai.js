@@ -28,6 +28,7 @@ var aiProfile = {
     policySnapshot: null,
     learningEnabled: false,
     explorationEnabled: false,
+    explorationScale: 1,
     pendingTacticalDecision: null,
     tacticalTrace: [],
     placementOutcomes: {},
@@ -403,6 +404,7 @@ function resetAIProfile() {
     aiProfile.policySnapshot = null
     aiProfile.learningEnabled = false
     aiProfile.explorationEnabled = false
+    aiProfile.explorationScale = 1
     aiProfile.pendingTacticalDecision = null
     aiProfile.tacticalTrace = []
     aiProfile.placementOutcomes = {}
@@ -751,7 +753,8 @@ function getAILoadoutExplorationBonus(loadoutKey) {
     var record = peekAILoadoutStatsRecord(loadoutKey)
     var totalSamples = Math.max(1, aiLearning.totalLoadoutSamples || aiLearning.totalGames || 1)
     var games = record ? record.games : 0
-    return Math.sqrt(Math.log(totalSamples + 1) / Math.max(1, games + 1)) * 0.42
+    var explorationScale = clamp(Number(aiProfile.explorationScale) || 1, 0, 1)
+    return Math.sqrt(Math.log(totalSamples + 1) / Math.max(1, games + 1)) * 0.42 * explorationScale
 }
 
 function getAILoadoutCoverageBonus(loadoutKey) {
@@ -2549,7 +2552,7 @@ function scoreAIDecisionCandidate(side, familyIndex, metadata, matchup, stateFea
     var candidateFeatures = buildAIDecisionCandidateFeatures(side, familyIndex, metadata)
     var memoryIn = getAIDecisionMemory()
     var forward = aiDecisionForward(resolvedState, candidateFeatures, familyIndex, memoryIn, policyOverride)
-    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * Math.pow(0.997, (policyOverride || getAIPolicyForDecision()).decision.trainingSamples[familyIndex] || 0)) : 0
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, (policyOverride || getAIPolicyForDecision()).decision.trainingSamples[familyIndex] || 0)) : 0
     var humanTacticalBonus = getAIHumanTacticalCandidateBonus(side, familyIndex, metadata)
     var result = {
         id: stableId,
@@ -2631,6 +2634,14 @@ function getAICosineEmbeddingDeltas(forward, outputDelta) {
     return { state: stateDeltas, candidate: candidateDeltas }
 }
 
+function getAIDecisionLearningWeight(sample, target, survivalClass) {
+    var targetMagnitude = clamp(Math.abs(Number(target) || 0), 0, 1)
+    var intervalMagnitude = clamp(Math.abs(Number(sample && sample.intervalReward) || 0), 0, 1)
+    var terminalWeight = sample && sample.terminal ? 0.25 : 0
+    var survivalWeight = survivalClass == 0 ? 0.4 : survivalClass == 1 ? 0.2 : 0
+    return clamp(0.75 + targetMagnitude * 0.55 + intervalMagnitude * 0.2 + terminalWeight + survivalWeight, 0.75, 2.5)
+}
+
 function trainAIDecision(sample, target, survivalClass, policyOverride) {
     ensureAILearningLoaded()
     var policy = policyOverride || aiLearning.policy
@@ -2694,7 +2705,7 @@ function trainAIDecision(sample, target, survivalClass, policyOverride) {
         return deltas
     }
     var chosenCandidateHiddenDelta = candidateHiddenDeltas(chosen, chosenActorDeltas.candidate)
-    var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500)
+    var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500) * getAIDecisionLearningWeight(sample, target, survivalClass)
     for(var valueWeightIndex = 0; valueWeightIndex < AI_DECISION_EMBEDDING_SIZE; valueWeightIndex++) decision.WValue[valueWeightIndex] = clampAIPolicyParameter(decision.WValue[valueWeightIndex] + learningRate * valueDelta * chosen.stateEmbedding[valueWeightIndex])
     decision.bValue = clampAIPolicyParameter(decision.bValue + learningRate * valueDelta)
     if(hasSurvivalTarget) {
@@ -2749,7 +2760,7 @@ function chooseAIStrategyFromFeaturesWithObservation(features, observedLoadoutSu
     var pass = aiPolicyForward(features)
     var chosenIndex = 0
     var bestScore = -Infinity
-    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
+    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
     var scoredOutputs = []
     var decisionScores = []
     var decisionState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.strategy, null, features)
@@ -2806,7 +2817,7 @@ function chooseAIArchetypeFromFeatures(features, excludedStrategyIndex, loadoutK
     var pass = aiPolicyForward(features)
     var chosenIndex = 0
     var bestScore = -Infinity
-    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
+    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
     var scoredOutputs = []
     var decisionScores = []
     var decisionState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.strategy, null, features)
@@ -3342,7 +3353,22 @@ function collectAIPlacementSamples(maximumSamples) {
     var maximum = maximumSamples == null ? available.length : Math.max(0, Math.floor(maximumSamples))
     if(maximum <= 0) return []
     if(available.length <= maximum) return available
-    return available.slice(0, maximum)
+    return available.map(function(sample, index) {
+        return { sample: sample, index: index }
+    }).sort(function(left, right) {
+        var leftPriority = Math.abs(Number(left.sample.intervalReward) || 0)
+        var rightPriority = Math.abs(Number(right.sample.intervalReward) || 0)
+        if(leftPriority != rightPriority) return rightPriority - leftPriority
+        return right.index - left.index
+    }).slice(0, maximum).sort(function(left, right) {
+        return left.index - right.index
+    }).map(function(entry) {
+        return entry.sample
+    })
+}
+
+function getAIDecisionSamplePriority(sample) {
+    return 0.5 + Math.abs(Number(sample && sample.intervalReward) || 0) * 0.6 + (sample && sample.terminal ? 1 : 0)
 }
 
 function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
@@ -3373,7 +3399,18 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
     var maximum = maximumDecisions == null ? available.length : Math.max(0, Math.floor(maximumDecisions))
     if(maximum <= 0) return []
     if(available.length <= maximum) return available
-    return available.slice(available.length - maximum)
+    var suffixStart = available.length - maximum
+    var bestStart = suffixStart
+    var bestPriority = -Infinity
+    for(var start = 0; start <= suffixStart; start++) {
+        var windowPriority = 0
+        for(var offset = 0; offset < maximum; offset++) windowPriority += getAIDecisionSamplePriority(available[start + offset])
+        if(windowPriority > bestPriority || windowPriority == bestPriority && start > bestStart) {
+            bestPriority = windowPriority
+            bestStart = start
+        }
+    }
+    return available.slice(bestStart, bestStart + maximum)
 }
 
 function getAIDecisionTransitionDiscount(sample) {

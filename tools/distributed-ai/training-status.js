@@ -6,8 +6,10 @@ const { TextDecoder } = require("node:util")
 const {
     FORMAT_VERSION,
     canonicalStringify,
+    compareEvaluationQuality,
     validateEvaluationAggregate,
     validateHostedPromotionReceipt,
+    validateQualityComparison,
 } = require("./common")
 
 const STATUS_KIND = "btdb-ai-training-status"
@@ -578,6 +580,26 @@ async function loadEvidence(api, source, logger) {
     } catch(error) {
         logger.warn(`Training evaluation artifact ignored: ${error.message}`)
         return empty
+    }
+    let quality = null
+    try {
+        quality = await api.readArtifactJson(evaluationArtifact, "quality.json")
+    } catch(error) {
+        if(error.message != "missing artifact member") {
+            logger.warn(`Training quality artifact ignored: ${error.message}`)
+            return empty
+        }
+    }
+    if(quality !== null) {
+        try {
+            validateQualityComparison(quality, "training status quality artifact")
+            const baselineEvaluation = await api.readArtifactJson(evaluationArtifact, "baseline-evaluation.json")
+            const expectedQuality = compareEvaluationQuality(evaluation, baselineEvaluation, quality.thresholds.minimumGames)
+            if(canonicalStringify(expectedQuality) != canonicalStringify(quality) || quality.passed !== true) fail("quality artifact does not approve the evaluated candidate")
+        } catch(error) {
+            logger.warn(`Training quality artifact ignored: ${error.message}`)
+            return empty
+        }
     }
     const result = { evaluation, receipt: null }
     const receiptArtifact = selectArtifact(artifacts, "ai-hosted-promotion-receipt", source)

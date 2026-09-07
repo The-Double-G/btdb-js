@@ -8,8 +8,8 @@ Every generation starts from one immutable snapshot of the authoritative Hosted 
 2. Deterministic Chromium workers train independent complete policy bundles from that exact snapshot.
 3. The selector validates every unique shard against the same baseline and computes a deterministic policy average. A shard's normalized weight is proportional to `exp((built-in evaluation score - maximum shard score) * 8)`.
 4. Materialization clones the hosted baseline and changes the aggregated policy bundle, strategy outcome records, generations, and bounded two-policy history. Neural tensors are score-weighted averages, each per-family training counter is the baseline count plus the sum of every shard's learned increment, and candidate-side strategy outcomes are accumulated across shards. Other shard stores are discarded.
-5. Separate workers evaluate that exact candidate against the snapshot's frozen champion with learning and exploration disabled.
-6. Aggregation requires balanced maps, candidate sides, and probe/responder roles, plus an absolute defensive-competence benchmark.
+5. Separate workers evaluate that exact candidate against the snapshot's frozen champion with learning and exploration disabled, then replay the same schedule with the champion policy on both sides.
+6. Aggregation requires balanced maps, candidate sides, and probe/responder roles, plus an absolute defensive-competence benchmark and a paired gameplay-safety comparison.
 7. Exact-commit CI runs before a protected publisher can atomically promote the bundle to the Hosted Model.
 8. `training/checkpoints/champion.json` advances only after hosted publication; it remains an audit mirror, not the authority.
 
@@ -22,7 +22,7 @@ Each training shard runs exactly 192 Browser Lab matches:
 - 128 learning matches.
 - 64 internal frozen evaluation matches.
 
-Continuous operation uses 20 training shards, totaling 3,840 self-play matches per generation. External frozen evaluation uses 20 shards with 16 matches each, totaling 320 matches. A continuous candidate needs at least a 58% score over at least 160 balanced frozen games.
+Continuous operation uses 20 training shards, totaling 3,840 self-play matches per generation. External frozen evaluation uses 20 shards with 16 candidate matches and 16 paired champion-reference matches each, totaling 640 Browser Lab matches. A continuous candidate needs at least a 58% score over at least 160 balanced frozen games and must not regress paired gameplay safety beyond the bounded quality tolerances.
 
 Manual defaults use eight shards, 192 training matches and 16 external evaluation matches per shard. Manual minimums default to 58% and 64 total games.
 
@@ -36,7 +36,7 @@ Manual defaults use eight shards, 192 training matches and 16 external evaluatio
 - `minimum_games`: aggregate frozen sample gate.
 - `continuous`: promote passing candidates and queue the next generation.
 
-The retained `ai-training-bundle` artifact contains candidate, selection, evaluation, baseline, and hosted-source documents. Public artifacts may contain the publicly readable model and aggregate records, but never contribution tokens, guards, identifiers, address hashes, runtime envelopes, or credentials.
+The retained `ai-training-bundle` artifact contains candidate, selection, candidate evaluation, paired baseline evaluation, gameplay quality comparison, baseline, and hosted-source documents. Public artifacts may contain the publicly readable model and aggregate records, but never contribution tokens, guards, identifiers, address hashes, runtime envelopes, or credentials.
 
 ## 24/7 Operation
 
@@ -67,7 +67,7 @@ GitHub scheduling and hosted-runner availability are not real-time guarantees. T
 
 The publisher creates the fixed `ai-status` branch from current `main` when it is absent, then publishes only `ai-training-status.json` there through the GitHub Contents API. Concurrent branch creation is accepted only after the fixed branch is confirmed to exist. The publisher never writes status commits to `main`, extracts an artifact into the workspace, or executes triggering code or artifact content.
 
-The status document is an exact-key, versioned schema capped at 32 KiB. `current` identifies the newest accepted run attempt and projects its phase plus aggregate job, training-worker, and evaluation-worker counts when the attempt-specific jobs API is available. `latestEvaluation` and `latestPromotion` are independent retained records. A newer queued or running generation therefore does not erase the last validated frozen evaluation or hosted-promotion receipt.
+The status document is an exact-key, versioned schema capped at 32 KiB. `current` identifies the newest accepted run attempt and projects its phase plus aggregate job, training-worker, and evaluation-worker counts when the attempt-specific jobs API is available. Completed bundles with a quality artifact are accepted only when it reproduces the bundled candidate and champion-reference evaluations; legacy bundles without that artifact remain readable. `latestEvaluation` and `latestPromotion` are independent retained records. A newer queued or running generation therefore does not erase the last validated frozen evaluation or hosted-promotion receipt.
 
 Sources must identify the same repository, immutable training workflow ID and path, `workflow_dispatch` trigger, and `main` head branch. REST reconciliation does not trust the dynamic run title. Run number, run attempt, and lifecycle ordering prevent stale delivery from regressing the document. Reconciliation processes the newest completed run before the newest overall run, so completed evaluation and promotion evidence can advance without replacing a newer active generation. Completed-run artifacts are optional: the publisher reads only the allowlisted evaluation and receipt JSON members from bounded ZIP responses, validates them with the distributed-AI schemas, and preserves prior valid records when artifacts are absent, duplicated, malformed, oversized, stale, or mismatched. If the jobs API is unavailable, publication continues with a lifecycle-level phase and a null job projection.
 
@@ -80,6 +80,7 @@ Continuous promotion requires:
 - Every map, side, and role score to meet the derived bucket floor, `minimum_score - 0.10`.
 - Candidate survival to meet `minimum_score - 0.08` and severe collapses to stay at or below `1 - minimum_score - 0.15`. Survival means candidate lives remain above zero; a severe collapse means candidate lives reach zero while the opponent retains at least 75 lives.
 - Absolute defense in frozen-champion responder matches: at least half the required games, at least 75% of responder matches finishing with 50 or more candidate lives, and no responder match finishing below 25 candidate lives.
+- Paired champion-reference evaluation over the identical seed and fairness schedule, with no more than 5 percentage points of survival, severe-collapse, responder-defense, responder-score, or worst-bucket regression, and no more than 15 average lives of regression.
 - Exact baseline, candidate, and evaluation identities.
 - Finite schema-13 policy parameters, the exact 31,048-parameter tensor contract, and size bounds.
 - Browser, endpoint, distributed, deterministic replay, and exact-commit CI checks.
@@ -97,7 +98,11 @@ Hosted publication and Git cannot be atomic. If publication or finalization is u
 npm run ai:hosted -- --mode fetch --endpoint "https://btdbjs.rf.gd/ai-learning.php?protocol=1" --output training/output/baseline.json --manifest training/output/hosted-source.json
 npm run ai:worker -- --mode train --checkpoint training/output/baseline.json --seed 1000 --shard local --matches 192 --output training/output/train.json
 npm run ai:select -- --results-dir training/output --baseline training/output/baseline.json --output training/output/candidate.json
-npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json --baseline training/output/baseline.json --seed 100000 --shard eval-local --matches 32 --output training/output/eval.json
+npm run ai:worker -- --mode evaluate --checkpoint training/output/candidate.json --baseline training/output/baseline.json --seed 100000 --shard eval-local --matches 32 --output training/output/eval/result.json
+npm run ai:worker -- --mode evaluate --checkpoint training/output/baseline.json --baseline training/output/baseline.json --baseline-only true --seed 100000 --shard baseline-eval-local --matches 32 --output training/output/baseline-eval/result.json
+npm run ai:evaluate-report -- --results-dir training/output/eval --output training/output/evaluation.json --minimum-score 0.58 --minimum-games 32
+npm run ai:evaluate-report -- --results-dir training/output/baseline-eval --output training/output/baseline-evaluation.json --minimum-score 0 --minimum-games 32
+npm run ai:compare-quality -- --candidate training/output/evaluation.json --baseline training/output/baseline-evaluation.json --output training/output/quality.json --minimum-games 32
 ```
 
 ## Determinism And Limits

@@ -59,9 +59,17 @@ jobs:
         run: npm run ai:select -- --results-dir "$RUNNER_TEMP/train" --baseline "$RUNNER_TEMP/champion.json" --output "$RUNNER_TEMP/candidate.json"
       - name: Evaluate one balanced frozen eight-scenario block
         run: |
-          mkdir -p "$RUNNER_TEMP/eval"
+          mkdir -p "$RUNNER_TEMP/eval" "$RUNNER_TEMP/baseline-eval" "$RUNNER_TEMP/baseline-replay"
           npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate.json" --baseline "$RUNNER_TEMP/champion.json" --seed 100000 --shard ci-eval --matches 8 --output "$RUNNER_TEMP/eval/result.json"
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/champion.json" --baseline "$RUNNER_TEMP/champion.json" --baseline-only true --seed 100000 --shard ci-baseline-eval --matches 8 --output "$RUNNER_TEMP/baseline-eval/result.json"
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/champion.json" --baseline "$RUNNER_TEMP/champion.json" --baseline-only true --seed 100000 --shard ci-baseline-eval --matches 8 --output "$RUNNER_TEMP/baseline-replay/result.json"
+      - name: Verify deterministic baseline reference replay
+        run: node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.argv[1]));const b=JSON.parse(fs.readFileSync(process.argv[2]));if(a.resultId!==b.resultId||a.candidateCheckpointId!==b.candidateCheckpointId)throw new Error('Baseline reference replay identities differ');" "$RUNNER_TEMP/baseline-eval/result.json" "$RUNNER_TEMP/baseline-replay/result.json"
       - name: Aggregate smoke evaluation
-        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval" --output "$RUNNER_TEMP/evaluation.json" --minimum-score 0 --minimum-games 8
+        run: |
+          npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval" --output "$RUNNER_TEMP/evaluation.json" --minimum-score 0 --minimum-games 8
+          npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/baseline-eval" --output "$RUNNER_TEMP/baseline-evaluation.json" --minimum-score 0 --minimum-games 8
+          npm run ai:compare-quality -- --candidate "$RUNNER_TEMP/evaluation.json" --baseline "$RUNNER_TEMP/baseline-evaluation.json" --output "$RUNNER_TEMP/quality.json" --minimum-games 8
       - run: npm run ai:verify -- "$RUNNER_TEMP/candidate.json"
       - run: npm run ai:verify -- "$RUNNER_TEMP/evaluation.json"
+      - run: npm run ai:verify -- "$RUNNER_TEMP/quality.json"

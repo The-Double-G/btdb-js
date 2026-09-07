@@ -17,14 +17,16 @@ const {
     validateHostedPromotionResponse,
     validateHostedEnvelope,
     validateHostedSnapshotManifest,
+    validateEvaluationAggregate,
+    validateQualityComparison,
     validatePromotionBundle,
     writeJson,
 } = require("./common")
 
 const usage = [
     "Fetch: node tools/distributed-ai/hosted-model.js --mode fetch --endpoint https://example/ai-learning.php?protocol=1 --output baseline.json --manifest hosted-source.json",
-    "Publish: node tools/distributed-ai/hosted-model.js --mode publish --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --receipt receipt.json [--minimum-score 0.58] [--minimum-games 64]",
-    "Reconcile: node tools/distributed-ai/hosted-model.js --mode reconcile --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --receipt receipt.json [--minimum-score 0.58] [--minimum-games 64]",
+    "Publish: node tools/distributed-ai/hosted-model.js --mode publish --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --baseline-evaluation baseline-evaluation.json --quality quality.json --receipt receipt.json [--minimum-score 0.58] [--minimum-games 64]",
+    "Reconcile: node tools/distributed-ai/hosted-model.js --mode reconcile --endpoint https://example/ai-learning.php?protocol=1 --baseline baseline.json --manifest hosted-source.json --candidate candidate.json --evaluation evaluation.json --baseline-evaluation baseline-evaluation.json --quality quality.json --receipt receipt.json [--minimum-score 0.58] [--minimum-games 64]",
 ].join("\n")
 
 const HOSTED_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
@@ -139,10 +141,11 @@ async function fetchHostedSnapshot(endpoint) {
     return createHostedSnapshot(envelope)
 }
 
-async function publishHostedPromotion({ endpoint, key, manifest, baseline, candidate, evaluation, minimumScore, minimumGames }) {
+async function publishHostedPromotion({ endpoint, key, manifest, baseline, candidate, evaluation, baselineEvaluation, quality, minimumScore, minimumGames }) {
     if(typeof key != "string" || key.length < 16) fail("AI_POLICY_PROMOTION_KEY must contain at least 16 characters")
     validateHostedSnapshotManifest(manifest, baseline)
-    validatePromotionBundle(candidate, evaluation, baseline, minimumScore, minimumGames)
+    validateQualityComparison(quality, "quality")
+    validatePromotionBundle(candidate, evaluation, baseline, minimumScore, minimumGames, quality, baselineEvaluation)
     const request = buildPolicyPromotionRequest(manifest, candidate, baseline)
     const response = await requestJson(`${validateEndpointUrl(endpoint)}&action=promote`, {
         method: "POST",
@@ -156,9 +159,10 @@ async function publishHostedPromotion({ endpoint, key, manifest, baseline, candi
     return { request, response, receipt: createHostedPromotionReceipt(manifest, response) }
 }
 
-function createHostedReconciliation({ envelope, manifest, baseline, candidate, evaluation, minimumScore, minimumGames }) {
+function createHostedReconciliation({ envelope, manifest, baseline, candidate, evaluation, baselineEvaluation, quality, minimumScore, minimumGames }) {
     validateHostedSnapshotManifest(manifest, baseline)
-    validatePromotionBundle(candidate, evaluation, baseline, minimumScore, minimumGames)
+    validateQualityComparison(quality, "quality")
+    validatePromotionBundle(candidate, evaluation, baseline, minimumScore, minimumGames, quality, baselineEvaluation)
     validateHostedEnvelope(envelope)
     if(envelope.contributionEpoch != manifest.contributionEpoch) fail("Hosted contribution epoch changed; this promotion cannot be reconciled")
     if(envelope.model.championGeneration != candidate.model.championGeneration || digest(envelope.model.championPolicy) != digest(candidate.model.championPolicy)) {
@@ -186,7 +190,7 @@ async function reconcileHostedPromotion(options) {
 }
 
 async function main() {
-    const args = parseArgs(process.argv.slice(2), ["mode", "endpoint", "output", "manifest", "baseline", "candidate", "evaluation", "receipt", "minimum-score", "minimum-games"])
+    const args = parseArgs(process.argv.slice(2), ["mode", "endpoint", "output", "manifest", "baseline", "candidate", "evaluation", "baseline-evaluation", "quality", "receipt", "minimum-score", "minimum-games"])
     if(args.help) {
         console.log(usage)
         return
@@ -205,9 +209,12 @@ async function main() {
         const manifest = readJson(requiredArg(args, "manifest"))
         const candidate = readJson(requiredArg(args, "candidate"))
         const evaluation = readJson(requiredArg(args, "evaluation"))
+        const baselineEvaluation = validateEvaluationAggregate(readJson(requiredArg(args, "baseline-evaluation")), "baseline evaluation")
+        const quality = readJson(requiredArg(args, "quality"))
         const minimumScore = numberArg(args, "minimum-score", 0.58)
         const minimumGames = args["minimum-games"] == null ? 64 : integerArg(args, "minimum-games", { minimum: 1 })
-        const options = { endpoint, manifest, baseline, candidate, evaluation, minimumScore, minimumGames }
+        const qualityComparison = validateQualityComparison(quality, "quality")
+        const options = { endpoint, manifest, baseline, candidate, evaluation, baselineEvaluation, quality: qualityComparison, minimumScore, minimumGames }
         const result = mode == "publish"
             ? await publishHostedPromotion({ ...options, key: process.env.AI_POLICY_PROMOTION_KEY })
             : await reconcileHostedPromotion(options)

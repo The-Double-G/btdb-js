@@ -95,7 +95,7 @@ jobs:
           fi
           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
-          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 64
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 64
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for promotion checks
@@ -283,7 +283,7 @@ jobs:
           fi
           mode=publish
           if [ "$RECONCILE" = "true" ]; then mode=reconcile; fi
-          npm run ai:hosted -- --mode "$mode" --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.58 --minimum-games 64
+          npm run ai:hosted -- --mode "$mode" --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.58 --minimum-games 64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         continue-on-error: true
         with:

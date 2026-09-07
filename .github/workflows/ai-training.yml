@@ -272,7 +272,7 @@ jobs:
         with:
           name: ai-candidate
           path: ${{ runner.temp }}/candidate
-      - name: Evaluate frozen candidate shard
+      - name: Evaluate frozen candidate and baseline shards
         env:
           BASE_SEED: ${{ needs.prepare.outputs.base_seed }}
           SHARD: ${{ matrix.shard }}
@@ -280,10 +280,17 @@ jobs:
         run: |
           seed=$((BASE_SEED + 100000 + SHARD))
           npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate/candidate.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --seed "$seed" --shard "eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/eval-$SHARD.json"
+          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/hosted-baseline/baseline.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --baseline-only true --seed "$seed" --shard "baseline-eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/baseline-eval-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-eval-${{ matrix.shard }}
           path: ${{ runner.temp }}/eval-${{ matrix.shard }}.json
+          retention-days: 2
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ai-baseline-eval-${{ matrix.shard }}
+          path: ${{ runner.temp }}/baseline-eval-${{ matrix.shard }}.json
           retention-days: 2
           if-no-files-found: error
 
@@ -313,11 +320,22 @@ jobs:
           pattern: ai-eval-*
           path: ${{ runner.temp }}/eval-results
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ai-baseline-eval-*
+          path: ${{ runner.temp }}/baseline-eval-results
+          merge-multiple: true
       - name: Build frozen evaluation report
         env:
           MINIMUM_SCORE: ${{ needs.prepare.outputs.minimum_score }}
           MINIMUM_GAMES: ${{ needs.prepare.outputs.minimum_games }}
         run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval-results" --output "$RUNNER_TEMP/bundle/evaluation.json" --report "$RUNNER_TEMP/bundle/evaluation.md" --minimum-score "$MINIMUM_SCORE" --minimum-games "$MINIMUM_GAMES"
+      - name: Build paired baseline quality report
+        env:
+          MINIMUM_GAMES: ${{ needs.prepare.outputs.minimum_games }}
+        run: |
+          npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/baseline-eval-results" --output "$RUNNER_TEMP/bundle/baseline-evaluation.json" --report "$RUNNER_TEMP/bundle/baseline-evaluation.md" --minimum-score 0 --minimum-games "$MINIMUM_GAMES"
+          npm run ai:compare-quality -- --candidate "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline-evaluation.json" --output "$RUNNER_TEMP/bundle/quality.json" --report "$RUNNER_TEMP/bundle/quality.md" --minimum-games "$MINIMUM_GAMES"
       - name: Publish job summary
         run: cat "$RUNNER_TEMP/bundle/evaluation.md" >> "$GITHUB_STEP_SUMMARY"
       - id: decision
@@ -342,7 +360,7 @@ jobs:
         run: |
           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
-          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 160
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 160
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for continuous promotion checks
@@ -505,7 +523,7 @@ jobs:
             echo "Candidate artifact checksum changed before hosted publication." >&2
             exit 1
           fi
-          npm run ai:hosted -- --mode publish --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.58 --minimum-games 160
+          npm run ai:hosted -- --mode publish --endpoint "$AI_HOSTED_ENDPOINT" --baseline "$RUNNER_TEMP/bundle/baseline.json" --manifest "$RUNNER_TEMP/bundle/hosted-source.json" --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --receipt "$RUNNER_TEMP/hosted-promotion-receipt.json" --minimum-score 0.58 --minimum-games 160
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         continue-on-error: true
         with:

@@ -7,6 +7,7 @@ const {
     CHECKPOINT_KIND,
     EVALUATION_AGGREGATE_KIND,
     EVALUATION_RESULT_KIND,
+    QUALITY_COMPARISON_KIND,
     TRAIN_RESULT_KIND,
     fail,
     jsonFilesRecursively,
@@ -16,6 +17,7 @@ const {
     validateCheckpoint,
     validateEvaluationAggregate,
     validateEvaluationResult,
+    validateQualityComparison,
     validateTrainResult,
 } = require("./common")
 
@@ -26,7 +28,8 @@ function validateDocument(document, label) {
     if(document && document.kind == TRAIN_RESULT_KIND) return validateTrainResult(document, label)
     if(document && document.kind == EVALUATION_RESULT_KIND) return validateEvaluationResult(document, label)
     if(document && document.kind == EVALUATION_AGGREGATE_KIND) return validateEvaluationAggregate(document, label)
-    fail(`${label} is not a checkpoint, train result, evaluation result, or evaluation aggregate`)
+    if(document && document.kind == QUALITY_COMPARISON_KIND) return validateQualityComparison(document, label)
+    fail(`${label} is not a checkpoint, train result, evaluation result, evaluation aggregate, or quality comparison`)
 }
 
 function main() {

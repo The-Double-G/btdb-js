@@ -31,6 +31,16 @@ Hosted Vs AI and candidate self-play matches train and run inference from the li
 
 Actor learning updates only the selected action, using its TD advantage against the state-value estimate. It does not upload or train rejected alternatives and does not fabricate emergency labels. Browser Lab counterfactual training is deferred until the runtime has rewindable seeded randomness and clocks, synchronous gameplay stepping, timer and network isolation, identity-preserving restoration of every mutable object and reference, and post-restore state-hash verification for every initially supported action family. Frozen evaluation remains the authority for promotion.
 
+## Curriculum And Hard Cases
+
+Learning matches rotate through four deterministic data-distribution stages: foundation, diverse historical opponents, pressure-heavy situations, and hard-case coverage. The stage changes only opponent-policy sampling and exploration intensity; it never selects a loadout, tower, upgrade, sale, send, or boost for the actor. The existing eight-case map, side, and probe/responder schedule remains balanced and frozen evaluation disables both learning and exploration.
+
+Decision updates use bounded outcome prioritization without changing the contribution schema. Terminal transitions, low-life finishes, and large factual interval errors receive more gradient weight; ordinary transitions remain in the update stream. Browser Lab and the PHP contribution trainer use the same formula, while model parameters and per-family counters remain bounded.
+
+## Gameplay Quality Gate
+
+Every distributed evaluation runs the candidate and the frozen champion as separate deterministic evaluations over the same seed and fairness schedule. The quality artifact compares survival, severe-collapse rate, average lives, responder defense, responder score, and worst-bucket score. Promotion rejects a candidate when any safety metric regresses beyond its recorded tolerance, even if its overall win score passes. The paired champion run uses the actual champion policy and the same Browser Lab runtime, so high-volume headless training cannot silently introduce a gameplay-only divergence.
+
 Completed standard Local matches can submit two `human-demo-v1` perspectives. Each demonstration contains aggregate play-style features, loadout signatures, final lives, map, bounded duration, and at most 128 quantized chronological semantic events such as placement, upgrade, sale, send, eco, collection, aiming, boost, and derived waits. It contains no neural vectors, names, raw input history, or replay history. The endpoint validates event chronology and tower lifecycles, deduplicates semantic keys backed by current actor candidates, updates `tacticalFamilyStats`, and increments only the dedicated `totalHumanDemonstrations` accounting counter. Follow/lock aiming and eco toggles have matching candidates; standard target-priority changes and waits remain validation context until equivalent actor candidates exist. Runtime priors require at least four samples and add at most `+/-0.05` to candidate ranking; demonstrations never update policy tensors, loadout outcomes, general tactical counts, or loadout counters.
 
 Localhost and file-based sessions remain session-only.

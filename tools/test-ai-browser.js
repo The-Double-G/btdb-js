@@ -1231,6 +1231,21 @@ async function main() {
                     return Number.isFinite(reward) && reward >= -1 && reward <= 1
                 }),
             }
+            const normalLearningWeight = getAIDecisionLearningWeight({ intervalReward: 0, terminal: false }, 0, 3)
+            const hardCaseLearningWeight = getAIDecisionLearningWeight({ intervalReward: -1, terminal: true }, -1, 0)
+            const lowLifeLearningWeight = getAIDecisionLearningWeight({ intervalReward: -0.5, terminal: false }, -0.5, 1)
+            const learningWeightContract = {
+                normal: normalLearningWeight,
+                hardCase: hardCaseLearningWeight,
+                lowLife: lowLifeLearningWeight,
+                hardCasePrioritized: hardCaseLearningWeight > normalLearningWeight && hardCaseLearningWeight > lowLifeLearningWeight,
+                bounded: [normalLearningWeight, hardCaseLearningWeight, lowLifeLearningWeight].every(value => Number.isFinite(value) && value >= 0.75 && value <= 2.5),
+            }
+            const curriculumContract = {
+                stages: [0, 32, 64, 96].map(matchIndex => getAITrainingCurriculumStage(matchIndex, false).id),
+                frozen: getAITrainingCurriculumStage(0, true).id,
+                populationRates: [0, 32, 64, 96].map(matchIndex => getAITrainingCurriculumStage(matchIndex, false).populationOpponentRate),
+            }
             const savedRewardAction = aiProfile.currentAction
             aiProfile.currentAction = null
             const rewardActionSample = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.placement, { id: "reward-baseline", type: "farmer" })
@@ -1341,7 +1356,28 @@ async function main() {
                 placementExactKeys: boundedContribution ? boundedContribution.placementSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward"])) : false,
                 placementIndependent: boundedContribution ? boundedContribution.placementSamples.length == 1 && boundedContribution.placementSamples[0].startedAtMs == 0 && boundedContribution.placementSamples[0].intervalReward == 0.75 : false,
                 hasModel: boundedContribution ? Object.prototype.hasOwnProperty.call(boundedContribution, "model") : true,
-                byteLength: boundedContribution ? new TextEncoder().encode(JSON.stringify(boundedContribution)).byteLength : Infinity,
+                 byteLength: boundedContribution ? new TextEncoder().encode(JSON.stringify(boundedContribution)).byteLength : Infinity,
+             }
+
+            const priorityTrace = Array.from({ length: 16 }, (_, index) => ({
+                creditVersion: AI_DECISION_CREDIT_VERSION,
+                familyIndex: AI_DECISION_FAMILY.upgrade,
+                stateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
+                chosenCandidateFeatures: Array(AI_DECISION_CANDIDATE_INPUT_SIZE).fill(0),
+                memoryIn: Array(AI_DECISION_MEMORY_SIZE).fill(0),
+                startedAtMs: index,
+                settledAtMs: index + 1,
+                intervalReward: index == 6 ? -1 : 0,
+                successorStateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
+                successorMemory: Array(AI_DECISION_MEMORY_SIZE).fill(0),
+                terminal: false,
+            }))
+            aiProfile.tacticalTrace = priorityTrace
+            const prioritizedSamples = collectAIDecisionSamples(aiSide, 0, 4)
+            const prioritizedReplayContract = {
+                count: prioritizedSamples.length,
+                includesHardCase: prioritizedSamples.some(sample => sample.startedAtMs == 6),
+                remainsContiguous: prioritizedSamples.slice(1).every((sample, index) => sample.startedAtMs == prioritizedSamples[index].settledAtMs),
             }
 
             aiProfile.tacticalTrace = []
@@ -1612,6 +1648,8 @@ async function main() {
                 hostedRefreshDuringSession,
                 humanTacticalCapture,
                 denseRewardContract,
+                learningWeightContract,
+                curriculumContract,
                 acceptedContributionMessage,
                 authenticatedSaveState,
                 goalCompleteStartDisabled,
@@ -1681,6 +1719,7 @@ async function main() {
                 trainingDelta: { x: trainingEnd.x - normalStart.x, y: trainingEnd.y - normalStart.y },
                 trainingEnd,
                 contributionContract,
+                prioritizedReplayContract,
                 crossFamilyNoOp,
                 gameplayArbitration,
                 decisionEncodeCalls,
@@ -1993,6 +2032,16 @@ async function main() {
             bounded: true,
             rewardActionBaselineCaptured: true,
         })
+        assert.equal(result.learningWeightContract.hardCasePrioritized, true)
+        assert.equal(result.learningWeightContract.bounded, true)
+        assert.equal(result.learningWeightContract.normal, 0.75)
+        assert.ok(Math.abs(result.learningWeightContract.hardCase - 2.15) < 1e-12)
+        assert.ok(Math.abs(result.learningWeightContract.lowLife - 1.325) < 1e-12)
+        assert.deepEqual(result.curriculumContract, {
+            stages: ["foundation", "diverse", "pressure", "hard-cases"],
+            frozen: "frozen",
+            populationRates: [0.15, 0.4, 0.65, 0.85],
+        })
         assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
         assert.deepEqual(result.gameplayArbitration, { familyIndex: 5, type: "eco" })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)
@@ -2012,14 +2061,15 @@ async function main() {
             exactKeys: true,
             bounded: true,
             contiguous: true,
-            timeRange: [2800, 4000],
-            familyCounts: [1, 1, 1, 1, 2, 2, 2, 2],
+            timeRange: [2400, 3600],
+            familyCounts: [2, 2, 2, 2, 1, 1, 1, 1],
             placementExactKeys: true,
             placementIndependent: true,
             hasModel: false,
             byteLength: result.contributionContract.byteLength,
         })
         assert.ok(result.contributionContract.byteLength <= 131072)
+        assert.deepEqual(result.prioritizedReplayContract, { count: 4, includesHardCase: true, remainsContiguous: true })
         assert.equal(result.trainerStatusSucceeded, true)
         assert.equal(result.trainerFallbackSucceeded, true)
         assert.equal(result.trainerFallbackPhase, "preparing")

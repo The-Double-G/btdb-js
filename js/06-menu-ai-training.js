@@ -31,6 +31,13 @@ var AI_TRAINING_TRUE_SELF_PLAY_SPEEDS = [
 ]
 var AI_TRAINING_TRUE_SELF_PLAY_STALL_TIMEOUT_MS = 12000
 var AI_TRAINING_TRUE_SELF_PLAY_PREGAME_STALL_TIMEOUT_MS = 10000
+var AI_TRAINING_CURRICULUM_BLOCK_MATCHES = 32
+var AI_TRAINING_CURRICULUM = [
+    { id: "foundation", populationOpponentRate: 0.15, explorationScale: 1 },
+    { id: "diverse", populationOpponentRate: 0.4, explorationScale: 0.9 },
+    { id: "pressure", populationOpponentRate: 0.65, explorationScale: 0.75 },
+    { id: "hard-cases", populationOpponentRate: 0.85, explorationScale: 0.6 },
+]
 var AI_TRAINING_MODES = [
     {
         id: "selfplay",
@@ -101,6 +108,7 @@ function createAITrainingState() {
         trueSelfPlayRecentCandidateWinRates: [],
         lastChosenStrategyIndex: 0,
         lastBestStrategyIndex: 0,
+        curriculumStage: "foundation",
         pendingSaveEpisodes: 0,
         saveRequestedEpisodes: 0,
         saveQueued: false,
@@ -189,6 +197,7 @@ function createAIProfileState() {
         policySnapshot: null,
         learningEnabled: false,
         explorationEnabled: false,
+        explorationScale: 1,
         pendingTacticalDecision: null,
         tacticalTrace: [],
         placementOutcomes: {},
@@ -327,6 +336,15 @@ function getAITrainingTrueSelfPlaySpeed() {
 
 function getAITrainingGoalEpisodes() {
     return AI_TRAINING_GOAL_OPTIONS[aiTrainingState.goalOptionIndex]
+}
+
+function getAITrainingCurriculumStage(matchIndex, evaluationActive) {
+    if(evaluationActive) {
+        return { id: "frozen", populationOpponentRate: 0, explorationScale: 0 }
+    }
+    var normalizedIndex = Math.max(0, Math.floor(Number(matchIndex) || 0))
+    var stageIndex = Math.floor(normalizedIndex / AI_TRAINING_CURRICULUM_BLOCK_MATCHES) % AI_TRAINING_CURRICULUM.length
+    return AI_TRAINING_CURRICULUM[stageIndex]
 }
 
 function isAITrainingTrueSelfPlayActive() {
@@ -1078,6 +1096,8 @@ function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, policy
     aiProfile.policySnapshot = policyConfig && policyConfig.policySnapshot ? cloneAIPolicy(policyConfig.policySnapshot) : null
     aiProfile.learningEnabled = !!(policyConfig && policyConfig.learningEnabled)
     aiProfile.explorationEnabled = !!(policyConfig && policyConfig.explorationEnabled)
+    var configuredExplorationScale = Number(policyConfig && policyConfig.explorationScale)
+    aiProfile.explorationScale = Number.isFinite(configuredExplorationScale) ? clamp(configuredExplorationScale, 0, 1) : 1
     prepareAITrainingStrategyForMatch(observedLoadoutSummary)
     aiProfile.loadoutFilled = true
     aiProfile.currentAction = null
@@ -1155,6 +1175,8 @@ function prepareAITrainingTrueSelfPlayContexts() {
     clearAIContexts()
     ensureAILearningLoaded()
     aiTrainingState.evaluationActive = aiTrainingState.candidateTrainingMatches >= 128
+    var curriculumStage = getAITrainingCurriculumStage(aiTrainingState.trueSelfPlayMatches, aiTrainingState.evaluationActive)
+    aiTrainingState.curriculumStage = curriculumStage.id
     var scenarioIndex = aiTrainingState.trueSelfPlayMatches % 8
     var candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? PLAYER_SIDE.left : PLAYER_SIDE.right
     var opponentSide = getOpponentSide(candidateSide)
@@ -1162,7 +1184,7 @@ function prepareAITrainingTrueSelfPlayContexts() {
 
     var opponentPolicy = aiLearning.championPolicy
     aiTrainingState.opponentPolicyKind = "champion"
-    if(aiTrainingState.evaluationActive == false && aiLearning.populationPolicies.length > 0 && Math.random() < 0.35) {
+    if(aiTrainingState.evaluationActive == false && aiLearning.populationPolicies.length > 0 && Math.random() < curriculumStage.populationOpponentRate) {
         opponentPolicy = aiLearning.populationPolicies[Math.floor(Math.random() * aiLearning.populationPolicies.length)]
         aiTrainingState.opponentPolicyKind = "population"
     }
@@ -1173,6 +1195,7 @@ function prepareAITrainingTrueSelfPlayContexts() {
         policySnapshot: aiTrainingState.evaluationActive ? aiLearning.policy : null,
         learningEnabled: aiTrainingState.evaluationActive == false,
         explorationEnabled: aiTrainingState.evaluationActive == false,
+        explorationScale: curriculumStage.explorationScale,
     }
     var opponentPolicyConfig = {
         policySnapshot: opponentPolicy,
@@ -1612,6 +1635,7 @@ function drawAITrainingScreen() {
         "Backend: " + compactBackendLabel,
     ]
     statusLines.push("Candidate: " + (aiTrainingState.evaluationActive ? "frozen evaluation" : "learning") + "  |  Opponent: " + aiTrainingState.opponentPolicyKind)
+    statusLines.push("Curriculum: " + aiTrainingState.curriculumStage + "  |  Hard-case replay weighted")
     statusLines.push("Lab champion generation: " + aiLearning.championGeneration.toLocaleString())
     statusLines.push("Decision updates: " + getAIDecisionTrainingSampleTotal(aiLearning.policy).toLocaleString())
     statusLines.push("Recovered stalls: " + aiTrainingState.trueSelfPlayStallRecoveries.toLocaleString())

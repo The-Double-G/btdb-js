@@ -45,7 +45,7 @@ const usage = `Usage:
   node tools/distributed-ai/run-worker.js --mode initialize --seed N --shard ID --output checkpoint.json
   node tools/distributed-ai/run-worker.js --mode migrate --checkpoint checkpoint.json --seed N --shard ID --output checkpoint.json
   node tools/distributed-ai/run-worker.js --mode train --checkpoint checkpoint.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N]
-  node tools/distributed-ai/run-worker.js --mode evaluate --checkpoint candidate.json --baseline baseline.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N]`
+  node tools/distributed-ai/run-worker.js --mode evaluate --checkpoint candidate.json --baseline baseline.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N] [--baseline-only true]`
 
 function initScript(seed) {
     let randomState = seed >>> 0
@@ -349,7 +349,7 @@ async function initialize(seed, shard, output) {
     }
 }
 
-async function installMatchHarness(page, mode, candidate, baseline, requestedMatches) {
+async function installMatchHarness(page, mode, candidate, baseline, requestedMatches, baselineOnly = false) {
     await page.evaluate(({ mode, candidatePolicy, baselinePolicy, requestedMatches }) => {
         window.__daiLastMatch = null
         window.__daiLastBuiltInEvaluationScore = null
@@ -416,15 +416,15 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
         if(startAITrainingTrueSelfPlay() !== true) throw new Error("Unable to start true self-play")
     }, {
         mode,
-        candidatePolicy: candidate.model.policy,
+        candidatePolicy: baselineOnly ? baseline.model.championPolicy : candidate.model.policy,
         baselinePolicy: baseline ? baseline.model.championPolicy : null,
         requestedMatches,
     })
 }
 
-async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMatches, maxFramesPerMatch, afterHarnessInstalled) {
+async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMatches, maxFramesPerMatch, afterHarnessInstalled, baselineOnly = false) {
     const page = runtime.page
-    await installMatchHarness(page, mode, candidate, baseline, requestedMatches)
+    await installMatchHarness(page, mode, candidate, baseline, requestedMatches, baselineOnly)
     if(afterHarnessInstalled) await afterHarnessInstalled(page)
     const matches = []
     let framesThisMatch = 0
@@ -520,7 +520,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
     return { matches, model: finalState.model, builtInEvaluationScore: finalState.builtInEvaluationScore, stallRecoveries: observedStalls }
 }
 
-async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, output, maxFramesPerMatch }) {
+async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, output, maxFramesPerMatch, baselineOnly = false }) {
     const runtime = await openRuntime(seed)
     try {
         if(runtime.gameVersion != checkpoint.gameVersion) fail(`Checkpoint game version ${checkpoint.gameVersion} does not match runtime ${runtime.gameVersion}`)
@@ -528,9 +528,13 @@ async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, ou
         if(digest(loadedModel) != checkpoint.modelDigest) fail("The game normalized the checkpoint into different model data")
         if(baseline) {
             if(baseline.gameVersion != checkpoint.gameVersion || baseline.modelSchemaVersion != checkpoint.modelSchemaVersion || baseline.modelFamily != checkpoint.modelFamily) fail("Candidate and baseline checkpoints are incompatible")
-            validatePolicyOnlyCandidate(checkpoint, baseline)
+            if(baselineOnly) {
+                if(checkpoint.checkpointId != baseline.checkpointId) fail("Baseline-only evaluation must use the baseline checkpoint as its candidate")
+            } else {
+                validatePolicyOnlyCandidate(checkpoint, baseline)
+            }
         }
-        const execution = await stepUntilMatches(runtime, mode, checkpoint, baseline, matches, maxFramesPerMatch)
+        const execution = await stepUntilMatches(runtime, mode, checkpoint, baseline, matches, maxFramesPerMatch, null, baselineOnly)
         validateModel(execution.model, checkpoint.modelSchemaVersion, checkpoint.modelFamily)
         assertRuntimeClean(runtime)
         const metrics = computeMetrics(execution.matches, {
@@ -594,7 +598,7 @@ async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, ou
 }
 
 async function main() {
-    const args = parseArgs(process.argv.slice(2), ["mode", "checkpoint", "baseline", "seed", "shard", "matches", "output", "max-frames-per-match"])
+    const args = parseArgs(process.argv.slice(2), ["mode", "checkpoint", "baseline", "seed", "shard", "matches", "output", "max-frames-per-match", "baseline-only"])
     if(args.help) {
         console.log(usage)
         return
@@ -604,6 +608,9 @@ async function main() {
     const seed = integerArg(args, "seed", { maximum: 0xffffffff })
     const shard = requiredArg(args, "shard")
     const output = requiredArg(args, "output")
+    const baselineOnly = args["baseline-only"] != null && args["baseline-only"] == "true"
+    if(args["baseline-only"] != null && args["baseline-only"] != "true") fail("--baseline-only must be true when supplied")
+    if(baselineOnly && mode != "evaluate") fail("--baseline-only is only valid in evaluate mode")
     if(mode == "initialize") {
         if(args.checkpoint || args.baseline || args.matches || args["max-frames-per-match"]) fail("Initialize accepts only --mode, --seed, --shard, and --output")
         const result = await initialize(seed, shard, output)
@@ -624,7 +631,7 @@ async function main() {
     let baseline = null
     if(mode == "evaluate") baseline = validateCheckpoint(readJson(requiredArg(args, "baseline")), "baseline")
     else if(args.baseline) fail("--baseline is only valid in evaluate mode")
-    const result = await runMatches({ mode, checkpoint, baseline, seed, shard, matches: matchCount, output, maxFramesPerMatch })
+    const result = await runMatches({ mode, checkpoint, baseline, seed, shard, matches: matchCount, output, maxFramesPerMatch, baselineOnly })
     console.log(`${mode == "train" ? "Trained" : "Evaluated"} ${result.id}: ${result.metrics.wins}-${result.metrics.losses}-${result.metrics.ties}, score ${result.metrics.score.toFixed(4)}, output ${result.output}`)
 }
 

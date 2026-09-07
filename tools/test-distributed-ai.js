@@ -27,6 +27,7 @@ const {
     aggregateTrainResultPolicies,
     buildPolicyPromotionRequest,
     canonicalStringify,
+    compareEvaluationQuality,
     computeMetrics,
     createCheckpoint,
     createHostedSnapshot,
@@ -47,6 +48,7 @@ const {
     validatePolicyOnlyCandidate,
     validatePolicyPromotionRequest,
     validatePromotionBundle,
+    validateQualityComparison,
     validateTrainResult,
 } = require("./distributed-ai/common")
 const {
@@ -601,6 +603,21 @@ async function main() {
     assert.equal(aggregate.coverage.balanced, true)
     assert.equal(aggregate.passed, true)
     validatePromotionBundle(materialized, aggregate, base, 0.56, 8)
+    const baselineEvaluation = evaluationResult("baseline-eval", 31, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], base, base)
+    const baselineAggregate = aggregateEvaluationResults([baselineEvaluation], 0, 8)
+    const quality = compareEvaluationQuality(aggregate, baselineAggregate, 8)
+    validateQualityComparison(quality)
+    assert.equal(quality.passed, true)
+    assert.equal(quality.games, 8)
+    validatePromotionBundle(materialized, aggregate, base, 0.56, 8, quality)
+    const degradedAggregate = aggregateEvaluationResults([evaluationResult("degraded-eval", 31, Array(8).fill("loss"), base, base)], 0, 8)
+    const degradedQuality = compareEvaluationQuality(degradedAggregate, baselineAggregate, 8)
+    assert.equal(degradedQuality.passed, false)
+    const rejectedQuality = structuredClone(degradedQuality)
+    rejectedQuality.candidateAggregateId = aggregate.aggregateId
+    rejectedQuality.candidateCheckpointId = materialized.checkpointId
+    rejectedQuality.comparisonId = digest(Object.fromEntries(Object.entries(rejectedQuality).filter(([key]) => key != "comparisonId")))
+    assert.throws(() => validatePromotionBundle(materialized, aggregate, base, 0.56, 8, rejectedQuality), /gameplay safety regression/)
 
     const gateOutcomes = [...Array(40).fill("win"), ...Array(8).fill("tie"), ...Array(16).fill("loss")]
     const gateEvaluation = evaluationResult("eval-gate", 32, gateOutcomes, materialized, base)
@@ -752,6 +769,9 @@ async function main() {
 
     const hostedEvaluation = evaluationResult("hosted-eval", 44, gateOutcomes, hostedCandidate, hostedSnapshot.checkpoint)
     const hostedAggregate = aggregateEvaluationResults([hostedEvaluation], 0.58, 64)
+    const hostedBaselineEvaluation = evaluationResult("hosted-baseline-eval", 44, gateOutcomes, hostedSnapshot.checkpoint, hostedSnapshot.checkpoint)
+    const hostedBaselineAggregate = aggregateEvaluationResults([hostedBaselineEvaluation], 0, 64)
+    const hostedQuality = compareEvaluationQuality(hostedAggregate, hostedBaselineAggregate, 64)
     const reconciledModel = hostedCandidate.model
     const reconciledEnvelope = {
         ...hostedEnvelope,
@@ -768,6 +788,8 @@ async function main() {
         baseline: hostedSnapshot.checkpoint,
         candidate: hostedCandidate,
         evaluation: hostedAggregate,
+        baselineEvaluation: hostedBaselineAggregate,
+        quality: hostedQuality,
         minimumScore: 0.58,
         minimumGames: 64,
     })
@@ -780,6 +802,8 @@ async function main() {
         baseline: hostedSnapshot.checkpoint,
         candidate: hostedCandidate,
         evaluation: hostedAggregate,
+        baselineEvaluation: hostedBaselineAggregate,
+        quality: hostedQuality,
         minimumScore: 0.58,
         minimumGames: 64,
     }), /does not match the evaluated candidate/)
