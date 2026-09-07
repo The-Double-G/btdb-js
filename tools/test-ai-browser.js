@@ -200,7 +200,7 @@ async function main() {
             const originalDecisionScorer = scoreAIDecisionCandidate
             scoreAIDecisionCandidate = function(side, familyIndex, metadata, matchup, stateFeatures, policyOverride) {
                 const decision = originalDecisionScorer(side, familyIndex, metadata, matchup, stateFeatures, policyOverride)
-                decision.score = metadata && metadata.id == "aim|follow" ? 2 : -2
+                decision.score = metadata && String(metadata.id || "").indexOf("aim|follow|") == 0 ? 2 : -2
                 return decision
             }
             aimBloon.x = aimX + 14
@@ -837,6 +837,8 @@ async function main() {
             const leftX = leftBounds.minX + (leftBounds.maxX - leftBounds.minX) * 0.25
             const rightX = rightBounds.maxX - (rightBounds.maxX - rightBounds.minX) * 0.25
             const placementFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, range: 200, placementGeometry: true })
+            const intendedPlacementFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, range: 200, placementGeometry: true, intentTiers: [5, 2, 0] })
+            const placementIntentCandidates = getCrosspathCandidatesForTowerType("ninja")
             const manualAimFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, manualLock: true })
             const placementFeatureContract = {
                 stateIntentEmpty: stateIntent.every(value => value == 0),
@@ -845,6 +847,10 @@ async function main() {
                 mirroredBucket: getAIPlacementBucket(PLAYER_SIDE.left, leftX, canvas.height * 0.5).x == getAIPlacementBucket(PLAYER_SIDE.right, rightX, canvas.height * 0.5).x,
                 geometryPresent: placementFeatures.slice(72, 80).some(value => value != 0),
                 placementIntentEmpty: placementFeatures.slice(64, 72).every(value => value == 0),
+                placementIntentReserved: intendedPlacementFeatures.slice(64, 72).every(value => value == 0),
+                placementIntentDetailed: intendedPlacementFeatures[96] == 1 && intendedPlacementFeatures[97] == 0.4 && intendedPlacementFeatures[98] == 0,
+                allPlacementIntentsValid: placementIntentCandidates.length > 1 && placementIntentCandidates.every(isValidAIUpgradeIntent),
+                placementIntentSignature: getAIUpgradeIntentSignature([5, 2, 0]),
                 manualAimGeometryEmpty: manualAimFeatures.slice(72, 80).every(value => value == 0),
                 strategyGeometryEmpty: buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.strategy, {}).slice(72, 80).every(value => value == 0),
             }
@@ -913,7 +919,7 @@ async function main() {
                     if(aiSide == PLAYER_SIDE.left) p1TotalPopCount = value
                     else p2TotalPopCount = value
                 }
-                const placementDecision = (id, towerType) => scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.placement, {
+                const placementDecision = (id, towerType, intentTiers) => scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.placement, {
                     id,
                     type: towerType,
                     x: canvas.width * 0.75,
@@ -922,6 +928,7 @@ async function main() {
                     money: 1000,
                     range: 100,
                     placementGeometry: true,
+                    intentTiers,
                 })
 
                 towers.length = 0
@@ -930,7 +937,7 @@ async function main() {
                 aiProfile = createAIProfileState()
                 const usefulTower = new Tower(canvas.width * 0.75, canvas.height * 0.5, 25, 100, "tack", aiSide)
                 usefulTower.totalCost = 400
-                beginAIDecisionTransition(aiSide, "development", "place|tack|core", null, placementDecision("useful-placement", "tack"), 0)
+                beginAIDecisionTransition(aiSide, "development", "place|tack|core", null, placementDecision("useful-placement", "tack", [5, 2, 0]), 0)
                 const usefulBound = bindAITowerPlacementOutcome(usefulTower)
                 usefulTower.popCount = 120
                 setOwnPops(120)
@@ -986,6 +993,7 @@ async function main() {
                     usefulReward: usefulSamples[0] && usefulSamples[0].intervalReward,
                     usefulFamily: usefulSamples[0] && usefulSamples[0].familyIndex,
                     usefulOutcomeReward: usefulPlacementSamples[0] && usefulPlacementSamples[0].intervalReward,
+                    intentRetained: usefulPlacementSamples[0] && usefulPlacementSamples[0].chosenCandidateFeatures[96] == 1 && usefulPlacementSamples[0].chosenCandidateFeatures[97] == 0.4 && usefulPlacementSamples[0].chosenCandidateFeatures[98] == 0,
                     idleBound,
                     idleFinalized,
                     idleReward: idleSamples[0] && idleSamples[0].intervalReward,
@@ -1070,8 +1078,6 @@ async function main() {
                     range: 250,
                     placementGeometry: true,
                 })
-                const nearFarmerReward = getAIFarmerPlacementReward({ farmerPlacement: { side: aiSide, x: signalFarm.x + 100, y: signalFarm.y, range: 250 } })
-                const farFarmerReward = getAIFarmerPlacementReward({ farmerPlacement: { side: aiSide, x: signalFarm.x + 400, y: signalFarm.y, range: 250 } })
                 const farmerActionContext = getAIActionRewardContext({ type: "placeFarmer", side: aiSide, targetX: signalFarm.x + 100, targetY: signalFarm.y })
                 farmerSignalContract = {
                     explicitType: farmerNearFeatures[104] == 1 && nonFarmerFeatures[104] == 0,
@@ -1079,10 +1085,8 @@ async function main() {
                     coveragePresent: farmerNearFeatures[106] > farmerFarFeatures[106] && farmerNearFeatures[107] > farmerFarFeatures[107],
                     uncoveredValuePresent: farmerNearFeatures[109] > farmerFarFeatures[109] && farmerNearFeatures[110] > farmerFarFeatures[110],
                     strategyIntentPresent: farmerNearFeatures[111] > 0,
-                    rewardPrefersCoverage: nearFarmerReward > farFarmerReward,
-                    rewardBounded: nearFarmerReward >= -1 && nearFarmerReward <= 1 && farFarmerReward >= -1 && farFarmerReward <= 1,
-                    freeActionContext: farmerActionContext.kind == "spend" && farmerActionContext.expectedCost == 0 && farmerActionContext.farmerPlacement.x == signalFarm.x + 100,
-                    rewardSnapshot: farmerActionContext.farmerPlacement.reward == nearFarmerReward,
+                    noImmediatePlacementReward: Object.prototype.hasOwnProperty.call(farmerActionContext, "farmerPlacement") == false,
+                    freeActionContext: farmerActionContext.kind == "spend" && farmerActionContext.expectedCost == 0,
                 }
                 towers.length = 0
                 bananas.length = 0
@@ -1212,14 +1216,13 @@ async function main() {
             const timedSurvivalAfter = { ...timedSurvivalBefore, observedAtMs: 31000 }
             const lifeLossAfter = { ...timedSurvivalBefore, ownLivesLost: 10 }
             const liquidationReward = getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "liquidate", proceeds: 300, liquidationLoss: 100 })
-            const recentLiquidationReward = getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "liquidate", proceeds: 300, liquidationLoss: 100, recentUpgradeLoss: 200 })
             const denseRewardContract = {
                 snapshotHasMoney: Number.isFinite(getAIFactualDecisionOutcomeSnapshot(aiSide).ownMoney),
                 moneyGainPositive: getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardPositiveAfter) > 0,
                 paidSpendNeutral: Math.abs(getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 600 }, { kind: "spend", expectedCost: 400 })) < 1e-12,
                 collectionGainPositive: getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "income", expectedIncome: 300 }) > 0,
                 liquidationPenalty: getAIFactualDecisionLocalReward(denseRewardBefore, { ...denseRewardBefore, ownMoney: 1300 }, { kind: "liquidate", proceeds: 300, liquidationLoss: 100 }) < 0,
-                liquidationPenaltyStrengthened: recentLiquidationReward < liquidationReward,
+                liquidationPenaltyFactual: liquidationReward < 0,
                 survivalTimePositive: getAIFactualDecisionLocalReward(timedSurvivalBefore, timedSurvivalAfter, { kind: "neutral" }) > 0,
                 lifeLossPenalty: getAIFactualDecisionLocalReward(timedSurvivalBefore, lifeLossAfter, { kind: "neutral" }) < 0,
                 lifePopSigns: getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardPositiveAfter) > 0 && getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardNegativeAfter) < 0,
@@ -1240,8 +1243,13 @@ async function main() {
             const originalBestTowerUpgradeOption = getBestTowerUpgradeOption
             const originalBestPlacementOption = getBestPlacementOption
             const originalBestEconomyUtilityOption = getBestAIEconomyUtilityOption
+            const originalBestDefenseOption = getBestDefenseOption
+            const originalBestAIEcoOption = getBestAIEcoOption
+            const originalBestRushPlan = getBestRushPlan
+            const originalBestAIBoostOption = getBestAIBoostOption
             const originalScoreDecisionCandidate = scoreAIDecisionCandidate
             let crossFamilyNoOp
+            let gameplayArbitration
             try {
                 const option = (type, familyIndex, score) => ({
                     type,
@@ -1262,10 +1270,23 @@ async function main() {
                     familyIndex: selectedCrossFamilyOption && selectedCrossFamilyOption.decisionSample.familyIndex,
                     type: selectedCrossFamilyOption && selectedCrossFamilyOption.type,
                 }
+                getBestDefenseOption = () => option("sell", AI_DECISION_FAMILY.sell, 0.8)
+                getBestAIEcoOption = () => option("eco", AI_DECISION_FAMILY.eco, 0.95)
+                getBestRushPlan = () => ({ noop: false, decisionSample: option("rush", AI_DECISION_FAMILY.rush, 0.85).decisionSample })
+                getBestAIBoostOption = () => option("boost", AI_DECISION_FAMILY.boost, 0.9)
+                const selectedGameplayOption = getBestAIGameplayOption(aiSide, {})
+                gameplayArbitration = {
+                    type: selectedGameplayOption && selectedGameplayOption.type,
+                    familyIndex: selectedGameplayOption && selectedGameplayOption.decisionSample.familyIndex,
+                }
             } finally {
                 getBestTowerUpgradeOption = originalBestTowerUpgradeOption
                 getBestPlacementOption = originalBestPlacementOption
                 getBestAIEconomyUtilityOption = originalBestEconomyUtilityOption
+                getBestDefenseOption = originalBestDefenseOption
+                getBestAIEcoOption = originalBestAIEcoOption
+                getBestRushPlan = originalBestRushPlan
+                getBestAIBoostOption = originalBestAIBoostOption
                 scoreAIDecisionCandidate = originalScoreDecisionCandidate
             }
 
@@ -1661,6 +1682,7 @@ async function main() {
                 trainingEnd,
                 contributionContract,
                 crossFamilyNoOp,
+                gameplayArbitration,
                 decisionEncodeCalls,
                 decisionTraining,
                 invalidTrainerStatusSucceeded,
@@ -1854,6 +1876,10 @@ async function main() {
             mirroredBucket: true,
             geometryPresent: true,
             placementIntentEmpty: true,
+            placementIntentReserved: true,
+            placementIntentDetailed: true,
+            allPlacementIntentsValid: true,
+            placementIntentSignature: "520",
             manualAimGeometryEmpty: true,
             strategyGeometryEmpty: true,
         })
@@ -1873,6 +1899,7 @@ async function main() {
         assert.ok(result.placementOutcomeContract.usefulReward >= 0 && result.placementOutcomeContract.usefulReward < result.placementOutcomeContract.usefulOutcomeReward)
         assert.equal(result.placementOutcomeContract.usefulFamily, 2)
         assert.ok(result.placementOutcomeContract.usefulOutcomeReward > 0 && result.placementOutcomeContract.usefulOutcomeReward <= 1)
+        assert.equal(result.placementOutcomeContract.intentRetained, true)
         assert.equal(result.placementOutcomeContract.idleBound, true)
         assert.equal(result.placementOutcomeContract.idleFinalized, true)
         assert.ok(result.placementOutcomeContract.idleReward >= 0)
@@ -1912,10 +1939,8 @@ async function main() {
             coveragePresent: true,
             uncoveredValuePresent: true,
             strategyIntentPresent: true,
-            rewardPrefersCoverage: true,
-            rewardBounded: true,
+            noImmediatePlacementReward: true,
             freeActionContext: true,
-            rewardSnapshot: true,
         })
         assert.deepEqual(result.humanTacticalCapture.capturedActions, {
             placed: true,
@@ -1961,7 +1986,7 @@ async function main() {
             paidSpendNeutral: true,
             collectionGainPositive: true,
             liquidationPenalty: true,
-            liquidationPenaltyStrengthened: true,
+            liquidationPenaltyFactual: true,
             survivalTimePositive: true,
             lifeLossPenalty: true,
             lifePopSigns: true,
@@ -1969,6 +1994,7 @@ async function main() {
             rewardActionBaselineCaptured: true,
         })
         assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
+        assert.deepEqual(result.gameplayArbitration, { familyIndex: 5, type: "eco" })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)
         assert.equal(result.loadoutCounterSelection.baselineKey, result.loadoutCounterSelection.baselineExpectedKey)
         assert.equal(result.loadoutCounterSelection.learnedKey, result.loadoutCounterSelection.learnedExpectedKey)

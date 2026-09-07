@@ -13,9 +13,13 @@ The 112-value state has up to 40 core match values, 24 permutation-invariant fac
 
 ## Sale Decision Learning
 
-Every legal tower sale remains available to the actor, including immediately after placement or upgrade. This supersedes the older timing-hold wording in the actor overview. The policy learns sale timing from the selected sale versus learned no-op outcome: realized cash, sellback loss, tower output, survival, and recent-upgrade liquidation cost are factual reward signals, not deterministic timing holds.
+Every legal tower sale remains available to the actor, including immediately after placement or upgrade. This supersedes the older timing-hold wording in the actor overview. The policy learns sale timing from the selected sale versus learned no-op outcome: realized cash, sellback loss, tower output, and survival are factual reward signals, not deterministic timing holds.
 
 ## Learned Boundary
+
+The in-match actor arbitrates between defense, placement, upgrades, sales, economy, rushes, boosts, and no-op outcomes through learned candidate scores. Runtime ordering, cursor movement, affordability, cooldowns, collision rules, and target ownership remain execution mechanics only; they do not choose a strategic family.
+
+Placement intent is selected by the policy from every structurally valid three-path upgrade signature. The selected intent is carried through the placement candidate, tower lifecycle, later upgrade choices, and map/tower/loadout/strategy placement statistics. Location remains a learned ranking over legal grid candidates with factual path geometry as input; geometry is not used to remove legal strategic choices. This supersedes the older overview wording that described filtering combat positions before policy scoring.
 
 The policy tensors learn strategy and candidate rankings from terminal match results, factual interval rewards, four-step TD targets, and final-life survival classes. Factual rewards combine bounded life, pop, and money outcomes; paid placement, upgrade, and send actions neutralize their known spend, collection actions retain realized income, and sales remove proceeds while exposing sellback loss. No hosted or session player-profile object is persisted; strategy selection uses the current observed loadout and the policy. `loadoutCounterStats` contributes a bounded learned bonus for an observed opponent/loadout pairing, `tacticalFamilyStats` contributes a bounded bonus only for validated `human|` demonstration keys with at least four samples, and `loadoutStats` now contributes three bounded bonuses for the actor's own loadout—performance exploitation, UCB exploration, and dominant unseen-loadout coverage—to ensure the enumerated library is learnably explored. `strategyStats` records hosted outcomes plus accepted candidate-side GitHub training outcomes and supplies the strategy learning-rate sample count.
 

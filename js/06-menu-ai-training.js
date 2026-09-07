@@ -184,6 +184,7 @@ function createAIProfileState() {
         lastAimY: 0,
         aimLocked: false,
         manualAimAction: null,
+        targetPriorityAction: null,
         currentAction: null,
         policySnapshot: null,
         learningEnabled: false,
@@ -1033,21 +1034,15 @@ function runAIForActiveContext() {
     runAIGameplayDecisionCycle(aiSide)
 }
 
-function chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, excludedStrategyIndex, loadoutKey) {
-    return chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), excludedStrategyIndex, loadoutKey)
-}
-
-function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelection) {
+function prepareAITrainingStrategyForMatch(observedLoadoutSummary) {
     ensureAILearningLoaded()
     ensureAILoadoutLibraryInitialized()
-    var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, excludedSelection && excludedSelection.loadoutKey ? excludedSelection.loadoutKey : null)
+    var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary)
     var loadoutDecisionSample = chosenLoadout.decisionSample || scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.loadout, {
         id: chosenLoadout.key,
         type: chosenLoadout.summary.towerTypes.join(","),
         role: chosenLoadout.summary.boostImages.join(","),
         actionKey: "loadout|" + chosenLoadout.key,
-        heuristic: getAILoadoutCounterHeuristicBonus(chosenLoadout.summary, observedLoadoutSummary),
-        heuristicScale: 0.75,
         effect: chosenLoadout.summary.eco + chosenLoadout.summary.pressure + chosenLoadout.summary.heavy + chosenLoadout.summary.late,
         effectScale: 4,
         count: chosenLoadout.summary.filledTowerSlots + chosenLoadout.summary.filledBoostSlots,
@@ -1056,7 +1051,7 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
         capabilityFacts: getAILoadoutCapabilityFacts(chosenLoadout.towers, chosenLoadout.boosts, 1),
     }, null, buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null))
     recordAIDecisionTraceSample(loadoutDecisionSample, 0)
-    aiStrategySelection = excludedSelection && excludedSelection.archetypeIndex != null ? chooseAITrainingDistinctStrategySelection(observedLoadoutSummary, excludedSelection.archetypeIndex, chosenLoadout.key) : chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), null, chosenLoadout.key)
+    aiStrategySelection = chooseAIArchetypeFromFeatures(buildAIStrategySelectionFeatures(observedLoadoutSummary), null, chosenLoadout.key)
     aiStrategySelection.loadoutKey = chosenLoadout.key
     aiStrategySelection.loadoutSummary = chosenLoadout.summary
     aiCurrentStrategy = createAIRuntimeStrategyForLoadout(chosenLoadout, AI_STRATEGY_LIBRARY[aiStrategySelection.index], observedLoadoutSummary)
@@ -1069,7 +1064,7 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelec
     aiProfile.loadoutPlanReady = true
 }
 
-function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, excludedSelection, policyConfig) {
+function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, policyConfig) {
     var snapshot = captureActiveAIContextSnapshot()
     var chosenSummary = createEmptyLoadoutSummary()
     aiContextsBySide[side] = createAIContext(side, getOpponentSide(side))
@@ -1083,7 +1078,7 @@ function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, exclud
     aiProfile.policySnapshot = policyConfig && policyConfig.policySnapshot ? cloneAIPolicy(policyConfig.policySnapshot) : null
     aiProfile.learningEnabled = !!(policyConfig && policyConfig.learningEnabled)
     aiProfile.explorationEnabled = !!(policyConfig && policyConfig.explorationEnabled)
-    prepareAITrainingStrategyForMatch(observedLoadoutSummary, excludedSelection)
+    prepareAITrainingStrategyForMatch(observedLoadoutSummary)
     aiProfile.loadoutFilled = true
     aiProfile.currentAction = null
     aiTickState.lastLogicAt = gameNow()
@@ -1188,8 +1183,8 @@ function prepareAITrainingTrueSelfPlayContexts() {
     var responderSide = getOpponentSide(probeSide)
     var probePolicyConfig = probeSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
     var responderPolicyConfig = responderSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
-    var probeSummary = primeAITrainingTrueSelfPlayContext(probeSide, null, null, probePolicyConfig)
-    primeAITrainingTrueSelfPlayContext(responderSide, probeSummary, { loadoutKey: probeSummary.signature }, responderPolicyConfig)
+    var probeSummary = primeAITrainingTrueSelfPlayContext(probeSide, null, probePolicyConfig)
+    primeAITrainingTrueSelfPlayContext(responderSide, probeSummary, responderPolicyConfig)
     registerAITrainingTrueSelfPlaySelections()
 }
 
