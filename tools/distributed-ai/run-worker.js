@@ -509,8 +509,8 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
                 gameStarted: !!gameStarted,
                 gameOver: !!gameOver,
                 players: {
-                    left: playerSnapshot(players[PLAYER_SIDE.left]),
-                    right: playerSnapshot(players[PLAYER_SIDE.right]),
+                    left: { ...playerSnapshot(players[PLAYER_SIDE.left]), lives: players[PLAYER_SIDE.left].lives == Infinity ? 150 : Math.max(0, number(p1lives)) },
+                    right: { ...playerSnapshot(players[PLAYER_SIDE.right]), lives: players[PLAYER_SIDE.right].lives == Infinity ? 150 : Math.max(0, number(p2lives)) },
                 },
                 totals: {
                     leftPops: number(p1TotalPopCount),
