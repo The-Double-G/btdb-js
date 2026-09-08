@@ -255,6 +255,7 @@ function match(index, result, evaluation) {
         index,
         map: index % 2,
         round: 12 + index,
+        simulationFrames: 1000 + index,
         gameOver: true,
         candidateSide,
         candidateRole,

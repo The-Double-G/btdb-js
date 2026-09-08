@@ -579,6 +579,7 @@ function validateMatch(match, label) {
     if(match.stateEvidence.map !== match.map || match.stateEvidence.round !== match.round || match.stateEvidence.gameOver !== true) fail(`${label}.stateEvidence does not identify the completed match`)
     if(!match.stateEvidence.players || !match.stateEvidence.players.left || !match.stateEvidence.players.right) fail(`${label}.stateEvidence is missing player outcomes`)
     if(match.stateEvidence.players.left.lives !== match.leftLives || match.stateEvidence.players.right.lives !== match.rightLives) fail(`${label}.stateEvidence player lives are inconsistent`)
+    if(match.stateEvidence.simulationFrames !== match.frames) fail(`${label}.stateEvidence simulation frames are inconsistent`)
     if(match.stateDigest != digest(match.stateEvidence)) fail(`${label}.stateDigest does not match its state evidence`)
     assertDigest(match.stateDigest, `${label}.stateDigest`)
     const candidateLives = match.candidateSide == "left" ? match.leftLives : match.rightLives

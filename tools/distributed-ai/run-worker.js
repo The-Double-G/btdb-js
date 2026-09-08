@@ -143,6 +143,9 @@ function resultForLives(candidateLives, opponentLives) {
 function compactStateEvidence(snapshot) {
     if(!snapshot || typeof snapshot != "object") fail("The browser did not provide a final state snapshot")
     const number = value => Number.isFinite(Number(value)) ? Number(value) : 0
+    const simulationTime = Number(snapshot.simulationTime)
+    const simulationStartTime = Number(snapshot.simulationStartTime)
+    if(!Number.isFinite(simulationTime) || !Number.isFinite(simulationStartTime) || simulationTime < simulationStartTime) fail("The browser provided invalid simulation timing evidence")
     const player = value => ({
         lives: number(value && value.lives),
         money: number(value && value.money),
@@ -168,6 +171,7 @@ function compactStateEvidence(snapshot) {
     return {
         map: number(snapshot.map),
         round: number(snapshot.round),
+        simulationFrames: Math.max(1, Math.round((simulationTime - simulationStartTime) / FRAME_MS)),
         gameStarted: !!snapshot.gameStarted,
         gameOver: !!snapshot.gameOver,
         players: {
@@ -485,7 +489,15 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
         window.__daiLastMatch = null
         window.__daiLastBuiltInEvaluationScore = null
         window.__daiLastStateSnapshot = null
+        window.__daiMatchStartSimulationTime = null
         window.__distributedAI.scenarioSchedule = scenarioSchedule ? JSON.parse(JSON.stringify(scenarioSchedule)) : null
+
+        const resetMatch = resetAITrainingTrueSelfPlayMatchState
+        resetAITrainingTrueSelfPlayMatchState = function() {
+            const result = resetMatch.apply(this, arguments)
+            window.__daiMatchStartSimulationTime = gameNow()
+            return result
+        }
 
         const recordMatch = recordAITrainingTrueSelfPlayMatchResult
         recordAITrainingTrueSelfPlayMatchResult = function() {
@@ -506,6 +518,8 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
             window.__daiLastStateSnapshot = {
                 map: number(mapNumber),
                 round: Math.max(1, Math.floor(number(round) / 2)),
+                simulationTime: number(gameNow()),
+                simulationStartTime: number(window.__daiMatchStartSimulationTime),
                 gameStarted: !!gameStarted,
                 gameOver: !!gameOver,
                 players: {
@@ -720,7 +734,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                 result: resultForLives(candidateLives, opponentLives),
                 candidateLives,
                 opponentLives,
-                frames: framesThisMatch,
+                frames: stateEvidence.simulationFrames,
                 stateEvidence,
                 stateDigest: digest(stateEvidence),
             })
