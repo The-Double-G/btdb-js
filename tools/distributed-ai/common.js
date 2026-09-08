@@ -552,7 +552,7 @@ function validateHostedPromotionReceipt(receipt, label = "hosted promotion recei
 }
 
 const METRICS_KEYS = ["games", "wins", "losses", "ties", "score", "averageRound", "totalFrames", "discarded", "stalls", "frameBudgetExhausted", "builtInEvaluationScore"]
-const MATCH_KEYS = ["index", "map", "candidateSide", "candidateRole", "result", "candidateLives", "opponentLives", "leftLives", "rightLives", "round", "frames", "evaluation", "stateDigest"]
+const MATCH_KEYS = ["index", "map", "candidateSide", "candidateRole", "result", "candidateLives", "opponentLives", "leftLives", "rightLives", "round", "frames", "evaluation", "stateEvidence", "stateDigest"]
 
 function validateMetrics(metrics, label) {
     assertExactKeys(metrics, METRICS_KEYS, label)
@@ -574,6 +574,12 @@ function validateMatch(match, label) {
     assertInteger(match.round, `${label}.round`, 1)
     assertInteger(match.frames, `${label}.frames`, 1)
     if(typeof match.evaluation != "boolean") fail(`${label}.evaluation must be boolean`)
+    assertPlainObject(match.stateEvidence, `${label}.stateEvidence`)
+    assertFiniteTree(match.stateEvidence, `${label}.stateEvidence`)
+    if(match.stateEvidence.map !== match.map || match.stateEvidence.round !== match.round || match.stateEvidence.gameOver !== true) fail(`${label}.stateEvidence does not identify the completed match`)
+    if(!match.stateEvidence.players || !match.stateEvidence.players.left || !match.stateEvidence.players.right) fail(`${label}.stateEvidence is missing player outcomes`)
+    if(match.stateEvidence.players.left.lives !== match.leftLives || match.stateEvidence.players.right.lives !== match.rightLives) fail(`${label}.stateEvidence player lives are inconsistent`)
+    if(match.stateDigest != digest(match.stateEvidence)) fail(`${label}.stateDigest does not match its state evidence`)
     assertDigest(match.stateDigest, `${label}.stateDigest`)
     const candidateLives = match.candidateSide == "left" ? match.leftLives : match.rightLives
     const opponentLives = match.candidateSide == "left" ? match.rightLives : match.leftLives

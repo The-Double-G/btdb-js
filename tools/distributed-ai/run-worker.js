@@ -58,14 +58,46 @@ function initScript(seed) {
     if(randomState == 0) randomState = 0x6d2b79f5
     let now = 1700000000000
     let timerId = 0
-    Math.random = function() {
+    const nativeDate = Date
+    const nativeDateNow = nativeDate.now.bind(nativeDate)
+    const nativePerformanceNow = performance.now.bind(performance)
+    const nextRandom = function() {
         randomState = (randomState + 0x6d2b79f5) >>> 0
         let value = randomState
         value = Math.imul(value ^ value >>> 15, value | 1)
         value ^= value + Math.imul(value ^ value >>> 7, value | 61)
         return ((value ^ value >>> 14) >>> 0) / 4294967296
     }
+    Math.random = nextRandom
     Date.now = function() { return now }
+    function DeterministicDate(...args) {
+        if(new.target) return args.length ? new nativeDate(...args) : new nativeDate(now)
+        return new nativeDate(now).toString()
+    }
+    Object.setPrototypeOf(DeterministicDate, nativeDate)
+    DeterministicDate.prototype = nativeDate.prototype
+    DeterministicDate.now = function() { return now }
+    DeterministicDate.parse = nativeDate.parse
+    DeterministicDate.UTC = nativeDate.UTC
+    window.Date = DeterministicDate
+    try {
+        Object.defineProperty(performance, "now", { configurable: true, value: function() { return now - 1700000000000 } })
+    } catch(error) {
+        performance.now = function() { return now - 1700000000000 }
+    }
+    if(window.crypto && typeof window.crypto.getRandomValues == "function") {
+        try {
+            const deterministicGetRandomValues = function(array) {
+                if(!ArrayBuffer.isView(array)) throw new TypeError("Expected an integer typed array")
+                const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength)
+                for(let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(nextRandom() * 256)
+                return array
+            }
+            Object.defineProperty(window.crypto, "getRandomValues", { configurable: true, value: deterministicGetRandomValues })
+        } catch(error) {
+            // The worker never persists public contribution identifiers; leave locked crypto implementations untouched.
+        }
+    }
     const noopTimer = function() { return ++timerId }
     window.setTimeout = noopTimer
     window.setInterval = noopTimer
@@ -95,6 +127,9 @@ function initScript(seed) {
     window.__distributedAI = {
         advance(milliseconds) { now += milliseconds },
         now() { return now },
+        simulationNow() { return now },
+        wallNow: nativeDateNow,
+        wallPerformanceNow: nativePerformanceNow,
         seed,
     }
 }
@@ -103,6 +138,55 @@ function resultForLives(candidateLives, opponentLives) {
     if(candidateLives > opponentLives) return "win"
     if(candidateLives < opponentLives) return "loss"
     return "tie"
+}
+
+function compactStateEvidence(snapshot) {
+    if(!snapshot || typeof snapshot != "object") fail("The browser did not provide a final state snapshot")
+    const number = value => Number.isFinite(Number(value)) ? Number(value) : 0
+    const player = value => ({
+        lives: number(value && value.lives),
+        money: number(value && value.money),
+        eco: number(value && value.eco),
+        selectedBloon: number(value && value.selectedBloon),
+        autoEco: !!(value && value.autoEco),
+        bloonQueue: value && Array.isArray(value.bloonQueue) ? value.bloonQueue.map(item => typeof item == "string" ? item : number(item)) : [],
+    })
+    const collection = (values, fields) => {
+        const summary = { count: 0, leftCount: 0, rightCount: 0, types: {} }
+        fields.forEach(field => summary[field] = 0)
+        for(const value of Array.isArray(values) ? values : []) {
+            if(!value || typeof value != "object") continue
+            summary.count++
+            if(number(value.side) == 1) summary.leftCount++
+            if(number(value.side) == 2) summary.rightCount++
+            const type = String(value.type || "")
+            summary.types[type] = (summary.types[type] || 0) + 1
+            for(const field of fields) summary[field] += number(value[field])
+        }
+        return summary
+    }
+    return {
+        map: number(snapshot.map),
+        round: number(snapshot.round),
+        gameStarted: !!snapshot.gameStarted,
+        gameOver: !!snapshot.gameOver,
+        players: {
+            left: player(snapshot.players && snapshot.players.left),
+            right: player(snapshot.players && snapshot.players.right),
+        },
+        totals: {
+            leftPops: number(snapshot.totals && snapshot.totals.leftPops),
+            rightPops: number(snapshot.totals && snapshot.totals.rightPops),
+            leftCash: number(snapshot.totals && snapshot.totals.leftCash),
+            rightCash: number(snapshot.totals && snapshot.totals.rightCash),
+        },
+        towers: collection(snapshot.towers, ["id", "x", "y", "radius", "path1", "path2", "path3", "towerVar", "cooldown", "target", "targetPrio", "targetX", "targetY"]),
+        bloons: collection(snapshot.bloons, ["id", "x", "y", "pathPos", "health", "boosted", "iced", "stunned", "sabotaged"]),
+        projectiles: collection(snapshot.projectiles, ["x", "y", "target", "damage", "pierce", "remaining"]),
+        bananas: collection(snapshot.bananas, ["x", "y", "cash", "remaining"]),
+        subtowers: collection(snapshot.subtowers, ["x", "y"]),
+        pathObjectCount: number(snapshot.pathObjectCount),
+    }
 }
 
 async function openRuntime(seed) {
@@ -396,11 +480,12 @@ async function initialize(seed, shard, output) {
     }
 }
 
-async function installMatchHarness(page, mode, candidate, baseline, requestedMatches, baselineOnly = false) {
-    await page.evaluate(({ mode, candidatePolicy, baselinePolicy, requestedMatches }) => {
+async function installMatchHarness(page, mode, candidate, baseline, requestedMatches, baselineOnly = false, scenarioSchedule = null) {
+    await page.evaluate(({ mode, candidatePolicy, baselinePolicy, requestedMatches, scenarioSchedule }) => {
         window.__daiLastMatch = null
         window.__daiLastBuiltInEvaluationScore = null
         window.__daiLastStateSnapshot = null
+        window.__distributedAI.scenarioSchedule = scenarioSchedule ? JSON.parse(JSON.stringify(scenarioSchedule)) : null
 
         const recordMatch = recordAITrainingTrueSelfPlayMatchResult
         recordAITrainingTrueSelfPlayMatchResult = function() {
@@ -420,7 +505,7 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
             })
             window.__daiLastStateSnapshot = {
                 map: number(mapNumber),
-                round: number(round),
+                round: Math.max(1, Math.floor(number(round) / 2)),
                 gameStarted: !!gameStarted,
                 gameOver: !!gameOver,
                 players: {
@@ -444,7 +529,7 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
                     path2: number(tower.path2Upgrades),
                     path3: number(tower.path3Upgrades),
                     towerVar: number(tower.towerVar),
-                    nextFire: number(tower.nextFire),
+                    cooldown: Number.isFinite(Number(tower.nextFire)) ? Math.max(0, Number(tower.nextFire) - gameNow()) : 0,
                     target: number(tower.target),
                     targetPrio: number(tower.targetPrio),
                     targetX: number(tower.targetX),
@@ -471,14 +556,14 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
                     y: number(projectile.y),
                     damage: number(projectile.damage),
                     pierce: number(projectile.pierce),
-                    lifespan: number(projectile.lifespan),
+                    remaining: Number(projectile.lifespan) == -1 ? -1 : Math.max(0, number(projectile.lifespan) - gameNow()),
                 }))),
                 bananas: sorted(bananas.filter(Boolean).map(banana => ({
                     side: number(banana.playerSide),
                     x: number(banana.x),
                     y: number(banana.y),
                     cash: number(banana.cashGiven),
-                    lifespan: number(banana.lifespan),
+                    remaining: Math.max(0, number(banana.lifespan) - gameNow()),
                 }))),
                 subtowers: sorted(subtowers.filter(Boolean).map(subtower => ({
                     side: number(subtower.playerSide),
@@ -551,12 +636,13 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
         candidatePolicy: baselineOnly ? baseline.model.championPolicy : candidate.model.policy,
         baselinePolicy: baseline ? baseline.model.championPolicy : null,
         requestedMatches,
+        scenarioSchedule,
     })
 }
 
-async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMatches, maxFramesPerMatch, afterHarnessInstalled, baselineOnly = false) {
+async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMatches, maxFramesPerMatch, afterHarnessInstalled, baselineOnly = false, scenarioSchedule = null) {
     const page = runtime.page
-    await installMatchHarness(page, mode, candidate, baseline, requestedMatches, baselineOnly)
+    await installMatchHarness(page, mode, candidate, baseline, requestedMatches, baselineOnly, scenarioSchedule)
     if(afterHarnessInstalled) await afterHarnessInstalled(page)
     const matches = []
     let framesThisMatch = 0
@@ -628,13 +714,15 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
             if(!state.lastMatch || state.lastMatch.index != expectedMatches) fail(`Missing summary for completed match ${expectedMatches}`)
             const candidateLives = state.lastMatch.candidateSide == "left" ? state.lastMatch.leftLives : state.lastMatch.rightLives
             const opponentLives = state.lastMatch.candidateSide == "left" ? state.lastMatch.rightLives : state.lastMatch.leftLives
+            const stateEvidence = compactStateEvidence(state.lastStateSnapshot)
             matches.push({
                 ...state.lastMatch,
                 result: resultForLives(candidateLives, opponentLives),
                 candidateLives,
                 opponentLives,
                 frames: framesThisMatch,
-                stateDigest: digest(state.lastStateSnapshot || { match: expectedMatches, candidateLives, opponentLives, frames: framesThisMatch }),
+                stateEvidence,
+                stateDigest: digest(stateEvidence),
             })
             framesThisMatch = 0
             recoveriesThisMatch = 0
@@ -654,7 +742,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
     return { matches, model: finalState.model, builtInEvaluationScore: finalState.builtInEvaluationScore, stallRecoveries: observedStalls }
 }
 
-async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, output, maxFramesPerMatch, baselineOnly = false }) {
+async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, output, maxFramesPerMatch, baselineOnly = false, scenarioSchedule = null }) {
     const runtime = await openRuntime(seed)
     try {
         if(runtime.gameVersion != checkpoint.gameVersion) fail(`Checkpoint game version ${checkpoint.gameVersion} does not match runtime ${runtime.gameVersion}`)
@@ -668,7 +756,7 @@ async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, ou
                 validatePolicyOnlyCandidate(checkpoint, baseline)
             }
         }
-        const execution = await stepUntilMatches(runtime, mode, checkpoint, baseline, matches, maxFramesPerMatch, null, baselineOnly)
+        const execution = await stepUntilMatches(runtime, mode, checkpoint, baseline, matches, maxFramesPerMatch, null, baselineOnly, scenarioSchedule)
         validateModel(execution.model, checkpoint.modelSchemaVersion, checkpoint.modelFamily)
         assertRuntimeClean(runtime)
         const metrics = computeMetrics(execution.matches, {
@@ -765,15 +853,16 @@ async function main() {
     let baseline = null
     if(mode == "evaluate") baseline = validateCheckpoint(readJson(requiredArg(args, "baseline")), "baseline")
     else if(args.baseline) fail("--baseline is only valid in evaluate mode")
+    let scenarioManifest = null
     if(args.manifest != null) {
-        const manifest = validateScenarioManifest(readJson(args.manifest))
-        if(manifest.gameVersion !== checkpoint.gameVersion || manifest.modelSchemaVersion !== checkpoint.modelSchemaVersion) fail("Scenario manifest is incompatible with the checkpoint")
-        const expectedSeed = scenarioSeedForShard(manifest, mode, shard)
+        scenarioManifest = validateScenarioManifest(readJson(args.manifest))
+        if(scenarioManifest.gameVersion !== checkpoint.gameVersion || scenarioManifest.modelSchemaVersion !== checkpoint.modelSchemaVersion) fail("Scenario manifest is incompatible with the checkpoint")
+        const expectedSeed = scenarioSeedForShard(scenarioManifest, mode, shard)
         if(expectedSeed == null || expectedSeed !== seed) fail("Worker seed and shard do not match the scenario manifest")
-        const expectedMatches = mode == "train" ? manifest.trainingMatches : manifest.evaluationMatches
+        const expectedMatches = mode == "train" ? scenarioManifest.trainingMatches : scenarioManifest.evaluationMatches
         if(matchCount !== expectedMatches) fail(`Worker match count must equal the manifest ${mode} count of ${expectedMatches}`)
     }
-    const result = await runMatches({ mode, checkpoint, baseline, seed, shard, matches: matchCount, output, maxFramesPerMatch, baselineOnly })
+    const result = await runMatches({ mode, checkpoint, baseline, seed, shard, matches: matchCount, output, maxFramesPerMatch, baselineOnly, scenarioSchedule: scenarioManifest ? scenarioManifest.scenarios : null })
     console.log(`${mode == "train" ? "Trained" : "Evaluated"} ${result.id}: ${result.metrics.wins}-${result.metrics.losses}-${result.metrics.ties}, score ${result.metrics.score.toFixed(4)}, output ${result.output}`)
 }
 

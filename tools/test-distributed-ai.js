@@ -250,6 +250,20 @@ function match(index, result, evaluation) {
     const candidateRole = Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe"
     const candidateLives = result == "win" ? 80 : result == "loss" ? 25 : 50
     const opponentLives = result == "win" ? 0 : result == "loss" ? 65 : 50
+    const stateEvidence = {
+        fixture: "runtime-state",
+        index,
+        map: index % 2,
+        round: 12 + index,
+        gameOver: true,
+        candidateSide,
+        candidateRole,
+        result,
+        players: {
+            left: { lives: candidateSide == "left" ? candidateLives : opponentLives },
+            right: { lives: candidateSide == "right" ? candidateLives : opponentLives },
+        },
+    }
     return {
         index,
         map: index % 2,
@@ -263,7 +277,8 @@ function match(index, result, evaluation) {
         round: 12 + index,
         frames: 1000 + index,
         evaluation,
-        stateDigest: digest({ fixture: "runtime-state", index, map: index % 2, candidateSide, candidateRole, result }),
+        stateEvidence,
+        stateDigest: digest(stateEvidence),
     }
 }
 
@@ -566,6 +581,10 @@ async function main() {
     const trainB = trainResult("b", 11, medium, base)
     const trainC = trainResult("c", 12, high, base)
     validateTrainResult(trainA)
+    const tamperedStateDigest = structuredClone(trainA)
+    tamperedStateDigest.matches[0].stateDigest = `sha256:${"0".repeat(64)}`
+    finalizeResult(tamperedStateDigest)
+    assert.throws(() => validateTrainResult(tamperedStateDigest), /does not match its state evidence/)
     const recoveredTraining = structuredClone(trainC)
     recoveredTraining.metrics.stalls = maxRecoveredStalls(TRAINING_MATCHES)
     finalizeResult(recoveredTraining)
@@ -746,6 +765,9 @@ async function main() {
         matchSummary.opponentLives = 0
         matchSummary.leftLives = matchSummary.candidateSide == "left" ? 25 : 0
         matchSummary.rightLives = matchSummary.candidateSide == "right" ? 25 : 0
+        matchSummary.stateEvidence.players.left.lives = matchSummary.leftLives
+        matchSummary.stateEvidence.players.right.lives = matchSummary.rightLives
+        matchSummary.stateDigest = digest(matchSummary.stateEvidence)
     }
     weakDefenseEvaluation.resultId = digest(Object.fromEntries(Object.entries(weakDefenseEvaluation).filter(([key]) => key != "resultId")))
     const weakDefenseAggregate = aggregateEvaluationResults([weakDefenseEvaluation], 0.58, 8)
@@ -770,6 +792,9 @@ async function main() {
         matchSummary.opponentLives = 100
         matchSummary.leftLives = matchSummary.candidateSide == "left" ? 0 : 100
         matchSummary.rightLives = matchSummary.candidateSide == "right" ? 0 : 100
+        matchSummary.stateEvidence.players.left.lives = matchSummary.leftLives
+        matchSummary.stateEvidence.players.right.lives = matchSummary.rightLives
+        matchSummary.stateDigest = digest(matchSummary.stateEvidence)
     }
     collapseEvaluation.metrics = computeMetrics(collapseEvaluation.matches)
     collapseEvaluation.resultId = digest(Object.fromEntries(Object.entries(collapseEvaluation).filter(([key]) => key != "resultId")))

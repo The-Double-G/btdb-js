@@ -4,7 +4,7 @@
 // Use `nativeSetTimeout` / `nativeSetInterval` only for real-time UI/runtime loops.
 // Use normal `setTimeout` / `setInterval` for gameplay work that should freeze while paused.
 
-var nativeDateNow = Date.now.bind(Date)
+var nativeDateNow = window.__distributedAI && typeof window.__distributedAI.wallNow == "function" ? window.__distributedAI.wallNow : Date.now.bind(Date)
 // Native timers bypass the pause-aware runtime. Only use them for real-time control flow.
 var nativeSetTimeout = window.setTimeout.bind(window)
 var nativeClearTimeout = window.clearTimeout.bind(window)
@@ -15,10 +15,14 @@ var nativeRequestAnimationFrame = window.requestAnimationFrame ? window.requestA
     return nativeSetTimeout(callback, 16)
 }
 
-var gameTimeNow = nativeDateNow()
+function getRuntimeClockNow() {
+    return window.__distributedAI && typeof window.__distributedAI.simulationNow == "function" ? window.__distributedAI.simulationNow() : realNow()
+}
+
+var gameTimeNow = getRuntimeClockNow()
 var runtimeTasks = {}
 var runtimeTaskId = 1
-var runtimeLastTick = nativeDateNow()
+var runtimeLastTick = getRuntimeClockNow()
 var runtimeTaskScheduleBaseAt = 0
 var gamePaused = false
 var lastPauseToggleAt = 0
@@ -125,10 +129,10 @@ function runDueRuntimeTasks() {
 }
 
 function advanceRuntimeClock() {
-    var currentRealNow = realNow()
+    var currentRuntimeNow = getRuntimeClockNow()
     if(gamePaused == false) {
         var runtimeClockMultiplier = typeof getAITrainingRuntimeClockMultiplier == "function" ? getAITrainingRuntimeClockMultiplier() : 1
-        var gameDelta = Math.max(0, currentRealNow - runtimeLastTick) * runtimeClockMultiplier
+        var gameDelta = Math.max(0, currentRuntimeNow - runtimeLastTick) * runtimeClockMultiplier
         var maxAdvanceStep = typeof getAITrainingMaxRuntimeAdvanceMs == "function" ? getAITrainingMaxRuntimeAdvanceMs() : 120
         if(gameDelta <= 0) {
             runDueRuntimeTasks()
@@ -140,7 +144,7 @@ function advanceRuntimeClock() {
             gameDelta -= step
         }
     }
-    runtimeLastTick = currentRealNow
+    runtimeLastTick = currentRuntimeNow
     if(typeof isAITrainingBackgroundProgressActive == "function" && isAITrainingBackgroundProgressActive() && typeof document != "undefined" && document.hidden) {
         nativeSetTimeout(advanceRuntimeClock, 0)
     } else {

@@ -347,6 +347,22 @@ function getAITrainingCurriculumStage(matchIndex, evaluationActive) {
     return AI_TRAINING_CURRICULUM[stageIndex]
 }
 
+function getAITrainingScenarioForIndex(matchIndex) {
+    var normalizedIndex = Math.max(0, Math.floor(Number(matchIndex) || 0))
+    var injectedSchedule = typeof window != "undefined" && window.__distributedAI && Array.isArray(window.__distributedAI.scenarioSchedule) ? window.__distributedAI.scenarioSchedule : null
+    var injectedScenario = injectedSchedule && injectedSchedule.length > 0 ? injectedSchedule[normalizedIndex % injectedSchedule.length] : null
+    if(injectedScenario && (injectedScenario.map == 0 || injectedScenario.map == 1) && (injectedScenario.candidateSide == "left" || injectedScenario.candidateSide == "right") && (injectedScenario.candidateRole == "responder" || injectedScenario.candidateRole == "probe")) {
+        return injectedScenario
+    }
+    var scenarioIndex = normalizedIndex % 8
+    return {
+        id: "scenario-" + scenarioIndex,
+        map: scenarioIndex % 2,
+        candidateSide: Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right",
+        candidateRole: Math.floor(scenarioIndex / 4) % 2 == 0 ? "responder" : "probe",
+    }
+}
+
 function isAITrainingTrueSelfPlayActive() {
     return !!aiTrainingState.trueSelfPlayActive
 }
@@ -778,8 +794,9 @@ function clearAITrainingGameplayRuntimeTasks() {
     runtimeTasks = {}
     ecoIntervalId = null
     runtimeTaskScheduleBaseAt = 0
-    gameTimeNow = realNow()
-    runtimeLastTick = realNow()
+    var runtimeClockNow = typeof getRuntimeClockNow == "function" ? getRuntimeClockNow() : realNow()
+    gameTimeNow = runtimeClockNow
+    runtimeLastTick = runtimeClockNow
 }
 
 function resetAITrainingTrueSelfPlayMatchState() {
@@ -857,7 +874,13 @@ function resetAITrainingTrueSelfPlayMatchState() {
     boostIcons = []
     displayBloons = []
     subtowers = []
-    mapNumber = aiTrainingState.trueSelfPlayMatches % 2
+    nextTowerID = 1
+    nextBloonID = 1
+    p1BloonSendRound = 0
+    p2BloonSendRound = 0
+    aiTowerDpsCache = {}
+    if(typeof frameTowerByID != "undefined" && frameTowerByID && typeof frameTowerByID.clear == "function") frameTowerByID.clear()
+    mapNumber = getAITrainingScenarioForIndex(aiTrainingState.trueSelfPlayMatches).map
     for(var i = 0; i < keyCooldowns.length; i++) {
         keyCooldowns[i] = 0
     }
@@ -1177,8 +1200,8 @@ function prepareAITrainingTrueSelfPlayContexts() {
     aiTrainingState.evaluationActive = aiTrainingState.candidateTrainingMatches >= 128
     var curriculumStage = getAITrainingCurriculumStage(aiTrainingState.trueSelfPlayMatches, aiTrainingState.evaluationActive)
     aiTrainingState.curriculumStage = curriculumStage.id
-    var scenarioIndex = aiTrainingState.trueSelfPlayMatches % 8
-    var candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? PLAYER_SIDE.left : PLAYER_SIDE.right
+    var scenario = getAITrainingScenarioForIndex(aiTrainingState.trueSelfPlayMatches)
+    var candidateSide = scenario.candidateSide == "left" ? PLAYER_SIDE.left : PLAYER_SIDE.right
     var opponentSide = getOpponentSide(candidateSide)
     aiTrainingState.candidateSide = candidateSide
 
@@ -1189,7 +1212,7 @@ function prepareAITrainingTrueSelfPlayContexts() {
         aiTrainingState.opponentPolicyKind = "population"
     }
 
-    var candidateResponds = Math.floor(scenarioIndex / 4) % 2 == 0
+    var candidateResponds = scenario.candidateRole == "responder"
     aiTrainingState.candidateResponds = candidateResponds
     var candidatePolicyConfig = {
         policySnapshot: aiTrainingState.evaluationActive ? aiLearning.policy : null,
