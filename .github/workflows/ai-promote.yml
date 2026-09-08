@@ -93,11 +93,11 @@ jobs:
             echo "Promotion artifact exceeds ${AI_ARTIFACT_MAX_BYTES} bytes: $oversized" >&2
             exit 1
           fi
-           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
-           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
-           npm run ai:verify -- "$RUNNER_TEMP/bundle/scenario-evaluation.json"
-           npm run ai:verify -- "$RUNNER_TEMP/bundle/scenario-baseline-evaluation.json"
-           npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 64
+          npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
+          npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
+          npm run ai:verify -- "$RUNNER_TEMP/bundle/scenario-evaluation.json"
+          npm run ai:verify -- "$RUNNER_TEMP/bundle/scenario-baseline-evaluation.json"
+          npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 64
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for promotion checks
