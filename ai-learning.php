@@ -13,8 +13,8 @@ header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 
 const AI_PROTOCOL_VERSION = 1;
-const AI_MODEL_SCHEMA = 13;
-const AI_MODEL_FAMILY = 'semantic-intent-spatial-recurrent-actor-critic-v5';
+const AI_MODEL_SCHEMA = 14;
+const AI_MODEL_FAMILY = 'semantic-intent-spatial-recurrent-actor-critic-v6';
 const AI_GAME_VERSION = 'v2.6.0';
 const AI_MAX_BODY_BYTES = 8388608;
 const AI_MAX_CONTRIBUTION_BYTES = 131072;
@@ -35,21 +35,23 @@ const AI_HIDDEN_2 = 32;
 const AI_LEGACY_HIDDEN_1 = 12;
 const AI_LEGACY_HIDDEN_2 = 8;
 const AI_POLICY_FORMAT_VERSION = 2;
-const AI_DECISION_STATE_INPUT = 112;
-const AI_DECISION_CANDIDATE_INPUT = 112;
+const AI_DECISION_STATE_INPUT = 128;
+const AI_DECISION_CANDIDATE_INPUT = 128;
 const AI_SCHEMA12_DECISION_STATE_INPUT = 80;
 const AI_SCHEMA12_DECISION_CANDIDATE_INPUT = 80;
 const AI_SCHEMA11_DECISION_STATE_INPUT = 72;
 const AI_SCHEMA11_DECISION_CANDIDATE_INPUT = 64;
 const AI_SCHEMA10_DECISION_STATE_INPUT = 72;
 const AI_SCHEMA10_DECISION_CANDIDATE_INPUT = 40;
+const AI_SCHEMA13_DECISION_STATE_INPUT = 112;
+const AI_SCHEMA13_DECISION_CANDIDATE_INPUT = 112;
 const AI_DECISION_STATE_HIDDEN = 96;
 const AI_DECISION_CANDIDATE_HIDDEN = 48;
 const AI_DECISION_EMBEDDING = 48;
 const AI_DECISION_MEMORY = 16;
 const AI_DECISION_SURVIVAL_CLASSES = 4;
 const AI_DECISION_FAMILY_COUNT = 8;
-const AI_DECISION_CREDIT_VERSION = 3;
+const AI_DECISION_CREDIT_VERSION = 4;
 const AI_DECISION_TD_STEPS = 4;
 const AI_DECISION_DISCOUNT_PER_SECOND = 0.99;
 const AI_WEIGHT_LIMIT = 4.0;
@@ -175,14 +177,18 @@ function valid_strategy($strategy): bool {
         && valid_vector($strategy['b3'] ?? null, AI_STRATEGY_COUNT, AI_WEIGHT_LIMIT);
 }
 
-function valid_decision_for_input($decision, int $stateInput, int $candidateInput): bool {
-    if (!is_array($decision) || !exact_keys($decision, [
+function valid_decision_for_input($decision, int $stateInput, int $candidateInput, bool $withAuxiliaryHeads = false): bool {
+    $decisionKeys = [
         'stateInputSize', 'candidateInputSize', 'stateHiddenSize', 'candidateHiddenSize', 'embeddingSize', 'memorySize', 'survivalClassCount',
         'trainingSamples',
         'WState1', 'bState1', 'WState2', 'bState2', 'WCandidate1', 'bCandidate1', 'WCandidate2',
         'bCandidate2', 'WStateToMemory', 'WMemoryToMemory', 'bMemory', 'WMemoryToState',
         'WValue', 'bValue', 'WSurvival', 'bSurvival', 'familyBias',
-    ])) {
+    ];
+    if ($withAuxiliaryHeads) {
+        array_splice($decisionKeys, array_search('WSurvival', $decisionKeys, true), 0, ['WEconomy', 'bEconomy', 'WCatastrophe', 'bCatastrophe']);
+    }
+    if (!is_array($decision) || !exact_keys($decision, $decisionKeys)) {
         return false;
     }
     if (($decision['stateInputSize'] ?? null) !== $stateInput
@@ -215,7 +221,11 @@ function valid_decision_for_input($decision, int $stateInput, int $candidateInpu
 }
 
 function valid_decision($decision): bool {
-    return valid_decision_for_input($decision, AI_DECISION_STATE_INPUT, AI_DECISION_CANDIDATE_INPUT);
+    return valid_decision_for_input($decision, AI_DECISION_STATE_INPUT, AI_DECISION_CANDIDATE_INPUT, true)
+        && valid_vector($decision['WEconomy'] ?? null, AI_DECISION_EMBEDDING, AI_WEIGHT_LIMIT)
+        && valid_number($decision['bEconomy'] ?? null, AI_WEIGHT_LIMIT)
+        && valid_vector($decision['WCatastrophe'] ?? null, AI_DECISION_EMBEDDING, AI_WEIGHT_LIMIT)
+        && valid_number($decision['bCatastrophe'] ?? null, AI_WEIGHT_LIMIT);
 }
 
 function valid_schema11_decision($decision): bool {
@@ -282,6 +292,23 @@ function valid_schema12_policy($policy): bool {
         && (float)$policy['decisionLearningRate'] > 0
         && valid_strategy($policy['strategy'] ?? null)
         && valid_schema12_decision($policy['decision'] ?? null);
+}
+
+function valid_schema13_decision($decision): bool {
+    return valid_decision_for_input($decision, AI_SCHEMA13_DECISION_STATE_INPUT, AI_SCHEMA13_DECISION_CANDIDATE_INPUT);
+}
+
+function valid_schema13_policy($policy): bool {
+    if (!is_array($policy) || !exact_keys($policy, ['formatVersion', 'strategyLearningRate', 'decisionLearningRate', 'strategy', 'decision'])) {
+        return false;
+    }
+    return ($policy['formatVersion'] ?? null) === AI_POLICY_FORMAT_VERSION
+        && valid_number($policy['strategyLearningRate'] ?? null, 0.2)
+        && (float)$policy['strategyLearningRate'] > 0
+        && valid_number($policy['decisionLearningRate'] ?? null, 0.1)
+        && (float)$policy['decisionLearningRate'] > 0
+        && valid_strategy($policy['strategy'] ?? null)
+        && valid_schema13_decision($policy['decision'] ?? null);
 }
 
 function valid_schema9_decision($decision): bool {
@@ -381,8 +408,10 @@ function integer_tree_has_headroom($value, int $increments, int $depth = 0): boo
     return true;
 }
 
-function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false, bool $schema12 = false, bool $legacyPlayerProfile = false): bool {
+function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, bool $schema10 = false, bool $schema11 = false, bool $schema12 = false, bool $schema13 = false, bool $legacyPlayerProfile = false): bool {
     $hasPlayerProfile = $legacy || $schema9 || $schema10 || $schema11 || $schema12 || $legacyPlayerProfile;
+    $expectedVersion = $legacy ? 8 : ($schema9 ? 9 : ($schema10 ? 10 : ($schema11 ? 11 : ($schema12 ? 12 : ($schema13 ? 13 : AI_MODEL_SCHEMA)))));
+    $expectedFamily = $legacy ? 'bounded-contextual-bandit-v1' : ($schema9 ? 'shared-neural-controller-v1' : ($schema10 ? 'shared-recurrent-actor-critic-v2' : ($schema11 ? 'semantic-recurrent-actor-critic-v3' : ($schema12 ? 'semantic-intent-spatial-recurrent-actor-critic-v4' : ($schema13 ? 'semantic-intent-spatial-recurrent-actor-critic-v5' : AI_MODEL_FAMILY)))));
     $modelKeys = [
         'version', 'modelFamily', 'totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples',
         'totalLoadoutSamples', 'totalHumanDemonstrations', 'strategyStats', 'loadoutStats',
@@ -398,8 +427,8 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     }
     if (!is_array($model)
         || !exact_keys($model, $modelKeys)
-        || ($model['version'] ?? null) !== ($legacy ? 8 : ($schema9 ? 9 : ($schema10 ? 10 : ($schema11 ? 11 : ($schema12 ? 12 : AI_MODEL_SCHEMA)))))
-        || ($model['modelFamily'] ?? null) !== ($legacy ? 'bounded-contextual-bandit-v1' : ($schema9 ? 'shared-neural-controller-v1' : ($schema10 ? 'shared-recurrent-actor-critic-v2' : ($schema11 ? 'semantic-recurrent-actor-critic-v3' : ($schema12 ? 'semantic-intent-spatial-recurrent-actor-critic-v4' : AI_MODEL_FAMILY)))))) {
+        || ($model['version'] ?? null) !== $expectedVersion
+        || ($model['modelFamily'] ?? null) !== $expectedFamily) {
         return false;
     }
     $counters = ['totalGames', 'totalSyntheticEpisodes', 'totalPolicySamples', 'totalLoadoutSamples', 'totalHumanDemonstrations', 'totalTacticalSamples', 'candidateGeneration', 'championGeneration'];
@@ -450,11 +479,11 @@ function valid_model_for_schema($model, bool $legacy, bool $schema9 = false, boo
     if ($model['totalGames'] !== $totalGames || $model['totalSyntheticEpisodes'] !== $totalSyntheticEpisodes) {
         return false;
     }
-    $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : ($schema11 ? 'valid_schema11_policy' : ($schema12 ? 'valid_schema12_policy' : 'valid_policy'))));
+    $policyValidator = $legacy ? 'valid_legacy_policy' : ($schema9 ? 'valid_schema9_policy' : ($schema10 ? 'valid_schema10_policy' : ($schema11 ? 'valid_schema11_policy' : ($schema12 ? 'valid_schema12_policy' : ($schema13 ? 'valid_schema13_policy' : 'valid_policy')))));
     if (!$policyValidator($model['policy'] ?? null) || !$policyValidator($model['championPolicy'] ?? null)) {
         return false;
     }
-    if (!$legacy && !$schema9 && !$schema10 && !$schema11 && !$schema12
+    if (!$legacy && !$schema9 && !$schema10 && !$schema11 && !$schema12 && !$schema13
         && $model['totalDecisionSamples'] !== decision_sample_count($model['policy'])) {
         return false;
     }
@@ -529,8 +558,16 @@ function valid_schema12_model($model): bool {
     return valid_model_for_schema($model, false, false, false, false, true);
 }
 
-function valid_schema13_with_player_profile($model): bool {
+function valid_schema13_model($model): bool {
     return valid_model_for_schema($model, false, false, false, false, false, true);
+}
+
+function valid_schema13_model_with_player_profile($model): bool {
+    return valid_model_for_schema($model, false, false, false, false, false, true, true);
+}
+
+function valid_schema14_with_player_profile($model): bool {
+    return valid_model_for_schema($model, false, false, false, false, false, false, true);
 }
 
 function valid_fresh_model($model): bool {
@@ -747,6 +784,15 @@ function canonical_matrix(int $rows, int $columns, float $scale, int $salt): arr
     return $matrix;
 }
 
+function canonical_padded_matrix(int $rows, int $oldColumns, int $newColumns, float $scale, int $salt): array {
+    $matrix = canonical_matrix($rows, $oldColumns, $scale, $salt);
+    foreach ($matrix as &$row) {
+        $row = array_merge($row, zero_vector($newColumns - $oldColumns));
+    }
+    unset($row);
+    return $matrix;
+}
+
 function create_migrated_decision(): array {
     return [
         'stateInputSize' => AI_DECISION_STATE_INPUT,
@@ -757,11 +803,11 @@ function create_migrated_decision(): array {
         'memorySize' => AI_DECISION_MEMORY,
         'survivalClassCount' => AI_DECISION_SURVIVAL_CLASSES,
         'trainingSamples' => array_fill(0, AI_DECISION_FAMILY_COUNT, 0),
-        'WState1' => canonical_matrix(AI_DECISION_STATE_HIDDEN, AI_DECISION_STATE_INPUT, 0.08, 11),
+        'WState1' => canonical_padded_matrix(AI_DECISION_STATE_HIDDEN, 80, AI_DECISION_STATE_INPUT, 0.08, 11),
         'bState1' => zero_vector(AI_DECISION_STATE_HIDDEN),
         'WState2' => canonical_matrix(AI_DECISION_EMBEDDING, AI_DECISION_STATE_HIDDEN, 0.07, 23),
         'bState2' => zero_vector(AI_DECISION_EMBEDDING),
-        'WCandidate1' => canonical_matrix(AI_DECISION_CANDIDATE_HIDDEN, AI_DECISION_CANDIDATE_INPUT, 0.09, 37),
+        'WCandidate1' => canonical_padded_matrix(AI_DECISION_CANDIDATE_HIDDEN, 80, AI_DECISION_CANDIDATE_INPUT, 0.09, 37),
         'bCandidate1' => zero_vector(AI_DECISION_CANDIDATE_HIDDEN),
         'WCandidate2' => canonical_matrix(AI_DECISION_EMBEDDING, AI_DECISION_CANDIDATE_HIDDEN, 0.07, 53),
         'bCandidate2' => zero_vector(AI_DECISION_EMBEDDING),
@@ -771,10 +817,21 @@ function create_migrated_decision(): array {
         'WMemoryToState' => zero_matrix(AI_DECISION_EMBEDDING, AI_DECISION_MEMORY),
         'WValue' => zero_vector(AI_DECISION_EMBEDDING),
         'bValue' => 0.0,
+        'WEconomy' => zero_vector(AI_DECISION_EMBEDDING),
+        'bEconomy' => 0.0,
+        'WCatastrophe' => zero_vector(AI_DECISION_EMBEDDING),
+        'bCatastrophe' => 0.0,
         'WSurvival' => zero_matrix(AI_DECISION_SURVIVAL_CLASSES, AI_DECISION_EMBEDDING),
         'bSurvival' => zero_vector(AI_DECISION_SURVIVAL_CLASSES),
         'familyBias' => zero_vector(AI_DECISION_FAMILY_COUNT),
     ];
+}
+
+function ensure_auxiliary_decision_heads(array &$decision): void {
+    if (!isset($decision['WEconomy'])) $decision['WEconomy'] = zero_vector(AI_DECISION_EMBEDDING);
+    if (!isset($decision['bEconomy'])) $decision['bEconomy'] = 0.0;
+    if (!isset($decision['WCatastrophe'])) $decision['WCatastrophe'] = zero_vector(AI_DECISION_EMBEDDING);
+    if (!isset($decision['bCatastrophe'])) $decision['bCatastrophe'] = 0.0;
 }
 
 function migrate_legacy_policy(array $legacyPolicy): array {
@@ -929,6 +986,7 @@ function migrate_schema11_decision(array $oldDecision): array {
     for ($row = 0; $row < AI_DECISION_CANDIDATE_HIDDEN; $row++) {
         $decision['WCandidate1'][$row] = array_merge($oldDecision['WCandidate1'][$row], zero_vector(AI_DECISION_CANDIDATE_INPUT - AI_SCHEMA11_DECISION_CANDIDATE_INPUT));
     }
+    ensure_auxiliary_decision_heads($decision);
     return $decision;
 }
 
@@ -963,6 +1021,7 @@ function migrate_schema12_decision(array $oldDecision): array {
     for ($row = 0; $row < AI_DECISION_CANDIDATE_HIDDEN; $row++) {
         $decision['WCandidate1'][$row] = array_merge($oldDecision['WCandidate1'][$row], zero_vector(AI_DECISION_CANDIDATE_INPUT - AI_SCHEMA12_DECISION_CANDIDATE_INPUT));
     }
+    ensure_auxiliary_decision_heads($decision);
     return $decision;
 }
 
@@ -987,9 +1046,43 @@ function migrate_schema12_model(array $oldModel): array {
     return $model;
 }
 
+function migrate_schema13_decision(array $oldDecision): array {
+    $decision = $oldDecision;
+    $decision['stateInputSize'] = AI_DECISION_STATE_INPUT;
+    $decision['candidateInputSize'] = AI_DECISION_CANDIDATE_INPUT;
+    for ($row = 0; $row < AI_DECISION_STATE_HIDDEN; $row++) {
+        $decision['WState1'][$row] = array_merge($oldDecision['WState1'][$row], zero_vector(AI_DECISION_STATE_INPUT - AI_SCHEMA13_DECISION_STATE_INPUT));
+    }
+    for ($row = 0; $row < AI_DECISION_CANDIDATE_HIDDEN; $row++) {
+        $decision['WCandidate1'][$row] = array_merge($oldDecision['WCandidate1'][$row], zero_vector(AI_DECISION_CANDIDATE_INPUT - AI_SCHEMA13_DECISION_CANDIDATE_INPUT));
+    }
+    ensure_auxiliary_decision_heads($decision);
+    return $decision;
+}
+
+function migrate_schema13_policy(array $oldPolicy): array {
+    $policy = $oldPolicy;
+    $policy['decision'] = migrate_schema13_decision($oldPolicy['decision']);
+    return $policy;
+}
+
 function migrate_schema13_model(array $oldModel): array {
     $model = $oldModel;
     unset($model['playerProfile']);
+    $model['version'] = AI_MODEL_SCHEMA;
+    $model['modelFamily'] = AI_MODEL_FAMILY;
+    $model['policy'] = migrate_schema13_policy($oldModel['policy']);
+    $model['championPolicy'] = migrate_schema13_policy($oldModel['championPolicy']);
+    $model['populationPolicies'] = array_map('migrate_schema13_policy', $oldModel['populationPolicies']);
+    $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
+    return $model;
+}
+
+function migrate_schema14_model(array $oldModel): array {
+    $model = $oldModel;
+    unset($model['playerProfile']);
+    $model['version'] = AI_MODEL_SCHEMA;
+    $model['modelFamily'] = AI_MODEL_FAMILY;
     $model['totalDecisionSamples'] = decision_sample_count($model['policy']);
     return $model;
 }
@@ -1043,7 +1136,7 @@ function valid_contribution_observation($observation): bool {
 }
 
 function valid_decision_sample_v2($sample): bool {
-    if (!is_array($sample) || !exact_keys($sample, ['creditVersion', 'familyIndex', 'stateFeatures', 'chosenCandidateFeatures', 'memoryIn', 'startedAtMs', 'settledAtMs', 'intervalReward', 'successorStateFeatures', 'successorMemory', 'terminal'])) {
+    if (!is_array($sample) || !exact_keys($sample, ['creditVersion', 'familyIndex', 'stateFeatures', 'chosenCandidateFeatures', 'memoryIn', 'startedAtMs', 'settledAtMs', 'intervalReward', 'economyReward', 'catastropheTarget', 'successorStateFeatures', 'successorMemory', 'terminal'])) {
         return false;
     }
     return ($sample['creditVersion'] ?? null) === AI_DECISION_CREDIT_VERSION
@@ -1057,6 +1150,9 @@ function valid_decision_sample_v2($sample): bool {
         && valid_nonnegative_integer($sample['settledAtMs'] ?? null)
         && $sample['settledAtMs'] >= $sample['startedAtMs']
         && valid_number($sample['intervalReward'] ?? null, 1.0)
+        && valid_number($sample['economyReward'] ?? null, 1.0)
+        && valid_number($sample['catastropheTarget'] ?? null, 1.0)
+        && (float)$sample['catastropheTarget'] >= 0
         && valid_vector($sample['successorStateFeatures'] ?? null, AI_DECISION_STATE_INPUT, 1.0)
         && valid_vector($sample['successorMemory'] ?? null, AI_DECISION_MEMORY, 1.0)
         && is_bool($sample['terminal'] ?? null);
@@ -1084,7 +1180,7 @@ function valid_decision_sample($sample): bool {
 }
 
 function valid_placement_sample($sample): bool {
-    if (!is_array($sample) || !exact_keys($sample, ['creditVersion', 'familyIndex', 'stateFeatures', 'chosenCandidateFeatures', 'memoryIn', 'startedAtMs', 'settledAtMs', 'intervalReward'])) {
+    if (!is_array($sample) || !exact_keys($sample, ['creditVersion', 'familyIndex', 'stateFeatures', 'chosenCandidateFeatures', 'memoryIn', 'startedAtMs', 'settledAtMs', 'intervalReward', 'economyReward', 'catastropheTarget'])) {
         return false;
     }
     return ($sample['creditVersion'] ?? null) === AI_DECISION_CREDIT_VERSION
@@ -1097,7 +1193,10 @@ function valid_placement_sample($sample): bool {
         && valid_nonnegative_integer($sample['startedAtMs'] ?? null)
         && valid_nonnegative_integer($sample['settledAtMs'] ?? null)
         && $sample['settledAtMs'] >= $sample['startedAtMs']
-        && valid_number($sample['intervalReward'] ?? null, 1.0);
+        && valid_number($sample['intervalReward'] ?? null, 1.0)
+        && valid_number($sample['economyReward'] ?? null, 1.0)
+        && valid_number($sample['catastropheTarget'] ?? null, 1.0)
+        && (float)$sample['catastropheTarget'] >= 0;
 }
 
 function valid_contribution($request): bool {
@@ -1707,6 +1806,12 @@ function decision_forward(array $stateFeatures, array $candidateFeatures, int $f
     for ($index = 0; $index < AI_DECISION_EMBEDDING; $index++) {
         $valueLogit += (float)$decision['WValue'][$index] * $stateEmbedding[$index];
     }
+    $economyLogit = (float)$decision['bEconomy'];
+    $catastropheLogit = (float)$decision['bCatastrophe'];
+    for ($index = 0; $index < AI_DECISION_EMBEDDING; $index++) {
+        $economyLogit += (float)$decision['WEconomy'][$index] * $stateEmbedding[$index];
+        $catastropheLogit += (float)$decision['WCatastrophe'][$index] * $stateEmbedding[$index];
+    }
     $survivalLogits = [];
     for ($classIndex = 0; $classIndex < AI_DECISION_SURVIVAL_CLASSES; $classIndex++) {
         $logit = (float)$decision['bSurvival'][$classIndex];
@@ -1755,6 +1860,8 @@ function decision_forward(array $stateFeatures, array $candidateFeatures, int $f
         'normalizedDot' => $normalizedDot,
         'actorLogit' => $normalizedDot + (float)$decision['familyBias'][$familyIndex],
         'value' => tanh($valueLogit),
+        'economyValue' => tanh($economyLogit),
+        'catastropheValue' => tanh($catastropheLogit),
         'survivalProbabilities' => decision_softmax($survivalLogits),
     ];
 }
@@ -1825,6 +1932,12 @@ function train_candidate_decision(array &$model, array $sample, float $target, i
     $actorDelta = $advantage;
     $chosenActorDeltas = decision_cosine_embedding_deltas($chosen, $actorDelta);
     $valueDelta = clamp_number($target - $chosen['value'], -1.0, 1.0) * (1.0 - $chosen['value'] * $chosen['value']);
+    $economyTarget = valid_number($sample['economyReward'] ?? null, 1.0) ? (float)$sample['economyReward'] : (float)($sample['intervalReward'] ?? 0.0);
+    $economyTarget = clamp_number($economyTarget, -1.0, 1.0);
+    $catastropheTarget = valid_number($sample['catastropheTarget'] ?? null, 1.0) ? (float)$sample['catastropheTarget'] : ($survivalClass <= 1 ? 1.0 : 0.0);
+    $catastropheTarget = clamp_number($catastropheTarget, 0.0, 1.0);
+    $economyDelta = clamp_number($economyTarget - $chosen['economyValue'], -1.0, 1.0) * (1.0 - $chosen['economyValue'] * $chosen['economyValue']);
+    $catastropheDelta = clamp_number($catastropheTarget - $chosen['catastropheValue'], -1.0, 1.0) * (1.0 - $chosen['catastropheValue'] * $chosen['catastropheValue']);
     $survivalDeltas = zero_vector(AI_DECISION_SURVIVAL_CLASSES);
     for ($classIndex = 0; $classIndex < AI_DECISION_SURVIVAL_CLASSES; $classIndex++) {
         $survivalDeltas[$classIndex] = ($classIndex === $survivalClass ? 1.0 : 0.0) - $chosen['survivalProbabilities'][$classIndex];
@@ -1835,10 +1948,13 @@ function train_candidate_decision(array &$model, array $sample, float $target, i
     $originalMemoryToState = $decision['WMemoryToState'];
     $originalStateToMemory = $decision['WStateToMemory'];
     $originalValueWeights = $decision['WValue'];
+    $originalEconomyWeights = $decision['WEconomy'];
+    $originalCatastropheWeights = $decision['WCatastrophe'];
     $originalSurvivalWeights = $decision['WSurvival'];
     $stateEmbeddingDeltas = [];
     for ($embedding = 0; $embedding < AI_DECISION_EMBEDDING; $embedding++) {
         $headActivationDelta = (float)$originalValueWeights[$embedding] * $valueDelta;
+        $headActivationDelta += (float)$originalEconomyWeights[$embedding] * $economyDelta + (float)$originalCatastropheWeights[$embedding] * $catastropheDelta;
         for ($classIndex = 0; $classIndex < AI_DECISION_SURVIVAL_CLASSES; $classIndex++) {
             $headActivationDelta += (float)$originalSurvivalWeights[$classIndex][$embedding] * $survivalDeltas[$classIndex];
         }
@@ -1886,6 +2002,12 @@ function train_candidate_decision(array &$model, array $sample, float $target, i
         $decision['WValue'][$embedding] = clamp_number((float)$decision['WValue'][$embedding] + $learningRate * $valueDelta * $chosen['stateEmbedding'][$embedding], -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
     }
     $decision['bValue'] = clamp_number((float)$decision['bValue'] + $learningRate * $valueDelta, -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
+    for ($embedding = 0; $embedding < AI_DECISION_EMBEDDING; $embedding++) {
+        $decision['WEconomy'][$embedding] = clamp_number((float)$decision['WEconomy'][$embedding] + $learningRate * $economyDelta * $chosen['stateEmbedding'][$embedding], -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
+        $decision['WCatastrophe'][$embedding] = clamp_number((float)$decision['WCatastrophe'][$embedding] + $learningRate * $catastropheDelta * $chosen['stateEmbedding'][$embedding], -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
+    }
+    $decision['bEconomy'] = clamp_number((float)$decision['bEconomy'] + $learningRate * $economyDelta, -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
+    $decision['bCatastrophe'] = clamp_number((float)$decision['bCatastrophe'] + $learningRate * $catastropheDelta, -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
     for ($classIndex = 0; $classIndex < AI_DECISION_SURVIVAL_CLASSES; $classIndex++) {
         for ($embedding = 0; $embedding < AI_DECISION_EMBEDDING; $embedding++) {
             $decision['WSurvival'][$classIndex][$embedding] = clamp_number((float)$decision['WSurvival'][$classIndex][$embedding] + $learningRate * $survivalDeltas[$classIndex] * $chosen['stateEmbedding'][$embedding], -AI_WEIGHT_LIMIT, AI_WEIGHT_LIMIT);
@@ -1959,7 +2081,7 @@ function limit_policy_parameter_delta(array &$policy, array $baseline, float $ma
     $strategyKeys = ['W1', 'b1', 'W2', 'b2', 'W3', 'b3'];
     $decisionKeys = [
         'WState1', 'bState1', 'WState2', 'bState2', 'WCandidate1', 'bCandidate1', 'WCandidate2', 'bCandidate2',
-        'WStateToMemory', 'WMemoryToMemory', 'bMemory', 'WMemoryToState', 'WValue', 'bValue', 'WSurvival', 'bSurvival', 'familyBias',
+        'WStateToMemory', 'WMemoryToMemory', 'bMemory', 'WMemoryToState', 'WValue', 'bValue', 'WEconomy', 'bEconomy', 'WCatastrophe', 'bCatastrophe', 'WSurvival', 'bSurvival', 'familyBias',
     ];
     $squaredNorm = 0.0;
     foreach ($strategyKeys as $key) {
@@ -2078,7 +2200,7 @@ function apply_public_contribution(array &$model, array $request): void {
     $decisionSamples = array_values(array_filter($request['decisionSamples'] ?? [], function (array $sample): bool {
         return ($sample['creditVersion'] ?? null) === AI_DECISION_CREDIT_VERSION;
     }));
-    $decisionTargets = decision_four_step_targets($decisionSamples, $reward, $model['policy']['decision']);
+    $decisionTargets = decision_four_step_targets($decisionSamples, $reward, $model['championPolicy']['decision']);
     foreach ($decisionSamples as $sampleIndex => $sample) {
         train_candidate_decision($model, $sample, $decisionTargets[$sampleIndex], $survivalClass);
     }
@@ -2285,15 +2407,19 @@ function migrate_state_locked(array $state, string $stateFile): array {
             $epoch
         );
     }
-    $isSchema13WithProfile = valid_schema13_with_player_profile($legacyModel);
+    $isSchema14WithProfile = valid_schema14_with_player_profile($legacyModel);
+    $isSchema13WithProfile = valid_schema13_model_with_player_profile($legacyModel);
+    $isSchema13 = valid_schema13_model($legacyModel);
     $isSchema12 = valid_schema12_model($legacyModel);
     $isSchema11 = !$isSchema12 && valid_schema11_model($legacyModel);
     $isSchema10 = !$isSchema12 && !$isSchema11 && valid_schema10_model($legacyModel);
     $isSchema9 = !$isSchema12 && !$isSchema11 && !$isSchema10 && valid_schema9_model($legacyModel);
-    if (!$isSchema13WithProfile && !$isSchema12 && !$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
+    if (!$isSchema14WithProfile && !$isSchema13 && !$isSchema13WithProfile && !$isSchema12 && !$isSchema11 && !$isSchema10 && !$isSchema9 && !valid_legacy_model($legacyModel)) {
         return $state;
     }
-    if ($isSchema13WithProfile) {
+    if ($isSchema14WithProfile) {
+        $model = migrate_schema14_model($legacyModel);
+    } elseif ($isSchema13 || $isSchema13WithProfile) {
         $model = migrate_schema13_model($legacyModel);
     } elseif ($isSchema12) {
         $model = migrate_schema12_model($legacyModel);

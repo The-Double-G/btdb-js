@@ -18,11 +18,12 @@ const {
     writeJson,
     writeText,
 } = require("./common")
+const { createScenarioReport, validateScenarioManifest } = require("./scenarios")
 
-const usage = "Usage: node tools/distributed-ai/aggregate-evaluation.js --results-dir DIR --output aggregate.json [--report report.md] [--minimum-score 0.58] [--minimum-games 64]"
+const usage = "Usage: node tools/distributed-ai/aggregate-evaluation.js --results-dir DIR --output aggregate.json [--report report.md] [--minimum-score 0.58] [--minimum-games 64] [--manifest manifest.json --scenario-report report.json]"
 
 function main() {
-    const args = parseArgs(process.argv.slice(2), ["results-dir", "output", "report", "minimum-score", "minimum-games"])
+    const args = parseArgs(process.argv.slice(2), ["results-dir", "output", "report", "minimum-score", "minimum-games", "manifest", "scenario-report"])
     if(args.help) {
         console.log(usage)
         return
@@ -41,9 +42,16 @@ function main() {
     const aggregate = aggregateEvaluationResults(results, minimumScore, minimumGames)
     const jsonPath = writeJson(output, aggregate)
     const reportPath = writeText(args.report || defaultMarkdownPath(output), evaluationMarkdown(aggregate))
+    if((args.manifest == null) !== (args["scenario-report"] == null)) fail("--manifest and --scenario-report must be supplied together")
+    let scenarioReportPath = null
+    if(args.manifest != null) {
+        const scenarioManifest = validateScenarioManifest(readJson(args.manifest))
+        scenarioReportPath = writeJson(args["scenario-report"], createScenarioReport(results, scenarioManifest))
+    }
     console.log(`Evaluation ${aggregate.passed ? "passed" : "failed"}: ${aggregate.overall.games} games, score ${aggregate.overall.score.toFixed(4)}`)
     console.log(`JSON: ${jsonPath}`)
     console.log(`Markdown: ${reportPath}`)
+    if(scenarioReportPath) console.log(`Scenario report: ${scenarioReportPath}`)
 }
 
 try {

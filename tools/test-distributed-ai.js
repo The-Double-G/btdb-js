@@ -56,6 +56,7 @@ const {
     migrateSchema11Model,
     migrateSchema12Model,
     migrateSchema13Model,
+    migrateSchema14Model,
     validateMigrationSource,
 } = require("./distributed-ai/run-worker")
 const {
@@ -67,6 +68,16 @@ const {
     requestJson,
     validateEndpointUrl,
 } = require("./distributed-ai/hosted-model")
+const {
+    HOLDOUT_SEED_OFFSET,
+    SCENARIO_COUNT,
+    createScenarioManifest,
+    createScenarioReport,
+    scenarioForIndex,
+    scenarioSeedForShard,
+    validateScenarioManifest,
+    validateScenarioReport,
+} = require("./distributed-ai/scenarios")
 
 const vector = (length, value = 0) => Array.from({ length }, () => value)
 const matrix = (rows, columns, value = 0) => Array.from({ length: rows }, () => vector(columns, value))
@@ -109,6 +120,10 @@ function policy(value = 0) {
             WMemoryToState: matrix(48, 16, value),
             WValue: vector(48),
             bValue: 0,
+            WEconomy: vector(48),
+            bEconomy: 0,
+            WCatastrophe: vector(48),
+            bCatastrophe: 0,
             WSurvival: matrix(4, 48, value),
             bSurvival: vector(4),
             familyBias: vector(8),
@@ -122,15 +137,23 @@ function schema11Policy(value = 0) {
     legacy.decision.candidateInputSize = 64
     legacy.decision.WState1 = legacy.decision.WState1.map(row => row.slice(0, 72))
     legacy.decision.WCandidate1 = legacy.decision.WCandidate1.map(row => row.slice(0, 64))
+    delete legacy.decision.WEconomy
+    delete legacy.decision.bEconomy
+    delete legacy.decision.WCatastrophe
+    delete legacy.decision.bCatastrophe
     return legacy
 }
 
 function expectedSchema12Policy(legacy) {
     const expected = structuredClone(legacy)
-    expected.decision.stateInputSize = 112
-    expected.decision.candidateInputSize = 112
-    expected.decision.WState1 = expected.decision.WState1.map(row => row.concat(vector(40)))
-    expected.decision.WCandidate1 = expected.decision.WCandidate1.map(row => row.concat(vector(48)))
+    expected.decision.stateInputSize = DECISION_STATE_INPUT_SIZE
+    expected.decision.candidateInputSize = DECISION_CANDIDATE_INPUT_SIZE
+    expected.decision.WState1 = expected.decision.WState1.map(row => row.concat(vector(DECISION_STATE_INPUT_SIZE - 72)))
+    expected.decision.WCandidate1 = expected.decision.WCandidate1.map(row => row.concat(vector(DECISION_CANDIDATE_INPUT_SIZE - 64)))
+    expected.decision.WEconomy = vector(48)
+    expected.decision.bEconomy = 0
+    expected.decision.WCatastrophe = vector(48)
+    expected.decision.bCatastrophe = 0
     return expected
 }
 
@@ -140,6 +163,23 @@ function schema12Policy(value = 0) {
     legacy.decision.candidateInputSize = 80
     legacy.decision.WState1 = legacy.decision.WState1.map(row => row.slice(0, 80))
     legacy.decision.WCandidate1 = legacy.decision.WCandidate1.map(row => row.slice(0, 80))
+    delete legacy.decision.WEconomy
+    delete legacy.decision.bEconomy
+    delete legacy.decision.WCatastrophe
+    delete legacy.decision.bCatastrophe
+    return legacy
+}
+
+function schema13Policy(value = 0) {
+    const legacy = policy(value)
+    legacy.decision.stateInputSize = 112
+    legacy.decision.candidateInputSize = 112
+    legacy.decision.WState1 = legacy.decision.WState1.map(row => row.slice(0, 112))
+    legacy.decision.WCandidate1 = legacy.decision.WCandidate1.map(row => row.slice(0, 112))
+    delete legacy.decision.WEconomy
+    delete legacy.decision.bEconomy
+    delete legacy.decision.WCatastrophe
+    delete legacy.decision.bCatastrophe
     return legacy
 }
 
@@ -190,6 +230,20 @@ function model() {
     }
 }
 
+function schema13Model() {
+    const legacy = model()
+    legacy.version = 13
+    legacy.modelFamily = "semantic-intent-spatial-recurrent-actor-critic-v5"
+    legacy.policy = schema13Policy(0.01)
+    legacy.championPolicy = schema13Policy(0.02)
+    legacy.populationPolicies = [schema13Policy(0.03), schema13Policy(0.04)]
+    legacy.policy.decision.trainingSamples[2] = 17
+    legacy.totalDecisionSamples = 17
+    legacy.placementStats = { retained: { samples: 2, score: 0.2, mean: 0.2, m2: 0.3 } }
+    legacy.loadoutPlacementStats = { retained: { samples: 3, score: -0.2, mean: -0.2, m2: 0.4 } }
+    return legacy
+}
+
 function match(index, result, evaluation) {
     const scenarioIndex = index % 8
     const candidateSide = Math.floor(scenarioIndex / 2) % 2 == 0 ? "left" : "right"
@@ -209,6 +263,7 @@ function match(index, result, evaluation) {
         round: 12 + index,
         frames: 1000 + index,
         evaluation,
+        stateDigest: digest({ fixture: "runtime-state", index, map: index % 2, candidateSide, candidateRole, result }),
     }
 }
 
@@ -293,7 +348,7 @@ function policyParameterCounts(candidatePolicy) {
     const decision = candidatePolicy.decision
     return {
         strategy: [strategy.W1, strategy.b1, strategy.W2, strategy.b2, strategy.W3, strategy.b3].reduce((total, tensor) => total + countTensor(tensor), 0),
-        decision: [decision.WState1, decision.bState1, decision.WState2, decision.bState2, decision.WCandidate1, decision.bCandidate1, decision.WCandidate2, decision.bCandidate2, decision.WStateToMemory, decision.WMemoryToMemory, decision.bMemory, decision.WMemoryToState, decision.WValue, decision.bValue, decision.WSurvival, decision.bSurvival, decision.familyBias].reduce((total, tensor) => total + countTensor(tensor), 0),
+        decision: [decision.WState1, decision.bState1, decision.WState2, decision.bState2, decision.WCandidate1, decision.bCandidate1, decision.WCandidate2, decision.bCandidate2, decision.WStateToMemory, decision.WMemoryToMemory, decision.bMemory, decision.WMemoryToState, decision.WValue, decision.bValue, decision.WEconomy, decision.bEconomy, decision.WCatastrophe, decision.bCatastrophe, decision.WSurvival, decision.bSurvival, decision.familyBias].reduce((total, tensor) => total + countTensor(tensor), 0),
     }
 }
 
@@ -315,20 +370,31 @@ function fakeResponse(chunks, contentLength = null) {
 }
 
 async function main() {
-    assert.equal(MODEL_SCHEMA_VERSION, 13)
-    assert.equal(MODEL_FAMILY, "semantic-intent-spatial-recurrent-actor-critic-v5")
-    assert.equal(DECISION_STATE_INPUT_SIZE, 112)
-    assert.equal(DECISION_CANDIDATE_INPUT_SIZE, 112)
-    assert.equal(DECISION_CREDIT_VERSION, 3)
+    assert.equal(MODEL_SCHEMA_VERSION, 14)
+    assert.equal(MODEL_FAMILY, "semantic-intent-spatial-recurrent-actor-critic-v6")
+    assert.equal(DECISION_STATE_INPUT_SIZE, 128)
+    assert.equal(DECISION_CANDIDATE_INPUT_SIZE, 128)
+    assert.equal(DECISION_CREDIT_VERSION, 4)
     assert.equal(EVALUATION_AGGREGATE_FORMAT_VERSION, 2)
     assert.equal(ABSOLUTE_DEFENSE_MINIMUM_LIVES, 50)
     assert.equal(ABSOLUTE_DEFENSE_MINIMUM_FLOOR_LIVES, 25)
     assert.equal(ABSOLUTE_DEFENSE_MINIMUM_RATE, 0.75)
-    assert.equal(POLICY_PARAMETER_COUNT, 31048)
+    assert.equal(POLICY_PARAMETER_COUNT, 33450)
     assert.equal(TRAINING_MATCHES, 192)
     assert.equal(TRAINING_LEARNING_MATCHES, 128)
     assert.equal(TRAINING_INTERNAL_EVALUATION_MATCHES, 64)
     assert.equal(MAX_JSON_BYTES, 8 * 1024 * 1024)
+    const scenarioManifest = createScenarioManifest({ baseSeed: 2000, workers: 4, trainingMatches: 192, evaluationMatches: 16 })
+    validateScenarioManifest(scenarioManifest)
+    assert.equal(scenarioManifest.scenarios.length, SCENARIO_COUNT)
+    assert.deepEqual(scenarioManifest.scenarios[7], scenarioForIndex(7))
+    assert.equal(scenarioSeedForShard(scenarioManifest, "train", "train-2"), 2002)
+    assert.equal(scenarioSeedForShard(scenarioManifest, "evaluate", "eval-2"), 2002 + HOLDOUT_SEED_OFFSET)
+    assert.equal(scenarioSeedForShard(scenarioManifest, "evaluate", "baseline-eval-2"), 2002 + HOLDOUT_SEED_OFFSET)
+    assert.equal(scenarioSeedForShard(scenarioManifest, "train", "eval-2"), null)
+    const invalidScenarioManifest = structuredClone(scenarioManifest)
+    invalidScenarioManifest.holdoutSeedOffset = 0
+    assert.throws(() => validateScenarioManifest(invalidScenarioManifest), /unsupported seed offsets/)
     assert.equal(maxRecoveredStalls(8), 3)
     assert.equal(maxRecoveredStalls(16), 3)
     assert.equal(maxRecoveredStalls(25), 4)
@@ -369,13 +435,13 @@ async function main() {
     const exactPolicy = policy()
     assert.deepEqual(Object.keys(exactPolicy).sort(), ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"].sort())
     assert.deepEqual(Object.keys(exactPolicy.strategy).sort(), ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"].sort())
-    assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"].sort())
+    assert.deepEqual(Object.keys(exactPolicy.decision).sort(), ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WEconomy", "bEconomy", "WCatastrophe", "bCatastrophe", "WSurvival", "bSurvival", "familyBias"].sort())
     assert.equal(exactPolicy.decision.WState1.length, 96)
-    assert.ok(exactPolicy.decision.WState1.every(row => row.length == 112))
+    assert.ok(exactPolicy.decision.WState1.every(row => row.length == 128))
     assert.equal(exactPolicy.decision.WCandidate1.length, 48)
-    assert.ok(exactPolicy.decision.WCandidate1.every(row => row.length == 112))
-    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 25341 })
-    assert.equal(Object.values(policyParameterCounts(exactPolicy)).reduce((sum, count) => sum + count, 0), 31048)
+    assert.ok(exactPolicy.decision.WCandidate1.every(row => row.length == 128))
+    assert.deepEqual(policyParameterCounts(exactPolicy), { strategy: 5707, decision: 27743 })
+    assert.equal(Object.values(policyParameterCounts(exactPolicy)).reduce((sum, count) => sum + count, 0), 33450)
 
     const schema11Model = model()
     schema11Model.playerProfile = { games: 3, features: vector(17, 0.2) }
@@ -404,7 +470,7 @@ async function main() {
     assertMigrationRetention(schema11Model, safeMigration)
     assert.deepEqual(schema11Model, schema11Before)
     const expectedMigration = structuredClone(schema11Model)
-    expectedMigration.version = 13
+    expectedMigration.version = 14
     expectedMigration.modelFamily = MODEL_FAMILY
     expectedMigration.placementStats = {}
     expectedMigration.loadoutPlacementStats = {}
@@ -433,12 +499,24 @@ async function main() {
     assert.equal(schema12Migration.totalDecisionSamples, 0)
     assertMigrationRetention(schema12Model, schema12Migration)
     validateModel(schema12Migration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
-    const schema13ProfileModel = model()
+    const schema13ProfileModel = schema13Model()
     schema13ProfileModel.playerProfile = { games: 4, features: vector(17, 0.3) }
     const schema13Migration = migrateSchema13Model(schema13ProfileModel)
     assert.equal(Object.prototype.hasOwnProperty.call(schema13Migration, "playerProfile"), false)
     assertMigrationRetention(schema13ProfileModel, schema13Migration)
     validateModel(schema13Migration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
+    for(const migratedPolicy of [schema13Migration.policy, schema13Migration.championPolicy, ...schema13Migration.populationPolicies]) {
+        assert.ok(migratedPolicy.decision.WEconomy.every(value => value === 0))
+        assert.equal(migratedPolicy.decision.bEconomy, 0)
+        assert.ok(migratedPolicy.decision.WCatastrophe.every(value => value === 0))
+        assert.equal(migratedPolicy.decision.bCatastrophe, 0)
+    }
+    const schema14ProfileModel = model()
+    schema14ProfileModel.playerProfile = { games: 4, features: vector(17, 0.3) }
+    const schema14Migration = migrateSchema14Model(schema14ProfileModel)
+    assert.equal(Object.prototype.hasOwnProperty.call(schema14Migration, "playerProfile"), false)
+    assertMigrationRetention(schema14ProfileModel, schema14Migration)
+    validateModel(schema14Migration, MODEL_SCHEMA_VERSION, MODEL_FAMILY)
 
     const base = createCheckpoint({ gameVersion: "v-test", model: model(), mode: "initialize", seed: 1, shard: "init", matches: 0 })
     validateCheckpoint(base)
@@ -470,7 +548,7 @@ async function main() {
     assert.throws(() => validateModel(coercibleDimensionsModel, MODEL_SCHEMA_VERSION, MODEL_FAMILY), /incompatible hidden dimensions/)
     const oldSchemaModel = model()
     oldSchemaModel.version = 8
-    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 13/)
+    assert.throws(() => validateModel(oldSchemaModel, 8, MODEL_FAMILY), /must use schema 14/)
 
     assert.equal(canonicalStringify({ b: 1, a: [true, { d: "x", c: null }] }), '{"a":[true,{"c":null,"d":"x"}],"b":1}')
     const expectedDigest = `sha256:${crypto.createHash("sha256").update('{"a":2,"b":1}').digest("hex")}`
@@ -603,6 +681,19 @@ async function main() {
     assert.equal(aggregate.coverage.balanced, true)
     assert.equal(aggregate.passed, true)
     validatePromotionBundle(materialized, aggregate, base, 0.56, 8)
+    const reportManifest = createScenarioManifest({ baseSeed: 5000, workers: 1, trainingMatches: 192, evaluationMatches: 16, gameVersion: "v-test", modelSchemaVersion: MODEL_SCHEMA_VERSION })
+    const scenarioEvaluation = evaluationResult("eval-0", 5000 + HOLDOUT_SEED_OFFSET, [
+        "win", "loss", "tie", "win", "loss", "tie", "win", "loss",
+        "tie", "win", "loss", "tie", "win", "loss", "tie", "win",
+    ], materialized, base)
+    const scenarioReport = createScenarioReport([scenarioEvaluation], reportManifest)
+    validateScenarioReport(scenarioReport)
+    assert.equal(scenarioReport.overall.games, 16)
+    assert.equal(scenarioReport.overall.averageRound, 19.5)
+    assert.equal(scenarioReport.overall.minimumRound, 12)
+    assert.equal(scenarioReport.overall.maximumRound, 27)
+    assert.ok(Object.values(scenarioReport.byScenario).every(bucket => bucket.games == 2))
+    assert.throws(() => createScenarioReport([scenarioEvaluation], { ...reportManifest, workers: 2 }), /requires exactly 2 evaluation results/)
     const baselineEvaluation = evaluationResult("baseline-eval", 31, ["win", "tie", "loss", "win", "tie", "loss", "win", "tie"], base, base)
     const baselineAggregate = aggregateEvaluationResults([baselineEvaluation], 0, 8)
     const quality = compareEvaluationQuality(aggregate, baselineAggregate, 8)
@@ -826,7 +917,7 @@ async function main() {
     validateEvaluationAggregate(stalePromotion)
     assert.throws(() => validatePromotionBundle(materialized, stalePromotion, base, 0.56, 8), /current baseline/)
 
-    console.log("Distributed AI unit tests passed: schema-12 bundles, safe schema-11 migration, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
+    console.log("Distributed AI unit tests passed: schema-14 bundles, legacy migrations, 192-match workers, bounded artifacts, atomic promotion, and reconciliation are deterministic.")
 }
 
 main().catch(error => {

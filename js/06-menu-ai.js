@@ -49,7 +49,7 @@ var AI_TRAINING_JOBS_ENDPOINT = "https://api.github.com/repos/The-Double-G/btdb-
 var AI_TRAINING_STATUS_MAX_BYTES = 32768
 var AI_TRAINING_JOBS_MAX_BYTES = 1048576
 var AI_TRAINING_STATUS_REFRESH_INTERVAL = 120000
-var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV2"
+var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV3"
 var AI_MAX_PENDING_CONTRIBUTIONS = 8
 var AI_MAX_CONTRIBUTION_OBSERVATIONS = 320
 var AI_MAX_PUBLIC_CONTRIBUTION_BYTES = 131072
@@ -87,8 +87,10 @@ var AI_ACTION_PRIORITY = {
 }
 var AI_POLICY_HIDDEN_SIZE_1 = 64
 var AI_POLICY_HIDDEN_SIZE_2 = 32
-var AI_DECISION_STATE_INPUT_SIZE = 112
-var AI_DECISION_CANDIDATE_INPUT_SIZE = 112
+var AI_DECISION_STATE_INPUT_SIZE = 128
+var AI_DECISION_CANDIDATE_INPUT_SIZE = 128
+var AI_SCHEMA13_DECISION_STATE_INPUT_SIZE = 112
+var AI_SCHEMA13_DECISION_CANDIDATE_INPUT_SIZE = 112
 var AI_DECISION_STATE_HIDDEN_SIZE = 96
 var AI_DECISION_CANDIDATE_HIDDEN_SIZE = 48
 var AI_DECISION_EMBEDDING_SIZE = 48
@@ -110,9 +112,10 @@ var AI_DECISION_FAMILY = {
 }
 var AI_DECISION_FAMILY_LABELS = ["Loadout", "Strategy", "Placement", "Upgrade", "Sale", "Eco", "Rush", "Boost"]
 var AI_POLICY_PARAMETER_LIMIT = 4
-var AI_LEARNING_SCHEMA_VERSION = 13
-var AI_MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v5"
-var AI_DECISION_CREDIT_VERSION = 3
+var AI_LEARNING_SCHEMA_VERSION = 14
+var AI_MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v6"
+var AI_SCHEMA13_VERSION = 13
+var AI_DECISION_CREDIT_VERSION = 4
 var AI_DECISION_TD_STEPS = 4
 var AI_DECISION_DISCOUNT_PER_SECOND = 0.99
 var aiDecisionStateCache = null
@@ -882,7 +885,7 @@ function createDefaultAIStrategyPolicy(outputBias) {
 }
 
 function createDefaultAIDecisionPolicy() {
-    // Keep first 80 columns deterministic as in schema 12 for test stability; extra 32 for 112 are zero-started and learned.
+    // Keep the schema-12 prefix deterministic; schema-13 and schema-14 context extensions start at zero and are learned.
     var baseWState1 = aiCreateDeterministicMatrix(AI_DECISION_STATE_HIDDEN_SIZE, 80, 0.08, 11)
     var baseWCandidate1 = aiCreateDeterministicMatrix(AI_DECISION_CANDIDATE_HIDDEN_SIZE, 80, 0.09, 37)
     for(var r = 0; r < baseWState1.length; r++) baseWState1[r] = baseWState1[r].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - 80, 0))
@@ -910,6 +913,10 @@ function createDefaultAIDecisionPolicy() {
         WMemoryToState: aiCreateMatrix(AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE, 0),
         WValue: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
         bValue: 0,
+        WEconomy: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
+        bEconomy: 0,
+        WCatastrophe: aiCreateVector(AI_DECISION_EMBEDDING_SIZE, 0),
+        bCatastrophe: 0,
         WSurvival: aiCreateMatrix(AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE, 0),
         bSurvival: aiCreateVector(AI_DECISION_SURVIVAL_CLASS_COUNT, 0),
         familyBias: aiCreateVector(AI_DECISION_FAMILY_COUNT, 0),
@@ -968,6 +975,10 @@ function cloneAIPolicy(policy) {
             WMemoryToState: cloneAIMatrix(policy.decision.WMemoryToState),
             WValue: policy.decision.WValue.slice(0),
             bValue: policy.decision.bValue,
+            WEconomy: policy.decision.WEconomy.slice(0),
+            bEconomy: policy.decision.bEconomy,
+            WCatastrophe: policy.decision.WCatastrophe.slice(0),
+            bCatastrophe: policy.decision.bCatastrophe,
             WSurvival: cloneAIMatrix(policy.decision.WSurvival),
             bSurvival: policy.decision.bSurvival.slice(0),
             familyBias: policy.decision.familyBias.slice(0),
@@ -1026,7 +1037,7 @@ function isValidAIPolicy(policy) {
     if(decision.stateInputSize != AI_DECISION_STATE_INPUT_SIZE || decision.candidateInputSize != AI_DECISION_CANDIDATE_INPUT_SIZE || decision.stateHiddenSize != AI_DECISION_STATE_HIDDEN_SIZE || decision.candidateHiddenSize != AI_DECISION_CANDIDATE_HIDDEN_SIZE || decision.embeddingSize != AI_DECISION_EMBEDDING_SIZE || decision.memorySize != AI_DECISION_MEMORY_SIZE || decision.survivalClassCount != AI_DECISION_SURVIVAL_CLASS_COUNT) {
         return false
     }
-    return isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, AI_DECISION_CANDIDATE_INPUT_SIZE) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WStateToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WMemoryToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.bMemory, AI_DECISION_MEMORY_SIZE) && isValidAIMatrix(decision.WMemoryToState, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.WValue, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bValue) && Math.abs(decision.bValue) <= AI_POLICY_PARAMETER_LIMIT && isValidAIMatrix(decision.WSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.bSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
+    return isValidAICounterVector(decision.trainingSamples, AI_DECISION_FAMILY_COUNT) && isValidAIMatrix(decision.WState1, AI_DECISION_STATE_HIDDEN_SIZE, AI_DECISION_STATE_INPUT_SIZE) && isFiniteAIVector(decision.bState1, AI_DECISION_STATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WState2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_STATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bState2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE, AI_DECISION_CANDIDATE_INPUT_SIZE) && isFiniteAIVector(decision.bCandidate1, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isValidAIMatrix(decision.WCandidate2, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_CANDIDATE_HIDDEN_SIZE) && isFiniteAIVector(decision.bCandidate2, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WStateToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_EMBEDDING_SIZE) && isValidAIMatrix(decision.WMemoryToMemory, AI_DECISION_MEMORY_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.bMemory, AI_DECISION_MEMORY_SIZE) && isValidAIMatrix(decision.WMemoryToState, AI_DECISION_EMBEDDING_SIZE, AI_DECISION_MEMORY_SIZE) && isFiniteAIVector(decision.WValue, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bValue) && Math.abs(decision.bValue) <= AI_POLICY_PARAMETER_LIMIT && isFiniteAIVector(decision.WEconomy, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bEconomy) && Math.abs(decision.bEconomy) <= AI_POLICY_PARAMETER_LIMIT && isFiniteAIVector(decision.WCatastrophe, AI_DECISION_EMBEDDING_SIZE) && Number.isFinite(decision.bCatastrophe) && Math.abs(decision.bCatastrophe) <= AI_POLICY_PARAMETER_LIMIT && isValidAIMatrix(decision.WSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT, AI_DECISION_EMBEDDING_SIZE) && isFiniteAIVector(decision.bSurvival, AI_DECISION_SURVIVAL_CLASS_COUNT) && isFiniteAIVector(decision.familyBias, AI_DECISION_FAMILY_COUNT)
 }
 
 function getAIDecisionTrainingSampleTotal(policy) {
@@ -1044,7 +1055,7 @@ function getAIPolicyParameterCount(policy) {
     }
     var strategy = policy.strategy
     var decision = policy.decision
-    return strategy.W1.length * strategy.W1[0].length + strategy.b1.length + strategy.W2.length * strategy.W2[0].length + strategy.b2.length + strategy.W3.length * strategy.W3[0].length + strategy.b3.length + decision.WState1.length * decision.WState1[0].length + decision.bState1.length + decision.WState2.length * decision.WState2[0].length + decision.bState2.length + decision.WCandidate1.length * decision.WCandidate1[0].length + decision.bCandidate1.length + decision.WCandidate2.length * decision.WCandidate2[0].length + decision.bCandidate2.length + decision.WStateToMemory.length * decision.WStateToMemory[0].length + decision.WMemoryToMemory.length * decision.WMemoryToMemory[0].length + decision.bMemory.length + decision.WMemoryToState.length * decision.WMemoryToState[0].length + decision.WValue.length + 1 + decision.WSurvival.length * decision.WSurvival[0].length + decision.bSurvival.length + decision.familyBias.length
+    return strategy.W1.length * strategy.W1[0].length + strategy.b1.length + strategy.W2.length * strategy.W2[0].length + strategy.b2.length + strategy.W3.length * strategy.W3[0].length + strategy.b3.length + decision.WState1.length * decision.WState1[0].length + decision.bState1.length + decision.WState2.length * decision.WState2[0].length + decision.bState2.length + decision.WCandidate1.length * decision.WCandidate1[0].length + decision.bCandidate1.length + decision.WCandidate2.length * decision.WCandidate2[0].length + decision.bCandidate2.length + decision.WStateToMemory.length * decision.WStateToMemory[0].length + decision.WMemoryToMemory.length * decision.WMemoryToMemory[0].length + decision.bMemory.length + decision.WMemoryToState.length * decision.WMemoryToState[0].length + decision.WValue.length + 1 + decision.WEconomy.length + 1 + decision.WCatastrophe.length + 1 + decision.WSurvival.length * decision.WSurvival[0].length + decision.bSurvival.length + decision.familyBias.length
 }
 
 function createDefaultPolicyOutputBias() {
@@ -1101,6 +1112,16 @@ function isValidAISchema12Policy(policy) {
     return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
 }
 
+function isValidAISchema13Decision(decision) {
+    return isValidAIFullDecisionForInputSizes(decision, AI_SCHEMA13_DECISION_STATE_INPUT_SIZE, AI_SCHEMA13_DECISION_CANDIDATE_INPUT_SIZE)
+}
+
+function isValidAISchema13Policy(policy) {
+    if(!policy || policy.formatVersion != 2 || !policy.strategy || !isValidAISchema13Decision(policy.decision)) return false
+    var strategy = policy.strategy
+    return Number.isFinite(policy.strategyLearningRate) && policy.strategyLearningRate > 0 && policy.strategyLearningRate <= 0.2 && Number.isFinite(policy.decisionLearningRate) && policy.decisionLearningRate > 0 && policy.decisionLearningRate <= 0.1 && strategy.hiddenSize1 == AI_POLICY_HIDDEN_SIZE_1 && strategy.hiddenSize2 == AI_POLICY_HIDDEN_SIZE_2 && isValidAIMatrix(strategy.W1, AI_POLICY_HIDDEN_SIZE_1, AI_FEATURE_KEYS.length) && isFiniteAIVector(strategy.b1, AI_POLICY_HIDDEN_SIZE_1) && isValidAIMatrix(strategy.W2, AI_POLICY_HIDDEN_SIZE_2, AI_POLICY_HIDDEN_SIZE_1) && isFiniteAIVector(strategy.b2, AI_POLICY_HIDDEN_SIZE_2) && isValidAIMatrix(strategy.W3, AI_STRATEGY_LIBRARY.length, AI_POLICY_HIDDEN_SIZE_2) && isFiniteAIVector(strategy.b3, AI_STRATEGY_LIBRARY.length)
+}
+
 function migrateAISchema11Decision(oldDecision) {
     var decision = createDefaultAIDecisionPolicy()
     decision.trainingSamples = oldDecision.trainingSamples.slice(0)
@@ -1143,6 +1164,29 @@ function migrateAISchema12Decision(oldDecision) {
     decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
     decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
     decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
+    decision.WStateToMemory = cloneAIMatrix(oldDecision.WStateToMemory)
+    decision.WMemoryToMemory = cloneAIMatrix(oldDecision.WMemoryToMemory)
+    decision.bMemory = oldDecision.bMemory.slice(0)
+    decision.WMemoryToState = cloneAIMatrix(oldDecision.WMemoryToState)
+    decision.WValue = oldDecision.WValue.slice(0)
+    decision.bValue = oldDecision.bValue
+    decision.WSurvival = cloneAIMatrix(oldDecision.WSurvival)
+    decision.bSurvival = oldDecision.bSurvival.slice(0)
+    decision.familyBias = oldDecision.familyBias.slice(0)
+    return decision
+}
+
+function migrateAISchema13Decision(oldDecision) {
+    var decision = createDefaultAIDecisionPolicy()
+    decision.trainingSamples = oldDecision.trainingSamples.slice(0)
+    decision.bState1 = oldDecision.bState1.slice(0)
+    decision.WState2 = cloneAIMatrix(oldDecision.WState2)
+    decision.bState2 = oldDecision.bState2.slice(0)
+    for(var stateRow = 0; stateRow < AI_DECISION_STATE_HIDDEN_SIZE; stateRow++) decision.WState1[stateRow] = oldDecision.WState1[stateRow].concat(aiCreateVector(AI_DECISION_STATE_INPUT_SIZE - AI_SCHEMA13_DECISION_STATE_INPUT_SIZE, 0))
+    decision.bCandidate1 = oldDecision.bCandidate1.slice(0)
+    decision.WCandidate2 = cloneAIMatrix(oldDecision.WCandidate2)
+    decision.bCandidate2 = oldDecision.bCandidate2.slice(0)
+    for(var candidateRow = 0; candidateRow < AI_DECISION_CANDIDATE_HIDDEN_SIZE; candidateRow++) decision.WCandidate1[candidateRow] = oldDecision.WCandidate1[candidateRow].concat(aiCreateVector(AI_DECISION_CANDIDATE_INPUT_SIZE - AI_SCHEMA13_DECISION_CANDIDATE_INPUT_SIZE, 0))
     decision.WStateToMemory = cloneAIMatrix(oldDecision.WStateToMemory)
     decision.WMemoryToMemory = cloneAIMatrix(oldDecision.WMemoryToMemory)
     decision.bMemory = oldDecision.bMemory.slice(0)
@@ -1228,6 +1272,13 @@ function migrateAIPolicy(candidatePolicy) {
         migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
         migrated.strategy = JSON.parse(JSON.stringify(candidatePolicy.strategy))
         migrated.decision = migrateAISchema12Decision(candidatePolicy.decision)
+        return migrated
+    }
+    if(isValidAISchema13Policy(candidatePolicy)) {
+        migrated.strategyLearningRate = candidatePolicy.strategyLearningRate
+        migrated.decisionLearningRate = candidatePolicy.decisionLearningRate
+        migrated.strategy = JSON.parse(JSON.stringify(candidatePolicy.strategy))
+        migrated.decision = migrateAISchema13Decision(candidatePolicy.decision)
         return migrated
     }
     if(isValidAISchema11Policy(candidatePolicy)) {
@@ -1374,7 +1425,7 @@ function normalizeAILearningData(candidate) {
     if(!candidate.loadoutPlacementStats || typeof candidate.loadoutPlacementStats != "object") {
         candidate.loadoutPlacementStats = {}
     }
-    if(sourceVersion != AI_LEARNING_SCHEMA_VERSION) {
+    if(sourceVersion < AI_SCHEMA13_VERSION) {
         candidate.placementStats = {}
         candidate.loadoutPlacementStats = {}
     }
@@ -1399,7 +1450,7 @@ function normalizeAILearningData(candidate) {
     if(!candidate.tacticalFamilyStats || typeof candidate.tacticalFamilyStats != "object" || Array.isArray(candidate.tacticalFamilyStats)) {
         candidate.tacticalFamilyStats = {}
     }
-    if(sourceVersion < AI_LEARNING_SCHEMA_VERSION) {
+    if(sourceVersion < AI_SCHEMA13_VERSION) {
         for(var tacticalFamilyKey in candidate.tacticalFamilyStats) {
             if(tacticalFamilyKey.indexOf("human|") == 0) delete candidate.tacticalFamilyStats[tacticalFamilyKey]
         }
@@ -1507,7 +1558,7 @@ function shouldRequireAISaveFolder() {
 }
 
 function applyAILearningEnvelope(parsed, forceModelInstall) {
-    if(!parsed || parsed.ok !== true || Number.isFinite(parsed.revision) == false || !parsed.model) {
+    if(!parsed || parsed.ok !== true || parsed.protocolVersion !== 1 || parsed.gameVersion !== GAME_VERSION || parsed.modelSchema !== AI_LEARNING_SCHEMA_VERSION || Number.isFinite(parsed.revision) == false || !parsed.model) {
         throw new Error("Backend returned an invalid learning envelope")
     }
     var normalized = normalizeAILearningData(parsed.model)
@@ -1653,6 +1704,7 @@ function getAIPublicContributionQueue() {
     }
     try {
         localStorage.removeItem("aiPendingContributionsV1")
+        localStorage.removeItem("aiPendingContributionsV2")
         var parsed = JSON.parse(localStorage.getItem(AI_CONTRIBUTION_STORAGE_KEY) || "[]")
         return Array.isArray(parsed) ? parsed.slice(-AI_MAX_PENDING_CONTRIBUTIONS) : []
     } catch(error) {
@@ -2105,6 +2157,12 @@ function getAIDecisionBootstrapWeight(familyIndex, policyOverride) {
     return 1 - clamp(samples / AI_DECISION_BOOTSTRAP_SAMPLES, 0, 1)
 }
 
+function getAIDecisionTowerTargetProgress(tower, side) {
+    var targetIndex = Number(tower && tower.target)
+    if(!Number.isInteger(targetIndex) || targetIndex < 0 || typeof bloons == "undefined" || !Array.isArray(bloons) || !bloons[targetIndex]) return 0
+    return clamp((Number(bloons[targetIndex].pathPos) || 0) / 100, 0, 1)
+}
+
 function summarizeAIDecisionEntities(side) {
     var towerCount = 0
     var towerTierTotal = 0
@@ -2161,6 +2219,56 @@ function summarizeAIDecisionEntities(side) {
         clamp(bloonPathMaximum / 100, 0, 1),
         clamp(boostedBloons / Math.max(1, bloonCount), 0, 1),
     ]
+}
+
+function getAIDecisionBloonClass(bloon) {
+    var type = String(bloon && (bloon.image || bloon.type || bloon.name) || "").toLowerCase()
+    var health = Math.max(0, Number(bloon && bloon.health) || 0)
+    if(bloon && bloon.isBoss || /boss|bad|zomg|bfb|moab|ddt/.test(type) || health >= 68) return "heavy"
+    if(/red|blue|green|yellow|pink|white|black|zebra|rainbow/.test(type) || health < 18) return "light"
+    return "medium"
+}
+
+function summarizeAIDecisionBloons(side) {
+    var count = 0
+    var light = 0
+    var heavy = 0
+    var speedTotal = 0
+    var progressTotal = 0
+    var urgent = 0
+    if(typeof bloons != "undefined" && Array.isArray(bloons)) {
+        for(var bloonIndex = 0; bloonIndex < bloons.length; bloonIndex++) {
+            var bloon = bloons[bloonIndex]
+            if(!bloon || bloon.playerSide != side) continue
+            var progress = clamp((Number(bloon.pathPos) || 0) / 100, 0, 1)
+            var speed = typeof getBloonPathStepPerTick == "function" ? getBloonPathStepPerTick(bloon) : Number(bloon.speed) || 0
+            count++
+            if(getAIDecisionBloonClass(bloon) == "light") light++
+            if(getAIDecisionBloonClass(bloon) == "heavy") heavy++
+            speedTotal += Math.max(0, Number(speed) || 0)
+            progressTotal += progress
+            if(progress >= 0.75) urgent++
+        }
+    }
+    return [
+        clamp(count / 48, 0, 1),
+        clamp(light / Math.max(1, count), 0, 1),
+        clamp(heavy / Math.max(1, count), 0, 1),
+        clamp(speedTotal / Math.max(1, count) / 10, 0, 1),
+        clamp(progressTotal / Math.max(1, count), 0, 1),
+        clamp(urgent / Math.max(1, count), 0, 1),
+    ]
+}
+
+function getAIDecisionPathGeometryFeature(side) {
+    var points = typeof getAISidePathPoints == "function" ? getAISidePathPoints(side) : []
+    var length = 0
+    for(var i = 1; i < points.length; i++) {
+        var dx = (Number(points[i].x) || 0) - (Number(points[i - 1].x) || 0)
+        var dy = (Number(points[i].y) || 0) - (Number(points[i - 1].y) || 0)
+        length += Math.sqrt(dx * dx + dy * dy)
+    }
+    return clamp(Math.log1p(length) / Math.log(10001) * 0.8 + points.length / 128 * 0.2, 0, 1)
 }
 
 function getAISideFarmBankTotal(side) {
@@ -2264,7 +2372,7 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         features[76] = clamp(ownBananaExpiry / 10000, 0, 1)
         features[77] = clamp(typeof timeRoundEnded != "undefined" && typeof gameNow == "function" ? Math.max(0, gameNow() - timeRoundEnded) / 6000 : 0, 0, 1)
     }
-    // 112-dim extension: per-tower-type composition for both sides (32 dims at 80-111) for bit-perfect loadout/tower awareness.
+    // Schema-13 extension: per-tower-type composition for both sides (32 dims at 80-111).
     var towerTypesForState = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var perTypeBase = 80
     for(var typeIdx = 0; typeIdx < towerTypesForState.length; typeIdx++) {
@@ -2273,6 +2381,17 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         var enemyTypeCount = typeof getSideTowersByType == "function" ? getSideTowersByType(enemySide, towerType).length : 0
         if(perTypeBase + typeIdx < features.length) features[perTypeBase + typeIdx] = clamp(ownTypeCount / 6, 0, 1)
         if(perTypeBase + 16 + typeIdx < features.length) features[perTypeBase + 16 + typeIdx] = clamp(enemyTypeCount / 6, 0, 1)
+    }
+    // Schema-14 factual context: map identity, route geometry, and incoming composition.
+    if(features.length >= 128) {
+        features[112] = Number(typeof mapNumber != "undefined" ? mapNumber : 0) == 0 ? 1 : 0
+        features[113] = Number(typeof mapNumber != "undefined" ? mapNumber : 0) == 1 ? 1 : 0
+        features[114] = getAIDecisionPathGeometryFeature(side)
+        features[115] = getAIDecisionPathGeometryFeature(enemySide)
+        var ownBloonFeatures = summarizeAIDecisionBloons(side)
+        var enemyBloonFeatures = summarizeAIDecisionBloons(enemySide)
+        for(var ownBloonFeatureIndex = 0; ownBloonFeatureIndex < ownBloonFeatures.length; ownBloonFeatureIndex++) features[116 + ownBloonFeatureIndex] = clampAIDecisionFeature(ownBloonFeatures[ownBloonFeatureIndex])
+        for(var enemyBloonFeatureIndex = 0; enemyBloonFeatureIndex < enemyBloonFeatures.length; enemyBloonFeatureIndex++) features[122 + enemyBloonFeatureIndex] = clampAIDecisionFeature(enemyBloonFeatures[enemyBloonFeatureIndex])
     }
     return features
 }
@@ -2341,6 +2460,7 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     for(var genericIndex = 0; genericIndex < genericFeatures.length; genericIndex++) features[AI_DECISION_FAMILY_COUNT + genericIndex] = clampAIDecisionFeature(genericFeatures[genericIndex])
 
     var semanticFeatures
+    var placementCoverage = null
     if(Array.isArray(metadata.capabilityVector)) {
         semanticFeatures = metadata.capabilityVector.slice(0, AI_CAPABILITY_KEYS.length)
     } else if(metadata.capabilityBefore || metadata.capabilityAfter) {
@@ -2374,6 +2494,7 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
         }
     } else if(metadata.placementGeometry === true && hasPosition) {
         var coverage = getPlacementCoverageStats(side, candidateX, candidateY, Number(metadata.range) || 0)
+        placementCoverage = coverage
         var sidePathCount = Math.max(1, getSidePathObjectCount(side))
         var placementFeatures = [
             getAIPerspectivePlacementX(side, candidateX),
@@ -2387,7 +2508,7 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
         ]
         for(var placementIndex = 0; placementIndex < placementFeatures.length; placementIndex++) features[72 + placementIndex] = placementFeatures[placementIndex]
     }
-    // 112-dim extension: placement intent, tower-type one-hot, and detailed tier/cost context.
+    // Schema-13 extension: placement intent, tower-type one-hot, and detailed tier/cost context.
     var towerTypesForCandidate = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var rawType = String(metadata.type || metadata.towerType || "").split("|")[0].split(",")[0]
     var intentTiers = normalizeAIUpgradeIntent(metadata.intentTiers)
@@ -2419,6 +2540,52 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
         features[109] = clamp(farmerCoverage.uncoveredBananaCount / 24, 0, 1)
         features[110] = clamp(Math.log1p(farmerCoverage.uncoveredBananaCash) / Math.log(6001), 0, 1)
         features[111] = farmerCoverage.strategyHasFarm ? 1 : 0
+    }
+    if(features.length >= 128) {
+        var currentMap = Number(typeof mapNumber != "undefined" ? mapNumber : 0)
+        features[112] = currentMap == 0 ? 1 : 0
+        features[113] = currentMap == 1 ? 1 : 0
+        features[114] = placementCoverage ? 1 - clamp(placementCoverage.nearestTrackDistance / 260, 0, 1) : 0
+        features[115] = placementCoverage ? clamp(placementCoverage.coverageCount / Math.max(1, getSidePathObjectCount(side)), 0, 1) : 0
+        features[116] = placementCoverage ? clamp(placementCoverage.span, 0, 1) : 0
+        features[117] = placementCoverage ? clamp(placementCoverage.longestRun, 0, 1) : 0
+        var candidateTower = metadata.tower || null
+        var cooldownRemaining = Number(metadata.cooldownRemainingMs)
+        if(!Number.isFinite(cooldownRemaining) && candidateTower && Number.isFinite(Number(candidateTower.nextFire))) cooldownRemaining = Math.max(0, Number(candidateTower.nextFire) - (typeof gameNow == "function" ? gameNow() : 0))
+        if(!Number.isFinite(cooldownRemaining)) cooldownRemaining = 0
+        var timeToImpact = Number(metadata.timeToImpactMs)
+        if(!Number.isFinite(timeToImpact) && metadata.send) {
+            var sendSpacing = Number(metadata.send.spacing)
+            var sendCount = Math.max(1, Number(metadata.sendGroups) || Number(metadata.count) || 1)
+            if(Number.isFinite(sendSpacing)) timeToImpact = Math.max(0, sendSpacing) * sendCount
+        }
+        if(!Number.isFinite(timeToImpact)) timeToImpact = cooldownRemaining
+        var targetProgress = Number(metadata.targetProgress)
+        if(!Number.isFinite(targetProgress) && candidateTower) targetProgress = getAIDecisionTowerTargetProgress(candidateTower, side)
+        var targetHealth = Number(metadata.targetHealth)
+        if(!Number.isFinite(targetHealth) && metadata.targetBloon) targetHealth = Number(metadata.targetBloon.health)
+        if(!Number.isFinite(targetHealth) && metadata.send) targetHealth = Number(metadata.send.health)
+        var expectedOutput = Number(metadata.expectedOutput)
+        if(!Number.isFinite(expectedOutput) && candidateTower) expectedOutput = getAITowerPlacementOutputValue(candidateTower)
+        if(!Number.isFinite(expectedOutput) && metadata.send) expectedOutput = Math.max(0, Number(metadata.send.eco) || 0) * Math.max(1, Number(metadata.sendGroups) || Number(metadata.count) || 1)
+        features[118] = clamp(Math.max(0, timeToImpact) / 60000, 0, 1)
+        features[119] = clamp(Math.max(0, cooldownRemaining) / 60000, 0, 1)
+        features[120] = clamp(Number.isFinite(targetProgress) ? targetProgress : 0, 0, 1)
+        features[121] = clamp(Math.log1p(Math.max(0, Number.isFinite(targetHealth) ? targetHealth : 0)) / Math.log(100001), 0, 1)
+        features[122] = clamp(Math.log1p(Math.max(0, Number.isFinite(expectedOutput) ? expectedOutput : 0)) / Math.log(100001), 0, 1)
+        var candidateFacts = copyAICapabilities(metadata.capabilityAfter || metadata.capabilityFacts)
+        if(!metadata.capabilityAfter && !metadata.capabilityFacts && candidateTower) candidateFacts = getAITowerCapabilityFacts(candidateTower)
+        else if(!metadata.capabilityAfter && !metadata.capabilityFacts && AI_BASE_TOWER_CAPABILITIES[rawType]) candidateFacts = getAITowerCapabilityFacts(rawType)
+        var candidateCapabilityVector = typeof getNormalizedAICapabilityVector == "function" ? getNormalizedAICapabilityVector(candidateFacts) : []
+        var candidateCapabilityValue = function(key) {
+            var index = typeof AI_CAPABILITY_KEYS != "undefined" ? AI_CAPABILITY_KEYS.indexOf(key) : -1
+            return index >= 0 && Number.isFinite(Number(candidateCapabilityVector[index])) ? clampAIDecisionFeature(candidateCapabilityVector[index]) : 0
+        }
+        features[123] = candidateCapabilityValue("range")
+        features[124] = candidateCapabilityValue("directDamage")
+        features[125] = candidateCapabilityValue("cashDelta")
+        features[126] = candidateCapabilityValue("ecoDelta")
+        features[127] = candidateCapabilityValue("attackRateMultiplier")
     }
     return features
 }
@@ -2496,6 +2663,12 @@ function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, memory
         }
         var valueLogit = decision.bValue
         for(var valueIndex = 0; valueIndex < AI_DECISION_EMBEDDING_SIZE; valueIndex++) valueLogit += decision.WValue[valueIndex] * stateEmbedding[valueIndex]
+        var economyLogit = decision.bEconomy
+        var catastropheLogit = decision.bCatastrophe
+        for(var headIndex = 0; headIndex < AI_DECISION_EMBEDDING_SIZE; headIndex++) {
+            economyLogit += decision.WEconomy[headIndex] * stateEmbedding[headIndex]
+            catastropheLogit += decision.WCatastrophe[headIndex] * stateEmbedding[headIndex]
+        }
         var survivalLogits = []
         for(var survivalIndex = 0; survivalIndex < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalIndex++) {
             var survivalLogit = decision.bSurvival[survivalIndex]
@@ -2508,6 +2681,8 @@ function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, memory
             embedding: stateEmbedding,
             memoryOut: memoryOut,
             value: Math.tanh(valueLogit),
+            economyValue: Math.tanh(economyLogit),
+            catastropheValue: Math.tanh(catastropheLogit),
             survivalProbabilities: aiSoftmax(survivalLogits),
         }
         aiDecisionStateCache = { features: stateFeatures, memory: resolvedMemory, policy: policy, safeState: safeState, safeMemory: safeMemory, state: state }
@@ -2541,6 +2716,8 @@ function aiDecisionForward(stateFeatures, candidateFeatures, familyIndex, memory
         actorLogit: actorLogit,
         score: Math.tanh(actorLogit),
         value: state.value,
+        economyValue: state.economyValue,
+        catastropheValue: state.catastropheValue,
         survivalProbabilities: state.survivalProbabilities,
     }
 }
@@ -2657,6 +2834,14 @@ function trainAIDecision(sample, target, survivalClass, policyOverride) {
     var actorDelta = advantage
     var chosenActorDeltas = getAICosineEmbeddingDeltas(chosen, actorDelta)
     var valueDelta = clamp(target - chosen.value, -1, 1) * (1 - chosen.value * chosen.value)
+    var economyTarget = Number(sample.economyReward)
+    if(Number.isFinite(economyTarget) == false) economyTarget = Number(sample.intervalReward) || 0
+    economyTarget = clamp(economyTarget, -1, 1)
+    var catastropheTarget = Number(sample.catastropheTarget)
+    if(Number.isFinite(catastropheTarget) == false) catastropheTarget = survivalClass <= 1 ? 1 : 0
+    catastropheTarget = clamp(catastropheTarget, 0, 1)
+    var economyDelta = clamp(economyTarget - chosen.economyValue, -1, 1) * (1 - chosen.economyValue * chosen.economyValue)
+    var catastropheDelta = clamp(catastropheTarget - chosen.catastropheValue, -1, 1) * (1 - chosen.catastropheValue * chosen.catastropheValue)
     var survivalDeltas = aiCreateVector(AI_DECISION_SURVIVAL_CLASS_COUNT, 0)
     var hasSurvivalTarget = Number.isInteger(survivalClass) && survivalClass >= 0 && survivalClass < AI_DECISION_SURVIVAL_CLASS_COUNT
     if(hasSurvivalTarget) {
@@ -2667,10 +2852,13 @@ function trainAIDecision(sample, target, survivalClass, policyOverride) {
     var originalMemoryToState = cloneAIMatrix(decision.WMemoryToState)
     var originalStateToMemory = cloneAIMatrix(decision.WStateToMemory)
     var originalValueWeights = decision.WValue.slice(0)
+    var originalEconomyWeights = decision.WEconomy.slice(0)
+    var originalCatastropheWeights = decision.WCatastrophe.slice(0)
     var originalSurvivalWeights = cloneAIMatrix(decision.WSurvival)
     var stateEmbeddingDelta = []
     for(var stateEmbeddingIndex = 0; stateEmbeddingIndex < AI_DECISION_EMBEDDING_SIZE; stateEmbeddingIndex++) {
         var headActivationDelta = originalValueWeights[stateEmbeddingIndex] * valueDelta
+        headActivationDelta += originalEconomyWeights[stateEmbeddingIndex] * economyDelta + originalCatastropheWeights[stateEmbeddingIndex] * catastropheDelta
         if(hasSurvivalTarget) {
             for(var survivalClassIndex = 0; survivalClassIndex < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalClassIndex++) headActivationDelta += originalSurvivalWeights[survivalClassIndex][stateEmbeddingIndex] * survivalDeltas[survivalClassIndex]
         }
@@ -2708,6 +2896,12 @@ function trainAIDecision(sample, target, survivalClass, policyOverride) {
     var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500) * getAIDecisionLearningWeight(sample, target, survivalClass)
     for(var valueWeightIndex = 0; valueWeightIndex < AI_DECISION_EMBEDDING_SIZE; valueWeightIndex++) decision.WValue[valueWeightIndex] = clampAIPolicyParameter(decision.WValue[valueWeightIndex] + learningRate * valueDelta * chosen.stateEmbedding[valueWeightIndex])
     decision.bValue = clampAIPolicyParameter(decision.bValue + learningRate * valueDelta)
+    for(var economyWeightIndex = 0; economyWeightIndex < AI_DECISION_EMBEDDING_SIZE; economyWeightIndex++) {
+        decision.WEconomy[economyWeightIndex] = clampAIPolicyParameter(decision.WEconomy[economyWeightIndex] + learningRate * economyDelta * chosen.stateEmbedding[economyWeightIndex])
+        decision.WCatastrophe[economyWeightIndex] = clampAIPolicyParameter(decision.WCatastrophe[economyWeightIndex] + learningRate * catastropheDelta * chosen.stateEmbedding[economyWeightIndex])
+    }
+    decision.bEconomy = clampAIPolicyParameter(decision.bEconomy + learningRate * economyDelta)
+    decision.bCatastrophe = clampAIPolicyParameter(decision.bCatastrophe + learningRate * catastropheDelta)
     if(hasSurvivalTarget) {
         for(var survivalRow = 0; survivalRow < AI_DECISION_SURVIVAL_CLASS_COUNT; survivalRow++) {
             for(var survivalColumn = 0; survivalColumn < AI_DECISION_EMBEDDING_SIZE; survivalColumn++) decision.WSurvival[survivalRow][survivalColumn] = clampAIPolicyParameter(decision.WSurvival[survivalRow][survivalColumn] + learningRate * survivalDeltas[survivalRow] * chosen.stateEmbedding[survivalColumn])
@@ -3197,7 +3391,10 @@ function settleAITacticalDecision(side, successorDecisionSample, terminal) {
     }
     var decision = aiProfile.pendingTacticalDecision
     var settledAt = Math.max(decision.startedAtMs, gameNow())
-    decision.intervalReward = clamp((Number(decision.initialReward) || 0) + getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, getAIFactualDecisionOutcomeSnapshot(side), decision.actionContext), -1, 1)
+    var factualAfter = getAIFactualDecisionOutcomeSnapshot(side)
+    decision.intervalReward = clamp((Number(decision.initialReward) || 0) + getAIFactualDecisionLocalReward(decision.factualOutcomeBefore, factualAfter, decision.actionContext), -1, 1)
+    decision.economyReward = clamp(getAIFactualDecisionMoneyOutcome(decision.factualOutcomeBefore, factualAfter, decision.actionContext) / 2000, -1, 1)
+    decision.catastropheTarget = factualAfter.ownLives <= 0 ? 1 : clamp((Number(factualAfter.ownLivesLost) || 0) - (Number(decision.factualOutcomeBefore.ownLivesLost) || 0), 0, 30) / 30
     decision.settledAtMs = settledAt
     decision.terminal = terminal === true
     if(successorDecisionSample && Array.isArray(successorDecisionSample.stateFeatures) && Array.isArray(successorDecisionSample.memoryIn)) {
@@ -3279,6 +3476,8 @@ function createAIPlacementOutcomeSample(decision) {
         startedAtMs: Math.max(0, Math.floor(Number(decision.startedAtMs) || 0)),
         settledAtMs: 0,
         intervalReward: 0,
+        economyReward: 0,
+        catastropheTarget: 0,
     }
 }
 
@@ -3294,6 +3493,7 @@ function bindAITowerPlacementOutcome(tower) {
         ownPopsBefore: factualBefore.ownPops,
         ownLivesBefore: factualBefore.ownLives,
         ownLivesLostBefore: factualBefore.ownLivesLost,
+        ownMoneyBefore: factualBefore.ownMoney,
         placementCost: Math.max(1, Number(tower.totalCost) || getBaseTowerPriceByType(tower.towerType)),
         expectsCombatOutput: doesAITowerHaveCombatOutput(tower),
     }
@@ -3308,6 +3508,7 @@ function captureAITowerPlacementOutcome(tower) {
         ownPopsAfter: factualAfter.ownPops,
         ownLivesAfter: factualAfter.ownLives,
         ownLivesLostAfter: factualAfter.ownLivesLost,
+        ownMoneyAfter: factualAfter.ownMoney,
     }
 }
 
@@ -3329,6 +3530,8 @@ function finalizeAITowerPlacementOutcome(tower, outcome) {
     if(!placement.sample) return false
     placement.sample.settledAtMs = Math.max(placement.sample.startedAtMs, Math.floor(gameNow()))
     placement.sample.intervalReward = clamp(reward, -1, 1)
+    placement.sample.economyReward = clamp(((Number(outcome.ownMoneyAfter) || 0) - placement.ownMoneyBefore + placement.placementCost) / 2000, -1, 1)
+    placement.sample.catastropheTarget = outcome.ownLivesAfter <= 0 ? 1 : clamp(((Number(outcome.ownLivesLostAfter) || 0) - placement.ownLivesLostBefore) / 30, 0, 1)
     if(!aiProfile.placementSamples) aiProfile.placementSamples = []
     aiProfile.placementSamples.push(placement.sample)
     while(aiProfile.placementSamples.length > AI_MAX_PLACEMENT_SAMPLES) aiProfile.placementSamples.shift()
@@ -3379,7 +3582,7 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
     var available = []
     for(var i = 0; i < aiProfile.tacticalTrace.length; i++) {
         var decision = aiProfile.tacticalTrace[i]
-        if(decision.creditVersion != AI_DECISION_CREDIT_VERSION || !Number.isInteger(decision.familyIndex) || decision.familyIndex < 0 || decision.familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(decision.stateFeatures) || decision.stateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.chosenCandidateFeatures) || decision.chosenCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.memoryIn) || decision.memoryIn.length != AI_DECISION_MEMORY_SIZE || !Array.isArray(decision.successorStateFeatures) || decision.successorStateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.successorMemory) || decision.successorMemory.length != AI_DECISION_MEMORY_SIZE) {
+        if(decision.creditVersion != AI_DECISION_CREDIT_VERSION || !Number.isInteger(decision.familyIndex) || decision.familyIndex < 0 || decision.familyIndex >= AI_DECISION_FAMILY_COUNT || !Array.isArray(decision.stateFeatures) || decision.stateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.chosenCandidateFeatures) || decision.chosenCandidateFeatures.length != AI_DECISION_CANDIDATE_INPUT_SIZE || !Array.isArray(decision.memoryIn) || decision.memoryIn.length != AI_DECISION_MEMORY_SIZE || !Array.isArray(decision.successorStateFeatures) || decision.successorStateFeatures.length != AI_DECISION_STATE_INPUT_SIZE || !Array.isArray(decision.successorMemory) || decision.successorMemory.length != AI_DECISION_MEMORY_SIZE || !Number.isFinite(Number(decision.economyReward)) || !Number.isFinite(Number(decision.catastropheTarget))) {
             continue
         }
         available.push({
@@ -3391,6 +3594,8 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
             startedAtMs: Math.max(0, Math.floor(Number(decision.startedAtMs) || 0)),
             settledAtMs: Math.max(0, Math.floor(Number(decision.settledAtMs) || 0)),
             intervalReward: clamp(Number(decision.intervalReward) || 0, -1, 1),
+            economyReward: clamp(Number(decision.economyReward) || 0, -1, 1),
+            catastropheTarget: clamp(Number(decision.catastropheTarget) || 0, 0, 1),
             successorStateFeatures: decision.successorStateFeatures.slice(0),
             successorMemory: decision.successorMemory.slice(0),
             terminal: decision.terminal === true,
@@ -3444,11 +3649,16 @@ function getAIFourStepDecisionTargets(samples, terminalReward, policy) {
     return targets
 }
 
+function getAIDecisionTargetPolicy(fallbackPolicy) {
+    ensureAILearningLoaded()
+    return isValidAIPolicy(aiLearning.championPolicy) ? aiLearning.championPolicy : fallbackPolicy || aiLearning.policy
+}
+
 function trainAIDecisionsFromMatch(side, terminalReward) {
     var samples = collectAIDecisionSamples(side, terminalReward, AI_MAX_PUBLIC_DECISION_SAMPLES)
     var ownLives = players[side].lives == Infinity ? 150 : Math.max(0, Number(players[side].lives) || 0)
     var survivalClass = ownLives <= 0 ? 0 : ownLives <= 50 ? 1 : ownLives < 150 ? 2 : 3
-    var targets = getAIFourStepDecisionTargets(samples, terminalReward, aiLearning.policy)
+    var targets = getAIFourStepDecisionTargets(samples, terminalReward, getAIDecisionTargetPolicy(aiLearning.policy))
     for(var i = 0; i < samples.length; i++) {
         trainAIDecision(samples[i], targets[i], survivalClass, aiLearning.policy)
     }
@@ -3799,6 +4009,8 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, selfPlayAc
             startedAtMs: sample.startedAtMs,
             settledAtMs: sample.settledAtMs,
             intervalReward: sample.intervalReward,
+            economyReward: sample.economyReward,
+            catastropheTarget: sample.catastropheTarget,
             successorStateFeatures: sample.successorStateFeatures,
             successorMemory: sample.successorMemory,
             terminal: sample.terminal,
@@ -3814,6 +4026,8 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, selfPlayAc
             startedAtMs: sample.startedAtMs,
             settledAtMs: sample.settledAtMs,
             intervalReward: sample.intervalReward,
+            economyReward: sample.economyReward,
+            catastropheTarget: sample.catastropheTarget,
         }
     })
     var contribution = {
@@ -4465,7 +4679,7 @@ function getAITrainerStatusMetrics() {
 
 function getAIStatsSourceDescription() {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false) {
-        return "Session 31,048-parameter semantic-intent-spatial actor-critic: local learning is discarded when this browser session closes."
+        return "Session 33,450-parameter semantic-intent-spatial actor-critic: local learning is discarded when this browser session closes."
     }
     if(aiPersistenceState.loadInFlight) {
         return "Hosted Model: refreshing authoritative statistics from the backend."
@@ -4474,7 +4688,7 @@ function getAIStatsSourceDescription() {
         return "Hosted Model unavailable: showing the latest valid model loaded in this tab."
     }
     if(aiPersistenceState.contributionEnabled) {
-        return "Hosted 31,048-parameter semantic-intent-spatial actor-critic: bounded contributions, human tactical priors, and verified self-play."
+        return "Hosted 33,450-parameter semantic-intent-spatial actor-critic: bounded contributions, human tactical priors, and verified self-play."
     }
     return "Hosted Model: read-only statistics from the authoritative backend."
 }
@@ -6567,6 +6781,9 @@ function getBestAIAimingOption(side) {
                 position: clamp((Number(bloon.pathPos) || 0) / 100, 0, 1),
                 count: Math.max(0, Number(bloon.health) || 0),
                 countScale: 1000,
+                targetBloon: bloon,
+                targetProgress: clamp((Number(bloon.pathPos) || 0) / 100, 0, 1),
+                targetHealth: Math.max(0, Number(bloon.health) || 0),
                 manualLock: true,
             }, matchup, decisionState)
             if(isAIDecisionScoreBetter(lockDecision, towerBest.decisionSample)) towerBest = { type: "lock", x: bloon.x, y: bloon.y, decisionSample: lockDecision }

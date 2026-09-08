@@ -5,6 +5,7 @@ const path = require("node:path")
 const { chromium } = require("playwright")
 const {
     DECISION_CANDIDATE_INPUT_SIZE,
+    DECISION_EMBEDDING_SIZE,
     DECISION_STATE_INPUT_SIZE,
     EVALUATION_RESULT_KIND,
     FORMAT_VERSION,
@@ -29,8 +30,10 @@ const {
     validatePolicyOnlyCandidate,
     writeJson,
 } = require("./common")
+const { scenarioSeedForShard, validateScenarioManifest } = require("./scenarios")
 
 const FRAME_MS = 1000 / 60
+const PAGE_EVALUATION_FRAME_BATCH = 1000
 const DEFAULT_MAX_FRAMES = 600000
 const MAX_STALL_RECOVERIES_PER_MATCH = MAX_RECOVERED_STALLS
 const SCHEMA_10_FAMILY = "shared-recurrent-actor-critic-v2"
@@ -40,12 +43,15 @@ const SCHEMA_11_CANDIDATE_INPUT_SIZE = 64
 const SCHEMA_12_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v4"
 const SCHEMA_12_STATE_INPUT_SIZE = 80
 const SCHEMA_12_CANDIDATE_INPUT_SIZE = 80
+const SCHEMA_13_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v5"
+const SCHEMA_13_STATE_INPUT_SIZE = 112
+const SCHEMA_13_CANDIDATE_INPUT_SIZE = 112
 
 const usage = `Usage:
   node tools/distributed-ai/run-worker.js --mode initialize --seed N --shard ID --output checkpoint.json
   node tools/distributed-ai/run-worker.js --mode migrate --checkpoint checkpoint.json --seed N --shard ID --output checkpoint.json
-  node tools/distributed-ai/run-worker.js --mode train --checkpoint checkpoint.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N]
-  node tools/distributed-ai/run-worker.js --mode evaluate --checkpoint candidate.json --baseline baseline.json --seed N --shard ID --matches N --output result.json [--max-frames-per-match N] [--baseline-only true]`
+  node tools/distributed-ai/run-worker.js --mode train --checkpoint checkpoint.json --seed N --shard ID --matches N --output result.json [--manifest manifest.json] [--max-frames-per-match N]
+  node tools/distributed-ai/run-worker.js --mode evaluate --checkpoint candidate.json --baseline baseline.json --seed N --shard ID --matches N --output result.json [--manifest manifest.json] [--max-frames-per-match N] [--baseline-only true]`
 
 function initScript(seed) {
     let randomState = seed >>> 0
@@ -171,8 +177,8 @@ async function normalizedModel(page, model) {
 
 function validateMigrationSource(checkpoint) {
     if(!checkpoint || checkpoint.kind != "btdb-ai-checkpoint" || checkpoint.formatVersion != FORMAT_VERSION) fail("Migration source has an unsupported kind or format version")
-    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : checkpoint.modelSchemaVersion == 12 ? SCHEMA_12_FAMILY : checkpoint.modelSchemaVersion == MODEL_SCHEMA_VERSION && checkpoint.model && Object.prototype.hasOwnProperty.call(checkpoint.model, "playerProfile") ? MODEL_FAMILY : null
-    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, schema 11 and ${SCHEMA_11_FAMILY}, schema 12 and ${SCHEMA_12_FAMILY}, or schema 13 with a legacy player profile`)
+    const supportedFamily = checkpoint.modelSchemaVersion == 10 ? SCHEMA_10_FAMILY : checkpoint.modelSchemaVersion == 11 ? SCHEMA_11_FAMILY : checkpoint.modelSchemaVersion == 12 ? SCHEMA_12_FAMILY : checkpoint.modelSchemaVersion == 13 ? SCHEMA_13_FAMILY : checkpoint.modelSchemaVersion == MODEL_SCHEMA_VERSION && checkpoint.model && Object.prototype.hasOwnProperty.call(checkpoint.model, "playerProfile") ? MODEL_FAMILY : null
+    if(checkpoint.modelFamily != supportedFamily) fail(`Migration source must use schema 10 and ${SCHEMA_10_FAMILY}, schema 11 and ${SCHEMA_11_FAMILY}, schema 12 and ${SCHEMA_12_FAMILY}, schema 13 and ${SCHEMA_13_FAMILY}, or schema 14 with a legacy player profile`)
     if(!checkpoint.model || checkpoint.model.version != checkpoint.modelSchemaVersion || checkpoint.model.modelFamily != checkpoint.modelFamily) fail("Migration source model identity is inconsistent")
     if(digest(checkpoint.model) != checkpoint.modelDigest) fail("Migration source modelDigest does not match its model")
     const identity = {}
@@ -189,6 +195,14 @@ function appendZeroColumns(matrix, rows, oldColumns, newColumns, label) {
     })
 }
 
+function ensureAuxiliaryDecisionHeads(decision) {
+    if(!Array.isArray(decision.WEconomy)) decision.WEconomy = Array(DECISION_EMBEDDING_SIZE).fill(0)
+    if(!Number.isFinite(decision.bEconomy)) decision.bEconomy = 0
+    if(!Array.isArray(decision.WCatastrophe)) decision.WCatastrophe = Array(DECISION_EMBEDDING_SIZE).fill(0)
+    if(!Number.isFinite(decision.bCatastrophe)) decision.bCatastrophe = 0
+    return decision
+}
+
 function migrateSchema11Policy(policy, label) {
     if(!policy || !policy.decision) fail(`${label} is missing its decision network`)
     const migrated = JSON.parse(JSON.stringify(policy))
@@ -198,6 +212,7 @@ function migrateSchema11Policy(policy, label) {
     decision.candidateInputSize = DECISION_CANDIDATE_INPUT_SIZE
     decision.WState1 = appendZeroColumns(decision.WState1, 96, SCHEMA_11_STATE_INPUT_SIZE, DECISION_STATE_INPUT_SIZE, `${label}.decision.WState1`)
     decision.WCandidate1 = appendZeroColumns(decision.WCandidate1, 48, SCHEMA_11_CANDIDATE_INPUT_SIZE, DECISION_CANDIDATE_INPUT_SIZE, `${label}.decision.WCandidate1`)
+    ensureAuxiliaryDecisionHeads(decision)
     return migrated
 }
 
@@ -227,6 +242,20 @@ function migrateSchema12Policy(policy, label) {
     decision.candidateInputSize = DECISION_CANDIDATE_INPUT_SIZE
     decision.WState1 = appendZeroColumns(decision.WState1, 96, SCHEMA_12_STATE_INPUT_SIZE, DECISION_STATE_INPUT_SIZE, `${label}.decision.WState1`)
     decision.WCandidate1 = appendZeroColumns(decision.WCandidate1, 48, SCHEMA_12_CANDIDATE_INPUT_SIZE, DECISION_CANDIDATE_INPUT_SIZE, `${label}.decision.WCandidate1`)
+    ensureAuxiliaryDecisionHeads(decision)
+    return migrated
+}
+
+function migrateSchema13Policy(policy, label) {
+    if(!policy || !policy.decision) fail(`${label} is missing its decision network`)
+    const migrated = JSON.parse(JSON.stringify(policy))
+    const decision = migrated.decision
+    if(decision.stateInputSize != SCHEMA_13_STATE_INPUT_SIZE || decision.candidateInputSize != SCHEMA_13_CANDIDATE_INPUT_SIZE) fail(`${label}.decision has incompatible schema 13 input dimensions`)
+    decision.stateInputSize = DECISION_STATE_INPUT_SIZE
+    decision.candidateInputSize = DECISION_CANDIDATE_INPUT_SIZE
+    decision.WState1 = appendZeroColumns(decision.WState1, 96, SCHEMA_13_STATE_INPUT_SIZE, DECISION_STATE_INPUT_SIZE, `${label}.decision.WState1`)
+    decision.WCandidate1 = appendZeroColumns(decision.WCandidate1, 48, SCHEMA_13_CANDIDATE_INPUT_SIZE, DECISION_CANDIDATE_INPUT_SIZE, `${label}.decision.WCandidate1`)
+    ensureAuxiliaryDecisionHeads(decision)
     return migrated
 }
 
@@ -248,7 +277,21 @@ function migrateSchema12Model(source) {
 }
 
 function migrateSchema13Model(source) {
-    if(!source || source.version != MODEL_SCHEMA_VERSION || source.modelFamily != MODEL_FAMILY || !Object.prototype.hasOwnProperty.call(source, "playerProfile")) fail("Migration requires schema 13 with a legacy player profile")
+    if(!source || source.version != 13 || source.modelFamily != SCHEMA_13_FAMILY) fail(`Migration requires schema 13 and ${SCHEMA_13_FAMILY}`)
+    if(!Array.isArray(source.populationPolicies) || source.populationPolicies.length > 2) fail("Schema 13 migration source has an invalid policy population")
+    const migrated = JSON.parse(JSON.stringify(source))
+    delete migrated.playerProfile
+    migrated.version = MODEL_SCHEMA_VERSION
+    migrated.modelFamily = MODEL_FAMILY
+    migrated.policy = migrateSchema13Policy(source.policy, "model.policy")
+    migrated.championPolicy = migrateSchema13Policy(source.championPolicy, "model.championPolicy")
+    migrated.populationPolicies = source.populationPolicies.map((policy, index) => migrateSchema13Policy(policy, `model.populationPolicies[${index}]`))
+    migrated.totalDecisionSamples = migrated.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
+    return migrated
+}
+
+function migrateSchema14Model(source) {
+    if(!source || source.version != MODEL_SCHEMA_VERSION || source.modelFamily != MODEL_FAMILY || !Object.prototype.hasOwnProperty.call(source, "playerProfile")) fail("Migration requires schema 14 with a legacy player profile")
     const migrated = JSON.parse(JSON.stringify(source))
     delete migrated.playerProfile
     migrated.totalDecisionSamples = migrated.policy.decision.trainingSamples.reduce((sum, value) => sum + value, 0)
@@ -260,7 +303,11 @@ function assertMigrationRetention(source, migrated) {
         const expected = JSON.parse(JSON.stringify(source))
         delete expected.playerProfile
         expected.totalDecisionSamples = migrated.totalDecisionSamples
-        if(digest(expected) != digest(migrated)) fail("Schema 13 migration changed data beyond legacy player-profile removal and decision accounting normalization")
+        if(digest(expected) != digest(migrated)) fail("Schema 14 migration changed data beyond legacy player-profile removal and decision accounting normalization")
+        return
+    }
+    if(source.version == 13) {
+        if(digest(migrateSchema13Model(source)) != digest(migrated)) fail("Schema 13 migration changed data beyond identity, policy input expansion, and decision accounting normalization")
         return
     }
     if(source.version == 12) {
@@ -304,8 +351,8 @@ async function migrate(source, seed, shard, output) {
         const normalized = await normalizedModel(runtime.page, source.model)
         const repeated = await normalizedModel(runtime.page, source.model)
         if(digest(normalized) != digest(repeated)) fail("Schema migration is not deterministic")
-        const model = source.modelSchemaVersion == MODEL_SCHEMA_VERSION ? migrateSchema13Model(source.model) : source.modelSchemaVersion == 12 ? migrateSchema12Model(source.model) : source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
-        if((source.modelSchemaVersion == 11 || source.modelSchemaVersion == 12 || source.modelSchemaVersion == MODEL_SCHEMA_VERSION) && digest(model) != digest(normalized)) fail("Explicit schema migration does not match runtime normalization")
+        const model = source.modelSchemaVersion == MODEL_SCHEMA_VERSION ? migrateSchema14Model(source.model) : source.modelSchemaVersion == 13 ? migrateSchema13Model(source.model) : source.modelSchemaVersion == 12 ? migrateSchema12Model(source.model) : source.modelSchemaVersion == 11 ? migrateSchema11Model(source.model) : normalized
+        if((source.modelSchemaVersion == 11 || source.modelSchemaVersion == 12 || source.modelSchemaVersion == 13 || source.modelSchemaVersion == MODEL_SCHEMA_VERSION) && digest(model) != digest(normalized)) fail("Explicit schema migration does not match runtime normalization")
         assertMigrationRetention(source.model, model)
         validateModel(model, model.version, model.modelFamily)
         const checkpoint = createCheckpoint({
@@ -353,9 +400,94 @@ async function installMatchHarness(page, mode, candidate, baseline, requestedMat
     await page.evaluate(({ mode, candidatePolicy, baselinePolicy, requestedMatches }) => {
         window.__daiLastMatch = null
         window.__daiLastBuiltInEvaluationScore = null
+        window.__daiLastStateSnapshot = null
 
         const recordMatch = recordAITrainingTrueSelfPlayMatchResult
         recordAITrainingTrueSelfPlayMatchResult = function() {
+            const number = value => Number.isFinite(Number(value)) ? Number(value) : 0
+            const playerSnapshot = player => ({
+                lives: player && player.lives == Infinity ? 150 : number(player && player.lives),
+                money: number(player && player.money),
+                eco: number(player && player.eco),
+                selectedBloon: number(player && player.selectedBloon),
+                autoEco: !!(player && player.autoEco),
+                bloonQueue: player && Array.isArray(player.bloonQueue) ? player.bloonQueue.map(item => typeof item == "object" && item ? String(item.image || item.type || item.bloonType || "") : number(item)) : [],
+            })
+            const sorted = values => values.slice().sort((left, right) => {
+                const leftKey = JSON.stringify(left)
+                const rightKey = JSON.stringify(right)
+                return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+            })
+            window.__daiLastStateSnapshot = {
+                map: number(mapNumber),
+                round: number(round),
+                gameStarted: !!gameStarted,
+                gameOver: !!gameOver,
+                players: {
+                    left: playerSnapshot(players[PLAYER_SIDE.left]),
+                    right: playerSnapshot(players[PLAYER_SIDE.right]),
+                },
+                totals: {
+                    leftPops: number(p1TotalPopCount),
+                    rightPops: number(p2TotalPopCount),
+                    leftCash: number(p1TotalCashGenerated),
+                    rightCash: number(p2TotalCashGenerated),
+                },
+                towers: sorted(towers.filter(Boolean).map(tower => ({
+                    id: number(tower.towerID),
+                    side: number(tower.playerSide),
+                    type: String(tower.towerType || ""),
+                    x: number(tower.x),
+                    y: number(tower.y),
+                    radius: number(tower.radius),
+                    path1: number(tower.path1Upgrades),
+                    path2: number(tower.path2Upgrades),
+                    path3: number(tower.path3Upgrades),
+                    towerVar: number(tower.towerVar),
+                    nextFire: number(tower.nextFire),
+                    target: number(tower.target),
+                    targetPrio: number(tower.targetPrio),
+                    targetX: number(tower.targetX),
+                    targetY: number(tower.targetY),
+                }))),
+                bloons: sorted(bloons.filter(Boolean).map(bloon => ({
+                    id: number(bloon.bloonID),
+                    side: number(bloon.playerSide),
+                    type: String(bloon.bloonType || bloon.image || ""),
+                    x: number(bloon.x),
+                    y: number(bloon.y),
+                    pathPos: number(bloon.pathPos),
+                    health: number(bloon.health),
+                    boosted: number(bloon.bloonBoosted),
+                    iced: number(bloon.iced),
+                    stunned: number(bloon.stunned),
+                    sabotaged: number(bloon.sabotaged),
+                }))),
+                projectiles: sorted(projectiles.filter(Boolean).map(projectile => ({
+                    side: number(projectile.playerSide),
+                    source: String(projectile.sourceImage || projectile.image || ""),
+                    target: number(projectile.targetBloonID || projectile.target),
+                    x: number(projectile.x),
+                    y: number(projectile.y),
+                    damage: number(projectile.damage),
+                    pierce: number(projectile.pierce),
+                    lifespan: number(projectile.lifespan),
+                }))),
+                bananas: sorted(bananas.filter(Boolean).map(banana => ({
+                    side: number(banana.playerSide),
+                    x: number(banana.x),
+                    y: number(banana.y),
+                    cash: number(banana.cashGiven),
+                    lifespan: number(banana.lifespan),
+                }))),
+                subtowers: sorted(subtowers.filter(Boolean).map(subtower => ({
+                    side: number(subtower.playerSide),
+                    type: String(subtower.towerType || subtower.image || ""),
+                    x: number(subtower.x),
+                    y: number(subtower.y),
+                }))),
+                pathObjectCount: Array.isArray(pathObjects) ? pathObjects.length : 0,
+            }
             const leftLives = players[PLAYER_SIDE.left].lives == Infinity ? 150 : Math.max(0, players[PLAYER_SIDE.left].lives)
             const rightLives = players[PLAYER_SIDE.right].lives == Infinity ? 150 : Math.max(0, players[PLAYER_SIDE.right].lives)
             window.__daiLastMatch = {
@@ -434,7 +566,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
         const expectedMatches = matches.length
         const remainingBudget = maxFramesPerMatch - framesThisMatch
         if(remainingBudget <= 0) fail(`Frame budget exhausted during match ${expectedMatches}`)
-        const batch = Math.min(200, remainingBudget)
+        const batch = Math.min(PAGE_EVALUATION_FRAME_BATCH, remainingBudget)
         const state = await page.evaluate(({ expectedMatches, batch, frameMs, observedStalls }) => {
             function finiteTree(value, seen) {
                 if(typeof value == "number") return Number.isFinite(value)
@@ -474,6 +606,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                     rightTowers: p2Towers.slice(0),
                 } : null,
                 lastMatch: window.__daiLastMatch,
+                lastStateSnapshot: window.__daiLastStateSnapshot,
                 builtInEvaluationScore: window.__daiLastBuiltInEvaluationScore,
                 finiteModel: finiteTree(aiLearning, new Set()),
                 validPolicy: isValidAIPolicy(aiLearning.policy) && isValidAIPolicy(aiLearning.championPolicy),
@@ -501,6 +634,7 @@ async function stepUntilMatches(runtime, mode, candidate, baseline, requestedMat
                 candidateLives,
                 opponentLives,
                 frames: framesThisMatch,
+                stateDigest: digest(state.lastStateSnapshot || { match: expectedMatches, candidateLives, opponentLives, frames: framesThisMatch }),
             })
             framesThisMatch = 0
             recoveriesThisMatch = 0
@@ -598,7 +732,7 @@ async function runMatches({ mode, checkpoint, baseline, seed, shard, matches, ou
 }
 
 async function main() {
-    const args = parseArgs(process.argv.slice(2), ["mode", "checkpoint", "baseline", "seed", "shard", "matches", "output", "max-frames-per-match", "baseline-only"])
+    const args = parseArgs(process.argv.slice(2), ["mode", "checkpoint", "baseline", "seed", "shard", "matches", "manifest", "output", "max-frames-per-match", "baseline-only"])
     if(args.help) {
         console.log(usage)
         return
@@ -618,7 +752,7 @@ async function main() {
         return
     }
     if(mode == "migrate") {
-        if(args.baseline || args.matches || args["max-frames-per-match"]) fail("Migrate accepts only --mode, --checkpoint, --seed, --shard, and --output")
+        if(args.baseline || args.matches || args.manifest || args["max-frames-per-match"]) fail("Migrate accepts only --mode, --checkpoint, --seed, --shard, and --output")
         const source = validateMigrationSource(readJson(requiredArg(args, "checkpoint")))
         const result = await migrate(source, seed, shard, output)
         console.log(`Migrated ${result.id} at ${result.output}`)
@@ -631,6 +765,14 @@ async function main() {
     let baseline = null
     if(mode == "evaluate") baseline = validateCheckpoint(readJson(requiredArg(args, "baseline")), "baseline")
     else if(args.baseline) fail("--baseline is only valid in evaluate mode")
+    if(args.manifest != null) {
+        const manifest = validateScenarioManifest(readJson(args.manifest))
+        if(manifest.gameVersion !== checkpoint.gameVersion || manifest.modelSchemaVersion !== checkpoint.modelSchemaVersion) fail("Scenario manifest is incompatible with the checkpoint")
+        const expectedSeed = scenarioSeedForShard(manifest, mode, shard)
+        if(expectedSeed == null || expectedSeed !== seed) fail("Worker seed and shard do not match the scenario manifest")
+        const expectedMatches = mode == "train" ? manifest.trainingMatches : manifest.evaluationMatches
+        if(matchCount !== expectedMatches) fail(`Worker match count must equal the manifest ${mode} count of ${expectedMatches}`)
+    }
     const result = await runMatches({ mode, checkpoint, baseline, seed, shard, matches: matchCount, output, maxFramesPerMatch, baselineOnly })
     console.log(`${mode == "train" ? "Trained" : "Evaluated"} ${result.id}: ${result.metrics.wins}-${result.metrics.losses}-${result.metrics.ties}, score ${result.metrics.score.toFixed(4)}, output ${result.output}`)
 }
@@ -649,6 +791,7 @@ module.exports = {
     migrateSchema11Model,
     migrateSchema12Model,
     migrateSchema13Model,
+    migrateSchema14Model,
     openRuntime,
     stepUntilMatches,
     validateMigrationSource,

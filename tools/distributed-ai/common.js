@@ -17,24 +17,24 @@ const HOSTED_PROMOTION_RECEIPT_KIND = "btdb-ai-hosted-promotion-receipt"
 const POLICY_LIMIT = 4
 const POLICY_FORMAT_VERSION = 2
 const GAME_VERSION = "v2.6.0"
-const MODEL_SCHEMA_VERSION = 13
-const MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v5"
+const MODEL_SCHEMA_VERSION = 14
+const MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v6"
 const MAX_JSON_BYTES = 8 * 1024 * 1024
 const MAX_RECOVERED_STALLS = 3
 const FEATURE_COUNT = 17
 const STRATEGY_HIDDEN_SIZE_1 = 64
 const STRATEGY_HIDDEN_SIZE_2 = 32
 const STRATEGY_COUNT = 75
-const DECISION_STATE_INPUT_SIZE = 112
-const DECISION_CANDIDATE_INPUT_SIZE = 112
-const DECISION_CREDIT_VERSION = 3
+const DECISION_STATE_INPUT_SIZE = 128
+const DECISION_CANDIDATE_INPUT_SIZE = 128
+const DECISION_CREDIT_VERSION = 4
 const DECISION_STATE_HIDDEN_SIZE = 96
 const DECISION_CANDIDATE_HIDDEN_SIZE = 48
 const DECISION_EMBEDDING_SIZE = 48
 const DECISION_MEMORY_SIZE = 16
 const DECISION_SURVIVAL_CLASS_COUNT = 4
 const DECISION_FAMILY_COUNT = 8
-const POLICY_PARAMETER_COUNT = 31048
+const POLICY_PARAMETER_COUNT = 33450
 const TRAINING_LEARNING_MATCHES = 128
 const TRAINING_INTERNAL_EVALUATION_MATCHES = 64
 const TRAINING_MATCHES = TRAINING_LEARNING_MATCHES + TRAINING_INTERNAL_EVALUATION_MATCHES
@@ -189,7 +189,7 @@ function validatePolicy(policy, label, strategyCount) {
         "stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount",
         "trainingSamples",
         "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2",
-        "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias",
+        "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WEconomy", "bEconomy", "WCatastrophe", "bCatastrophe", "WSurvival", "bSurvival", "familyBias",
     ], decisionLabel)
     if(decision.stateInputSize !== DECISION_STATE_INPUT_SIZE
         || decision.candidateInputSize !== DECISION_CANDIDATE_INPUT_SIZE
@@ -214,6 +214,10 @@ function validatePolicy(policy, label, strategyCount) {
     matrix(decision.WMemoryToState, DECISION_EMBEDDING_SIZE, DECISION_MEMORY_SIZE, `${decisionLabel}.WMemoryToState`)
     vector(decision.WValue, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WValue`)
     assertNumber(decision.bValue, `${decisionLabel}.bValue`, -POLICY_LIMIT, POLICY_LIMIT)
+    vector(decision.WEconomy, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WEconomy`)
+    assertNumber(decision.bEconomy, `${decisionLabel}.bEconomy`, -POLICY_LIMIT, POLICY_LIMIT)
+    vector(decision.WCatastrophe, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WCatastrophe`)
+    assertNumber(decision.bCatastrophe, `${decisionLabel}.bCatastrophe`, -POLICY_LIMIT, POLICY_LIMIT)
     matrix(decision.WSurvival, DECISION_SURVIVAL_CLASS_COUNT, DECISION_EMBEDDING_SIZE, `${decisionLabel}.WSurvival`)
     vector(decision.bSurvival, DECISION_SURVIVAL_CLASS_COUNT, `${decisionLabel}.bSurvival`)
     vector(decision.familyBias, DECISION_FAMILY_COUNT, `${decisionLabel}.familyBias`)
@@ -227,7 +231,7 @@ function validatePolicy(policy, label, strategyCount) {
         + decision.WStateToMemory.length * decision.WStateToMemory[0].length
         + decision.WMemoryToMemory.length * decision.WMemoryToMemory[0].length + decision.bMemory.length
         + decision.WMemoryToState.length * decision.WMemoryToState[0].length
-        + decision.WValue.length + 1
+        + decision.WValue.length + 1 + decision.WEconomy.length + 1 + decision.WCatastrophe.length + 1
         + decision.WSurvival.length * decision.WSurvival[0].length + decision.bSurvival.length
         + decision.familyBias.length
     if(parameterCount != POLICY_PARAMETER_COUNT) fail(`${label} must contain exactly ${POLICY_PARAMETER_COUNT} policy parameters`)
@@ -548,7 +552,7 @@ function validateHostedPromotionReceipt(receipt, label = "hosted promotion recei
 }
 
 const METRICS_KEYS = ["games", "wins", "losses", "ties", "score", "averageRound", "totalFrames", "discarded", "stalls", "frameBudgetExhausted", "builtInEvaluationScore"]
-const MATCH_KEYS = ["index", "map", "candidateSide", "candidateRole", "result", "candidateLives", "opponentLives", "leftLives", "rightLives", "round", "frames", "evaluation"]
+const MATCH_KEYS = ["index", "map", "candidateSide", "candidateRole", "result", "candidateLives", "opponentLives", "leftLives", "rightLives", "round", "frames", "evaluation", "stateDigest"]
 
 function validateMetrics(metrics, label) {
     assertExactKeys(metrics, METRICS_KEYS, label)
@@ -570,6 +574,7 @@ function validateMatch(match, label) {
     assertInteger(match.round, `${label}.round`, 1)
     assertInteger(match.frames, `${label}.frames`, 1)
     if(typeof match.evaluation != "boolean") fail(`${label}.evaluation must be boolean`)
+    assertDigest(match.stateDigest, `${label}.stateDigest`)
     const candidateLives = match.candidateSide == "left" ? match.leftLives : match.rightLives
     const opponentLives = match.candidateSide == "left" ? match.rightLives : match.leftLives
     if(match.candidateLives != candidateLives || match.opponentLives != opponentLives) fail(`${label} candidate-side lives are inconsistent`)
@@ -704,7 +709,7 @@ function aggregateTrainResultPolicies(results, baseline) {
     }
     for(const key of [
         "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2",
-        "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias",
+        "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WEconomy", "bEconomy", "WCatastrophe", "bCatastrophe", "WSurvival", "bSurvival", "familyBias",
     ]) {
         policy.decision[key] = averageValues(validated.map(result => result.candidate.model.policy.decision[key]))
     }
@@ -1470,6 +1475,7 @@ module.exports = {
     CHECKPOINT_KIND,
     DECISION_CANDIDATE_INPUT_SIZE,
     DECISION_CREDIT_VERSION,
+    DECISION_EMBEDDING_SIZE,
     DECISION_STATE_INPUT_SIZE,
     EVALUATION_AGGREGATE_FORMAT_VERSION,
     EVALUATION_AGGREGATE_KIND,

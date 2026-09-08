@@ -4,7 +4,7 @@
 
 Every generation starts from one immutable snapshot of the authoritative Hosted Model:
 
-1. Prepare fetches and validates the schema-13 model and credential-free source manifest.
+1. Prepare fetches and validates the schema-14 model and credential-free source manifest.
 2. Deterministic Chromium workers train independent complete policy bundles from that exact snapshot.
 3. The selector validates every unique shard against the same baseline and computes a deterministic policy average. A shard's normalized weight is proportional to `exp((built-in evaluation score - maximum shard score) * 8)`.
 4. Materialization clones the hosted baseline and changes the aggregated policy bundle, strategy outcome records, generations, and bounded two-policy history. Neural tensors are score-weighted averages, each per-family training counter is the baseline count plus the sum of every shard's learned increment, and candidate-side strategy outcomes are accumulated across shards. Other shard stores are discarded.
@@ -22,7 +22,7 @@ Each training shard runs exactly 192 Browser Lab matches:
 - 128 learning matches.
 - 64 internal frozen evaluation matches.
 
-Continuous operation uses 20 training shards, totaling 3,840 self-play matches per generation. External frozen evaluation uses 20 shards with 16 candidate matches and 16 paired champion-reference matches each, totaling 640 Browser Lab matches. A continuous candidate needs at least a 58% score over at least 160 balanced frozen games and must not regress paired gameplay safety beyond the bounded quality tolerances.
+Continuous operation uses 20 training shards, totaling 3,840 self-play matches per generation. External frozen evaluation uses 20 holdout-seeded shards with 16 candidate matches and 16 paired champion-reference matches each, totaling 640 Browser Lab matches. Training shard seeds use `base_seed + shard`; frozen holdout seeds use `base_seed + 100000 + shard`, as recorded in the immutable scenario manifest. A continuous candidate needs at least a 58% score over at least 160 balanced frozen games and must not regress paired gameplay safety beyond the bounded quality tolerances.
 
 Manual defaults use eight shards, 192 training matches and 16 external evaluation matches per shard. Manual minimums default to 58% and 64 total games.
 
@@ -36,7 +36,7 @@ Manual defaults use eight shards, 192 training matches and 16 external evaluatio
 - `minimum_games`: aggregate frozen sample gate.
 - `continuous`: promote passing candidates and queue the next generation.
 
-The retained `ai-training-bundle` artifact contains candidate, selection, candidate evaluation, paired baseline evaluation, gameplay quality comparison, baseline, and hosted-source documents. Public artifacts may contain the publicly readable model and aggregate records, but never contribution tokens, guards, identifiers, address hashes, runtime envelopes, or credentials.
+The retained `ai-training-bundle` artifact contains candidate, selection, candidate evaluation, paired baseline evaluation, per-scenario/round reports, gameplay quality comparison, baseline, hosted-source, and scenario-manifest documents. Public artifacts may contain the publicly readable model and aggregate records, but never contribution tokens, guards, identifiers, address hashes, runtime envelopes, or credentials.
 
 ## 24/7 Operation
 
@@ -82,8 +82,9 @@ Continuous promotion requires:
 - Absolute defense in frozen-champion responder matches: at least half the required games, at least 75% of responder matches finishing with 50 or more candidate lives, and no responder match finishing below 25 candidate lives.
 - Paired champion-reference evaluation over the identical seed and fairness schedule, with no more than 5 percentage points of survival, severe-collapse, responder-defense, responder-score, or worst-bucket regression, and no more than 15 average lives of regression.
 - Exact baseline, candidate, and evaluation identities.
-- Finite schema-13 policy parameters, the exact 31,048-parameter tensor contract, and size bounds.
+- Finite schema-14 policy parameters, the exact 33,450-parameter tensor contract, and size bounds.
 - Browser, endpoint, distributed, deterministic replay, and exact-commit CI checks.
+- A canonical scenario manifest with separate training and frozen-holdout seed blocks, balanced eight-scenario reports, and per-scenario round metrics.
 - A least-privilege policy-only credential.
 
 Thresholds are rounded to 12 decimal places and clamped to `[0, 1]`. At the continuous 58% score gate, the bucket, survival, and severe-collapse gates are 48%, 50%, and 27%, respectively. Absolute defense requires 75% protected responder matches, at least 50 lives for protection, and a 25-life floor. Evaluation artifacts and trainer status retain these thresholds plus the observed worst bucket, survival rate, severe-collapse rate, average final lives, and responder protection rate.
@@ -113,6 +114,7 @@ npm run ai:compare-quality -- --candidate training/output/evaluation.json --base
 - Rendering uses a no-op canvas.
 - The local server rejects hidden/runtime data, non-loopback clients, and writes.
 - Workers fail on browser errors, hosted persistence, non-finite models, frame exhaustion, schema mismatch, more than three recoveries for one fairness slot, or aggregate recoveries above `max(3, ceil(matches / 8))`. A recovered attempt restarts the same fairness slot, remains visible in `metrics.stalls`, and is not counted as a game outcome.
+- Every worker match includes a digest of the final observable runtime state; deterministic baseline replays therefore cover lives, round, economy, towers, bloons, projectiles, bananas, subtowers, and target/cooldown state rather than only the outcome tuple.
 - The model and hosted tooling enforce an 8 MiB maximum JSON size; public contributions remain capped at 128 KiB.
 - Policy history is limited to two complete bundles.
 

@@ -257,6 +257,9 @@ async function main() {
             function createEnvelope(revision, epoch, model) {
                 return {
                     ok: true,
+                    protocolVersion: 1,
+                    gameVersion: GAME_VERSION,
+                    modelSchema: AI_LEARNING_SCHEMA_VERSION,
                     revision,
                     contributionEpoch: epoch,
                     modelDigest: "sha256:test-" + revision,
@@ -380,8 +383,9 @@ async function main() {
             window.fetch = originalFetch
             AI_CROSS_MATCH_LEARNING_ENABLED = true
             localStorage.setItem("aiPendingContributionsV1", JSON.stringify([{ contributionId: "obsolete-schema-11" }]))
+            localStorage.setItem("aiPendingContributionsV2", JSON.stringify([{ contributionId: "obsolete-schema-13" }]))
             getAIPublicContributionQueue()
-            const legacyContributionQueueRemoved = localStorage.getItem("aiPendingContributionsV1") == null
+            const legacyContributionQueueRemoved = localStorage.getItem("aiPendingContributionsV1") == null && localStorage.getItem("aiPendingContributionsV2") == null
             aiPersistenceState.loadInFlight = true
             const refreshingSaveState = getAITrainingSaveButtonState()
             const matchesBeforeRefreshControlProbe = aiTrainingState.trueSelfPlayMatches
@@ -658,6 +662,8 @@ async function main() {
                     migratedModel.policy.decision.WMemoryToState[0].length,
                     migratedModel.policy.decision.WSurvival.length,
                     migratedModel.policy.decision.WSurvival[0].length,
+                    migratedModel.policy.decision.WEconomy.length,
+                    migratedModel.policy.decision.WCatastrophe.length,
                     migratedModel.policy.decision.familyBias.length,
                 ],
                 parameterCount: getAIPolicyParameterCount(migratedModel.policy),
@@ -764,6 +770,9 @@ async function main() {
                     rejectedCandidateFeatures: rejectedCandidate,
                     memoryIn: decisionMemory,
                     localReward: decisionTarget,
+                    intervalReward: 0.6,
+                    economyReward: 0.7,
+                    catastropheTarget: 0.25,
                     age: 0,
                 }, decisionTarget, 3, decisionPolicy) && decisionTrainSucceeded
             }
@@ -778,6 +787,8 @@ async function main() {
                 succeeded: decisionTrainSucceeded,
                 valid: isValidAIPolicy(decisionPolicy),
                 valueChanged: decisionAfterForward.value != decisionBeforeForward.value,
+                economyChanged: decisionAfterForward.economyValue != decisionBeforeForward.economyValue,
+                catastropheChanged: decisionAfterForward.catastropheValue != decisionBeforeForward.catastropheValue,
                 survivalChanged: decisionPolicy.decision.bSurvival.some(value => value != 0),
             }
             const rejectedVariantA = cloneAIPolicy(migratedModel.policy)
@@ -799,10 +810,10 @@ async function main() {
             aiDecisionEncode = originalDecisionEncode
             aiDecisionStateCache = null
 
-            const factualFeaturesBefore = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48, 72)
+            const factualFeaturesBefore = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48)
             towers.reverse()
             bloons.reverse()
-            const factualFeaturesAfter = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48, 72)
+            const factualFeaturesAfter = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(48)
             towers.reverse()
             bloons.reverse()
             const relationshipFeaturesLowHeuristic = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, { id: "factual-relation", type: "wizard", x: 100, y: 200, cost: 300, money: 1000, heuristic: -100 }).slice(32)
@@ -823,7 +834,7 @@ async function main() {
                 const renamed = buildAIDecisionCandidateFeatures(aiSide, familyIndex, { ...metadata, id: `candidate-${familyIndex}-b` })
                 const noop = buildAIDecisionCandidateFeatures(aiSide, familyIndex, { ...metadata, noop: true })
                 return {
-                    bounded: [action, noop].every(vector => vector.length == 112 && vector.every(value => Number.isFinite(value) && value >= -1 && value <= 1)),
+                    bounded: [action, noop].every(vector => vector.length == 128 && vector.every(value => Number.isFinite(value) && value >= -1 && value <= 1)),
                     familyOneHot: action.slice(0, AI_DECISION_FAMILY_COUNT).every((value, index) => value == (index == familyIndex ? 1 : 0)),
                     stableIdIndependent: action.every((value, index) => value == renamed[index]),
                     noopMarked: action[21] == 0 && noop[21] == 1,
@@ -838,6 +849,29 @@ async function main() {
             const rightX = rightBounds.maxX - (rightBounds.maxX - rightBounds.minX) * 0.25
             const placementFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, range: 200, placementGeometry: true })
             const intendedPlacementFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, range: 200, placementGeometry: true, intentTiers: [5, 2, 0] })
+            const schema14StateFeatures = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, null).slice(112)
+            const schema14CandidateFeatures = buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.upgrade, {
+                type: "wizard",
+                cost: 300,
+                money: 1000,
+                timeToImpactMs: 5000,
+                cooldownRemainingMs: 2000,
+                targetProgress: 0.6,
+                targetHealth: 50,
+                expectedOutput: 4,
+                capabilityFacts: { range: 250, directDamage: 3, cashDelta: 2, ecoDelta: 1, attackRateMultiplier: 1 },
+            }).slice(112)
+            const schema14FeatureContract = {
+                stateLength: schema14StateFeatures.length,
+                stateBounded: schema14StateFeatures.every(value => Number.isFinite(value) && value >= -1 && value <= 1),
+                stateMapOneHot: schema14StateFeatures[0] + schema14StateFeatures[1] == 1,
+                stateIncomingCompositionSlots: schema14StateFeatures.slice(4).length == 12,
+                candidateLength: schema14CandidateFeatures.length,
+                candidateBounded: schema14CandidateFeatures.every(value => Number.isFinite(value) && value >= -1 && value <= 1),
+                candidateTimingPresent: schema14CandidateFeatures[6] > 0 && schema14CandidateFeatures[7] > 0,
+                candidateTargetPresent: schema14CandidateFeatures[8] > 0 && schema14CandidateFeatures[9] > 0,
+                candidateCapabilityPresent: schema14CandidateFeatures.slice(11).some(value => value > 0),
+            }
             const placementIntentCandidates = getCrosspathCandidatesForTowerType("ninja")
             const manualAimFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, manualLock: true })
             const placementFeatureContract = {
@@ -1008,8 +1042,8 @@ async function main() {
                     bankClearedBeforeRemoval: bank.towerVar == 0 && towers.includes(bank) == false,
                     isolatedProfiles: secondProfile.placementOutcomes.test == null,
                     ledgerCleared: Object.keys(aiProfile.placementOutcomes).length == 0,
-                    exactSampleKeys: usefulSamples.concat(idleSamples, untestedSamples, bankSamples).every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "successorStateFeatures", "successorMemory", "terminal"])),
-                    exactPlacementSampleKeys: usefulPlacementSamples.concat(idlePlacementSamples, untestedPlacementSamples, bankPlacementSamples).every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward"])),
+                    exactSampleKeys: usefulSamples.concat(idleSamples, untestedSamples, bankSamples).every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "economyReward", "catastropheTarget", "successorStateFeatures", "successorMemory", "terminal"])),
+                    exactPlacementSampleKeys: usefulPlacementSamples.concat(idlePlacementSamples, untestedPlacementSamples, bankPlacementSamples).every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "economyReward", "catastropheTarget"])),
                 }
             } finally {
                 aiProfile = savedPlacementOutcomeProbe.aiProfile
@@ -1320,6 +1354,8 @@ async function main() {
                 startedAtMs: index * 100,
                 settledAtMs: (index + 1) * 100,
                 intervalReward: (index % 5 - 2) / 2,
+                economyReward: (index % 3 - 1) / 2,
+                catastropheTarget: 0,
                 successorStateFeatures: Array.from({ length: AI_DECISION_STATE_INPUT_SIZE }, (__, featureIndex) => ((index + featureIndex + 1) % 11 - 5) / 5),
                 successorMemory: Array.from({ length: AI_DECISION_MEMORY_SIZE }, (__, featureIndex) => ((index + featureIndex + 1) % 5 - 2) / 2),
                 terminal: false,
@@ -1333,6 +1369,8 @@ async function main() {
                 startedAtMs: 0,
                 settledAtMs: 100,
                 intervalReward: 0.75,
+                economyReward: 0.2,
+                catastropheTarget: 0,
             }]
             aiProfile.pendingTacticalDecision = null
             aiMatchTelemetry = {
@@ -1348,12 +1386,12 @@ async function main() {
                 exists: !!boundedContribution,
                 count: boundedContribution ? boundedContribution.decisionSamples.length : -1,
                 placementCount: boundedContribution ? boundedContribution.placementSamples.length : -1,
-                exactKeys: boundedContribution ? boundedContribution.decisionSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "successorStateFeatures", "successorMemory", "terminal"])) : false,
-                bounded: boundedContribution ? boundedContribution.decisionSamples.every(sample => sample.stateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.chosenCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.memoryIn.length == AI_DECISION_MEMORY_SIZE && sample.successorStateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.successorMemory.length == AI_DECISION_MEMORY_SIZE && [sample.stateFeatures, sample.chosenCandidateFeatures, sample.memoryIn, sample.successorStateFeatures, sample.successorMemory].every(vector => vector.every(value => value >= -1 && value <= 1)) && sample.intervalReward >= -1 && sample.intervalReward <= 1 && sample.startedAtMs >= 0 && sample.settledAtMs >= sample.startedAtMs && typeof sample.terminal == "boolean") : false,
+                exactKeys: boundedContribution ? boundedContribution.decisionSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "economyReward", "catastropheTarget", "successorStateFeatures", "successorMemory", "terminal"])) : false,
+                bounded: boundedContribution ? boundedContribution.decisionSamples.every(sample => sample.stateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.chosenCandidateFeatures.length == AI_DECISION_CANDIDATE_INPUT_SIZE && sample.memoryIn.length == AI_DECISION_MEMORY_SIZE && sample.successorStateFeatures.length == AI_DECISION_STATE_INPUT_SIZE && sample.successorMemory.length == AI_DECISION_MEMORY_SIZE && [sample.stateFeatures, sample.chosenCandidateFeatures, sample.memoryIn, sample.successorStateFeatures, sample.successorMemory].every(vector => vector.every(value => value >= -1 && value <= 1)) && sample.intervalReward >= -1 && sample.intervalReward <= 1 && sample.economyReward >= -1 && sample.economyReward <= 1 && sample.catastropheTarget >= 0 && sample.catastropheTarget <= 1 && sample.startedAtMs >= 0 && sample.settledAtMs >= sample.startedAtMs && typeof sample.terminal == "boolean") : false,
                 contiguous: boundedContribution ? boundedContribution.decisionSamples.slice(1).every((sample, index) => sample.startedAtMs == boundedContribution.decisionSamples[index].settledAtMs && JSON.stringify(sample.stateFeatures) == JSON.stringify(boundedContribution.decisionSamples[index].successorStateFeatures) && JSON.stringify(sample.memoryIn) == JSON.stringify(boundedContribution.decisionSamples[index].successorMemory)) : false,
                 timeRange: boundedContribution ? [Math.min(...boundedContribution.decisionSamples.map(sample => sample.startedAtMs)), Math.max(...boundedContribution.decisionSamples.map(sample => sample.settledAtMs))] : [],
                 familyCounts: boundedContribution ? Array.from({ length: AI_DECISION_FAMILY_COUNT }, (_, familyIndex) => boundedContribution.decisionSamples.filter(sample => sample.familyIndex == familyIndex).length) : [],
-                placementExactKeys: boundedContribution ? boundedContribution.placementSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward"])) : false,
+                placementExactKeys: boundedContribution ? boundedContribution.placementSamples.every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "economyReward", "catastropheTarget"])) : false,
                 placementIndependent: boundedContribution ? boundedContribution.placementSamples.length == 1 && boundedContribution.placementSamples[0].startedAtMs == 0 && boundedContribution.placementSamples[0].intervalReward == 0.75 : false,
                 hasModel: boundedContribution ? Object.prototype.hasOwnProperty.call(boundedContribution, "model") : true,
                  byteLength: boundedContribution ? new TextEncoder().encode(JSON.stringify(boundedContribution)).byteLength : Infinity,
@@ -1368,6 +1406,8 @@ async function main() {
                 startedAtMs: index,
                 settledAtMs: index + 1,
                 intervalReward: index == 6 ? -1 : 0,
+                economyReward: index == 6 ? -1 : 0,
+                catastropheTarget: 0,
                 successorStateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
                 successorMemory: Array(AI_DECISION_MEMORY_SIZE).fill(0),
                 terminal: false,
@@ -1391,6 +1431,8 @@ async function main() {
                 startedAtMs: syntheticStartedAt++,
                 settledAtMs: syntheticStartedAt,
                 intervalReward: 0,
+                economyReward: 0,
+                catastropheTarget: 0,
                 successorStateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
                 successorMemory: Array(AI_DECISION_MEMORY_SIZE).fill(0),
                 terminal: false,
@@ -1677,6 +1719,7 @@ async function main() {
                 progressKeyTracksBloonMovement,
                 runtimeSafetyContract,
                 candidateFeatureContracts,
+                schema14FeatureContract,
                 placementFeatureContract,
                 placementPressureContract,
                 placementOutcomeContract,
@@ -1878,16 +1921,16 @@ async function main() {
             familyTrainingReset: false,
         })
         assert.deepEqual(result.policyContract, {
-            version: 13,
-            modelFamily: "semantic-intent-spatial-recurrent-actor-critic-v5",
+            version: 14,
+            modelFamily: "semantic-intent-spatial-recurrent-actor-critic-v6",
             formatVersion: 2,
             policyKeys: ["formatVersion", "strategyLearningRate", "decisionLearningRate", "strategy", "decision"],
             strategyKeys: ["hiddenSize1", "hiddenSize2", "W1", "b1", "W2", "b2", "W3", "b3"],
-            decisionKeys: ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WSurvival", "bSurvival", "familyBias"],
+            decisionKeys: ["stateInputSize", "candidateInputSize", "stateHiddenSize", "candidateHiddenSize", "embeddingSize", "memorySize", "survivalClassCount", "trainingSamples", "WState1", "bState1", "WState2", "bState2", "WCandidate1", "bCandidate1", "WCandidate2", "bCandidate2", "WStateToMemory", "WMemoryToMemory", "bMemory", "WMemoryToState", "WValue", "bValue", "WEconomy", "bEconomy", "WCatastrophe", "bCatastrophe", "WSurvival", "bSurvival", "familyBias"],
             familyIndices: [0, 1, 2, 3, 4, 5, 6, 7],
             strategyDimensions: [64, 17, 32, 64, 75, 32],
-            decisionDimensions: [96, 112, 48, 96, 48, 112, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 8],
-            parameterCount: 31048,
+            decisionDimensions: [96, 128, 48, 96, 48, 128, 48, 48, 16, 48, 16, 16, 48, 16, 4, 48, 48, 48, 8],
+            parameterCount: 33450,
             valid: true,
         })
         assert.equal(result.decisionTraining.succeeded, true)
@@ -1895,6 +1938,8 @@ async function main() {
         assert.equal(result.decisionTraining.familySamples, 12)
         assert.ok(result.decisionTraining.after > result.decisionTraining.before)
         assert.equal(result.decisionTraining.valueChanged, true)
+        assert.equal(result.decisionTraining.economyChanged, true)
+        assert.equal(result.decisionTraining.catastropheChanged, true)
         assert.equal(result.decisionTraining.survivalChanged, true)
         assert.equal(result.decisionTraining.rejectedCandidateIgnored, true)
         assert.equal(result.decisionEncodeCalls, 4)
@@ -1908,6 +1953,17 @@ async function main() {
                 manualCapabilities: true,
             })
         }
+        assert.deepEqual(result.schema14FeatureContract, {
+            stateLength: 16,
+            stateBounded: true,
+            stateMapOneHot: true,
+            stateIncomingCompositionSlots: true,
+            candidateLength: 16,
+            candidateBounded: true,
+            candidateTimingPresent: true,
+            candidateTargetPresent: true,
+            candidateCapabilityPresent: true,
+        })
         assert.deepEqual(result.placementFeatureContract, {
             stateIntentEmpty: false,
             candidateIntentEmpty: true,

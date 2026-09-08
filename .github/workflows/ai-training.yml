@@ -176,8 +176,16 @@ jobs:
             echo "AI_HOSTED_ENDPOINT is not configured." >&2
             exit 1
           fi
-          npm run ai:hosted -- --mode fetch --endpoint "$AI_HOSTED_ENDPOINT" --output "$RUNNER_TEMP/hosted-baseline/baseline.json" --manifest "$RUNNER_TEMP/hosted-baseline/hosted-source.json"
-          npm run ai:verify -- "$RUNNER_TEMP/hosted-baseline/baseline.json"
+           npm run ai:hosted -- --mode fetch --endpoint "$AI_HOSTED_ENDPOINT" --output "$RUNNER_TEMP/hosted-baseline/baseline.json" --manifest "$RUNNER_TEMP/hosted-baseline/hosted-source.json"
+           npm run ai:verify -- "$RUNNER_TEMP/hosted-baseline/baseline.json"
+      - name: Create canonical training and holdout scenario manifest
+        env:
+          BASE_SEED: ${{ steps.config.outputs.base_seed }}
+          WORKERS: ${{ steps.config.outputs.workers }}
+          TRAINING_MATCHES: ${{ steps.config.outputs.training_matches }}
+          EVALUATION_MATCHES: ${{ steps.config.outputs.evaluation_matches }}
+        run: |
+          npm run ai:scenarios -- --base-seed "$BASE_SEED" --workers "$WORKERS" --training-matches "$TRAINING_MATCHES" --evaluation-matches "$EVALUATION_MATCHES" --output "$RUNNER_TEMP/hosted-baseline/scenario-manifest.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-hosted-baseline
@@ -212,7 +220,7 @@ jobs:
           MATCHES: ${{ needs.prepare.outputs.training_matches }}
         run: |
           seed=$((BASE_SEED + SHARD))
-          npm run ai:worker -- --mode train --checkpoint "$RUNNER_TEMP/hosted-baseline/baseline.json" --seed "$seed" --shard "train-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/train-$SHARD.json"
+           npm run ai:worker -- --mode train --checkpoint "$RUNNER_TEMP/hosted-baseline/baseline.json" --manifest "$RUNNER_TEMP/hosted-baseline/scenario-manifest.json" --seed "$seed" --shard "train-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/train-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-train-${{ matrix.shard }}
@@ -279,8 +287,8 @@ jobs:
           MATCHES: ${{ needs.prepare.outputs.evaluation_matches }}
         run: |
           seed=$((BASE_SEED + 100000 + SHARD))
-          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate/candidate.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --seed "$seed" --shard "eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/eval-$SHARD.json"
-          npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/hosted-baseline/baseline.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --baseline-only true --seed "$seed" --shard "baseline-eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/baseline-eval-$SHARD.json"
+           npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/candidate/candidate.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --manifest "$RUNNER_TEMP/hosted-baseline/scenario-manifest.json" --seed "$seed" --shard "eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/eval-$SHARD.json"
+           npm run ai:worker -- --mode evaluate --checkpoint "$RUNNER_TEMP/hosted-baseline/baseline.json" --baseline "$RUNNER_TEMP/hosted-baseline/baseline.json" --manifest "$RUNNER_TEMP/hosted-baseline/scenario-manifest.json" --baseline-only true --seed "$seed" --shard "baseline-eval-$SHARD" --matches "$MATCHES" --output "$RUNNER_TEMP/baseline-eval-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ai-eval-${{ matrix.shard }}
@@ -329,12 +337,12 @@ jobs:
         env:
           MINIMUM_SCORE: ${{ needs.prepare.outputs.minimum_score }}
           MINIMUM_GAMES: ${{ needs.prepare.outputs.minimum_games }}
-        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval-results" --output "$RUNNER_TEMP/bundle/evaluation.json" --report "$RUNNER_TEMP/bundle/evaluation.md" --minimum-score "$MINIMUM_SCORE" --minimum-games "$MINIMUM_GAMES"
+        run: npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/eval-results" --output "$RUNNER_TEMP/bundle/evaluation.json" --report "$RUNNER_TEMP/bundle/evaluation.md" --minimum-score "$MINIMUM_SCORE" --minimum-games "$MINIMUM_GAMES" --manifest "$RUNNER_TEMP/bundle/scenario-manifest.json" --scenario-report "$RUNNER_TEMP/bundle/scenario-evaluation.json"
       - name: Build paired baseline quality report
         env:
           MINIMUM_GAMES: ${{ needs.prepare.outputs.minimum_games }}
         run: |
-          npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/baseline-eval-results" --output "$RUNNER_TEMP/bundle/baseline-evaluation.json" --report "$RUNNER_TEMP/bundle/baseline-evaluation.md" --minimum-score 0 --minimum-games "$MINIMUM_GAMES"
+          npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/baseline-eval-results" --output "$RUNNER_TEMP/bundle/baseline-evaluation.json" --report "$RUNNER_TEMP/bundle/baseline-evaluation.md" --minimum-score 0 --minimum-games "$MINIMUM_GAMES" --manifest "$RUNNER_TEMP/bundle/scenario-manifest.json" --scenario-report "$RUNNER_TEMP/bundle/scenario-baseline-evaluation.json"
           npm run ai:compare-quality -- --candidate "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline-evaluation.json" --output "$RUNNER_TEMP/bundle/quality.json" --report "$RUNNER_TEMP/bundle/quality.md" --minimum-games "$MINIMUM_GAMES"
       - name: Publish job summary
         run: cat "$RUNNER_TEMP/bundle/evaluation.md" >> "$GITHUB_STEP_SUMMARY"
@@ -358,8 +366,10 @@ jobs:
         name: Validate and stage continuous promotion
         if: ${{ needs.prepare.outputs.continuous == 'true' && steps.decision.outputs.promotable == 'true' }}
         run: |
-          npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
-          npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
+           npm run ai:verify -- "$RUNNER_TEMP/bundle/candidate.json"
+           npm run ai:verify -- "$RUNNER_TEMP/bundle/evaluation.json"
+           npm run ai:verify -- "$RUNNER_TEMP/bundle/scenario-evaluation.json"
+           npm run ai:verify -- "$RUNNER_TEMP/bundle/scenario-baseline-evaluation.json"
           npm run ai:verify-promotion -- --candidate "$RUNNER_TEMP/bundle/candidate.json" --evaluation "$RUNNER_TEMP/bundle/evaluation.json" --baseline-evaluation "$RUNNER_TEMP/bundle/baseline-evaluation.json" --quality "$RUNNER_TEMP/bundle/quality.json" --baseline "$RUNNER_TEMP/bundle/baseline.json" --minimum-score 0.58 --minimum-games 160
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
