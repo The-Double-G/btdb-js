@@ -8552,7 +8552,7 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
                 placedTowerCount++
             }
         }
-        if(placedTowerCount < 3 && bestPlacement) return bestPlacement
+        if(isAITrainingTrueSelfPlayActive() && aiTrainingState.evaluationActive == false && placedTowerCount < 3 && bestPlacement) return bestPlacement
         if(recordNoOp !== false) recordAINoOpDecision(bestNoOp)
         return null
     }
