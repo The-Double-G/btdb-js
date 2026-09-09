@@ -589,7 +589,7 @@ assert.match(index, /meta name="viewport" content="width=device-width, initial-s
 assert.match(index, /js\/02-bloon\.js\?v=2\.6\.0&amp;rev=20260906-overkill/)
 assert.match(index, /js\/06-menu-ai\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260909-worker/)
 assert.match(index, /js\/04-support-entities\.js\?v=2\.6\.0&amp;rev=20260906-targets/)
-assert.match(index, /js\/06-menu-ai-training\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260909-worker/)
+assert.match(index, /js\/06-menu-ai-training\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260909-worker2/)
 assert.match(index, /js\/08-main-loop\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260906-overkill/)
 assert.match(index, /js\/09-input\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260906/)
 assert.match(styles, /@media \(max-aspect-ratio: 683 \/ 384\)/)
