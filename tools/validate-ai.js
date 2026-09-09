@@ -587,7 +587,7 @@ assert.match(ai, /capabilityFacts: getAILoadoutCapabilityFacts\(entry\.loadout\.
 assert.equal((ai.match(/capabilityFacts: getAILoadoutCapabilityFacts\(strategy\.towers, strategy\.boosts,/g) || []).length, 2)
 assert.match(index, /meta name="viewport" content="width=device-width, initial-scale=1"/)
 assert.match(index, /js\/02-bloon\.js\?v=2\.6\.0&amp;rev=20260906-overkill/)
-assert.match(index, /js\/06-menu-ai\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260909-worker7/)
+assert.match(index, /js\/06-menu-ai\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260909-worker8/)
 assert.match(index, /js\/04-support-entities\.js\?v=2\.6\.0&amp;rev=20260906-targets/)
 assert.match(index, /js\/06-menu-ai-training\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260909-worker2/)
 assert.match(index, /js\/08-main-loop\.js\?v=2\.6\.0&amp;schema=14&amp;rev=20260906-overkill/)

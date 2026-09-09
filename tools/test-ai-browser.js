@@ -872,6 +872,14 @@ async function main() {
                 candidateTargetPresent: schema14CandidateFeatures[8] > 0 && schema14CandidateFeatures[9] > 0,
                 candidateCapabilityPresent: schema14CandidateFeatures.slice(11).some(value => value > 0),
             }
+            const originalChooseAILoadoutForMatch = chooseAILoadoutForMatch
+            chooseAILoadoutForMatch = function() { return null }
+            let pendingLoadoutPlanRetried = false
+            try {
+                pendingLoadoutPlanRetried = prepareAIStrategyForMatch(null) === false
+            } finally {
+                chooseAILoadoutForMatch = originalChooseAILoadoutForMatch
+            }
             const placementIntentCandidates = getCrosspathCandidatesForTowerType("ninja")
             const manualAimFeatures = buildAIDecisionCandidateFeatures(PLAYER_SIDE.left, AI_DECISION_FAMILY.placement, { x: leftX, y: canvas.height * 0.5, manualLock: true })
             const placementFeatureContract = {
@@ -1716,6 +1724,7 @@ async function main() {
                 overdueCursorTickCount,
                 overviewLabels,
                 policyContract,
+                pendingLoadoutPlanRetried,
                 progressKeyTracksBloonMovement,
                 runtimeSafetyContract,
                 candidateFeatureContracts,
@@ -1821,6 +1830,7 @@ async function main() {
         assert.deepEqual(result.statsButtonIds, ["ai-refresh", "back"])
         assert.deepEqual(result.localSaveState, { label: "Session Only", disabled: true })
         assert.equal(result.emptyTrainingStrategyCount, 0)
+        assert.equal(result.pendingLoadoutPlanRetried, true)
         assert.equal(result.goalCompleteStartDisabled, true)
         assert.equal(result.liveEvaluation.label, "Live Eval")
         assert.equal(result.liveEvaluation.score, 0.625)

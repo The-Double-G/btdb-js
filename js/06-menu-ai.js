@@ -3324,6 +3324,7 @@ function prepareAIStrategyForMatch(observedLoadoutSummary) {
     ensureAILearningLoaded()
     ensureAILoadoutLibraryInitialized()
     var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary, null)
+    if(!chosenLoadout) return false
     recordAIDecisionTraceSample(chosenLoadout.decisionSample, 0)
     var selectionFeatures = buildAIStrategySelectionFeatures(observedLoadoutSummary)
     aiStrategySelection = chooseAIArchetypeFromFeatures(selectionFeatures, null, chosenLoadout.key)
@@ -3337,6 +3338,7 @@ function prepareAIStrategyForMatch(observedLoadoutSummary) {
     aiMatchTelemetry.aiLoadoutSummary = chosenLoadout.summary
     recordAIDecisionTraceSample(aiStrategySelection.decisionSample, 0)
     aiProfile.loadoutPlanReady = true
+    return true
 }
 
 function clampAIPolicyParameter(value) {
