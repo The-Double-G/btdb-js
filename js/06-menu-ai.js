@@ -3798,19 +3798,52 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
     }
     var maximum = maximumDecisions == null ? available.length : Math.max(0, Math.floor(maximumDecisions))
     if(maximum <= 0) return []
-    if(available.length <= maximum) return available
-    var suffixStart = available.length - maximum
-    var bestStart = suffixStart
+    function sameVector(left, right) {
+        return Array.isArray(left) && Array.isArray(right) && left.length == right.length && left.every(function(value, index) { return value == right[index] })
+    }
+    var runs = []
+    var currentRun = []
+    for(var sampleIndex = 0; sampleIndex < available.length; sampleIndex++) {
+        var sample = available[sampleIndex]
+        var previousSample = currentRun[currentRun.length - 1]
+        var contiguous = previousSample && sample.startedAtMs == previousSample.settledAtMs && sameVector(sample.stateFeatures, previousSample.successorStateFeatures) && sameVector(sample.memoryIn, previousSample.successorMemory)
+        if(!contiguous && currentRun.length > 0) {
+            runs.push(currentRun)
+            currentRun = []
+        }
+        currentRun.push(sample)
+    }
+    if(currentRun.length > 0) runs.push(currentRun)
+
+    var bestRun = []
     var bestPriority = -Infinity
-    for(var start = 0; start <= suffixStart; start++) {
-        var windowPriority = 0
-        for(var offset = 0; offset < maximum; offset++) windowPriority += getAIDecisionSamplePriority(available[start + offset])
-        if(windowPriority > bestPriority || windowPriority == bestPriority && start > bestStart) {
-            bestPriority = windowPriority
-            bestStart = start
+    for(var runIndex = 0; runIndex < runs.length; runIndex++) {
+        var run = runs[runIndex]
+        if(run.length <= maximum) {
+            var runPriority = run.reduce(function(total, sample) { return total + getAIDecisionSamplePriority(sample) }, 0)
+            if(runPriority > bestPriority || runPriority == bestPriority && runIndex == runs.length - 1) {
+                bestRun = run
+                bestPriority = runPriority
+            }
+            continue
+        }
+        var suffixStart = run.length - maximum
+        var bestStart = suffixStart
+        var bestWindowPriority = -Infinity
+        for(var start = 0; start <= suffixStart; start++) {
+            var windowPriority = 0
+            for(var offset = 0; offset < maximum; offset++) windowPriority += getAIDecisionSamplePriority(run[start + offset])
+            if(windowPriority > bestWindowPriority || windowPriority == bestWindowPriority && start > bestStart) {
+                bestWindowPriority = windowPriority
+                bestStart = start
+            }
+        }
+        if(bestWindowPriority > bestPriority || bestWindowPriority == bestPriority && runIndex == runs.length - 1) {
+            bestRun = run.slice(bestStart, bestStart + maximum)
+            bestPriority = bestWindowPriority
         }
     }
-    return available.slice(bestStart, bestStart + maximum)
+    return bestRun
 }
 
 function getAIDecisionTransitionDiscount(sample) {
