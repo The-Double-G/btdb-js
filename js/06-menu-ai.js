@@ -3769,7 +3769,7 @@ function getAIDecisionSamplePriority(sample) {
     return 0.5 + Math.abs(Number(sample && sample.intervalReward) || 0) * 0.6 + (sample && sample.terminal ? 1 : 0)
 }
 
-function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
+function collectAIDecisionSamples(side, terminalReward, maximumDecisions, contiguousOnly) {
     if(!aiProfile) {
         return []
     }
@@ -3798,6 +3798,21 @@ function collectAIDecisionSamples(side, terminalReward, maximumDecisions) {
     }
     var maximum = maximumDecisions == null ? available.length : Math.max(0, Math.floor(maximumDecisions))
     if(maximum <= 0) return []
+    if(contiguousOnly !== true) {
+        if(available.length <= maximum) return available
+        var suffixStart = available.length - maximum
+        var bestStart = suffixStart
+        var bestPriority = -Infinity
+        for(var start = 0; start <= suffixStart; start++) {
+            var windowPriority = 0
+            for(var offset = 0; offset < maximum; offset++) windowPriority += getAIDecisionSamplePriority(available[start + offset])
+            if(windowPriority > bestPriority || windowPriority == bestPriority && start > bestStart) {
+                bestPriority = windowPriority
+                bestStart = start
+            }
+        }
+        return available.slice(bestStart, bestStart + maximum)
+    }
     function sameVector(left, right) {
         return Array.isArray(left) && Array.isArray(right) && left.length == right.length && left.every(function(value, index) { return value == right[index] })
     }
@@ -4227,7 +4242,7 @@ function createAIPublicMatchContribution(aiLives, enemyLives, reward, selfPlayAc
         addObservation(towerObservations[towerIndex].store, towerObservations[towerIndex].key, towerObservations[towerIndex].value)
     }
 
-    var decisionSamples = collectAIDecisionSamples(aiSide, reward, AI_MAX_PUBLIC_DECISION_SAMPLES).map(function(sample) {
+    var decisionSamples = collectAIDecisionSamples(aiSide, reward, AI_MAX_PUBLIC_DECISION_SAMPLES, true).map(function(sample) {
         return {
             creditVersion: sample.creditVersion,
             familyIndex: sample.familyIndex,
