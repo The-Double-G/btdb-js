@@ -8546,6 +8546,13 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
         if(isAIDecisionScoreBetter(noOp, candidate.decisionSample) == false) actionableCandidates.push(candidate)
     }
     if(actionableCandidates.length == 0) {
+        var placedTowerCount = 0
+        for(var towerIndex = 0; towerIndex < towers.length; towerIndex++) {
+            if(towers[towerIndex] && towers[towerIndex].playerSide == side) {
+                placedTowerCount++
+            }
+        }
+        if(placedTowerCount < 3 && bestPlacement) return bestPlacement
         if(recordNoOp !== false) recordAINoOpDecision(bestNoOp)
         return null
     }
