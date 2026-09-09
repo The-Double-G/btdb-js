@@ -1295,6 +1295,9 @@ function finishAITrainingTrueSelfPlayLaunch() {
 
 function launchAITrainingTrueSelfPlayMatch() {
     resetAITrainingTrueSelfPlayMatchState()
+    selectedMenuMode = "training-self-play"
+    frontMenuState = "pregame"
+    aiEnabled = true
     if(prepareAITrainingTrueSelfPlayContexts() == false) {
         aiTrainingState.trueSelfPlaySetupPending = true
         return false
