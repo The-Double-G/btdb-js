@@ -449,7 +449,12 @@ async function main() {
                 revision: aiPersistenceState.revision,
             }
 
+            const savedFailedSaveTelemetry = aiMatchTelemetry
+            const savedFailedSaveAIEnabled = aiEnabled
+            aiMatchTelemetry = { contributionId: "retry-probe", contributionStatus: "queued" }
+            aiEnabled = true
             setAIPublicContributionQueue([{ contributionId: "retry-probe", contributionEpoch: 2 }])
+            markAIPublicContributionStatus("retry-probe", "queued")
             aiPersistenceState.contributionEnabled = true
             aiPersistenceState.contributionToken = ""
             aiPersistenceState.contributionRetryAt = 0
@@ -464,10 +469,16 @@ async function main() {
                 fetches: failedRefreshFetches,
                 retryScheduled: aiPersistenceState.contributionRetryAt > realNow(),
             }
+            const failedContributionStatus = {
+                status: aiMatchTelemetry.contributionStatus,
+                message: getCompletedMatchAIRematchMessage(),
+            }
             const retryAtBeforeSuccessfulRefresh = aiPersistenceState.contributionRetryAt
             const refreshDuringBackoffSucceeded = applyAILearningEnvelope(createEnvelope(12, 2, createRefreshModel(12, 12)), true)
             const successfulRefreshPreservedBackoff = refreshDuringBackoffSucceeded && aiPersistenceState.contributionRetryAt == retryAtBeforeSuccessfulRefresh
             setAIPublicContributionQueue([])
+            aiMatchTelemetry = savedFailedSaveTelemetry
+            aiEnabled = savedFailedSaveAIEnabled
             aiPersistenceState.contributionEnabled = false
 
             setAIPublicContributionQueue([
@@ -1749,6 +1760,7 @@ async function main() {
                 refreshFailureBackoff,
                 refreshingSaveState,
                 refreshingStartDisabled,
+                failedContributionStatus,
                 recoveredSessionContribution,
                 recoveredSessionFlushes,
                 recoveredSessionQueuedSaveState,
@@ -1861,6 +1873,7 @@ async function main() {
             revision: 12,
         })
         assert.deepEqual(result.refreshFailureBackoff, { fetches: 1, retryScheduled: true })
+        assert.deepEqual(result.failedContributionStatus, { status: "failed", message: "Refresh to rematch! Global AI sync was unavailable." })
         assert.equal(result.successfulRefreshPreservedBackoff, true)
         assert.deepEqual(result.refreshingSaveState, { label: "Refreshing...", disabled: true, action: "none" })
         assert.equal(result.refreshingStartDisabled, true)

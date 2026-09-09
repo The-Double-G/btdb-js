@@ -59,6 +59,7 @@ var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV3"
 var AI_MAX_PENDING_CONTRIBUTIONS = 8
 var AI_MAX_CONTRIBUTION_OBSERVATIONS = 320
 var AI_MAX_PUBLIC_CONTRIBUTION_BYTES = 131072
+var AI_NETWORK_TIMEOUT_MS = 15000
 var AI_MAX_PLACEMENT_SAMPLES = 64
 var AI_MAX_PUBLIC_PLACEMENT_SAMPLES = 24
 var AI_MAX_HUMAN_TACTICAL_EVENTS = 128
@@ -1806,7 +1807,7 @@ function refreshAILearningFromBackend(forceModelInstall) {
 
     aiPersistenceState.restoreRequested = true
     aiPersistenceState.loadInFlight = true
-    aiLearningRefreshPromise = fetch(AI_LEARNING_ENDPOINT, { cache: "no-cache", credentials: "same-origin" }).then(function(response) {
+    aiLearningRefreshPromise = fetchAIWithTimeout(AI_LEARNING_ENDPOINT, { cache: "no-cache", credentials: "same-origin" }).then(function(response) {
         if(response.ok == false) {
             throw new Error("Backend load failed: " + response.status)
         }
@@ -1818,7 +1819,11 @@ function refreshAILearningFromBackend(forceModelInstall) {
         aiLearningLastRefreshSucceeded = false
         aiPersistenceState.lastError = String(error)
         aiPersistenceState.backend = "php backend shared unavailable"
-        if(getAIPublicContributionQueue().length > 0) {
+        var queuedContributions = getAIPublicContributionQueue()
+        for(var queuedIndex = 0; queuedIndex < queuedContributions.length; queuedIndex++) {
+            markAIPublicContributionStatus(queuedContributions[queuedIndex].contributionId, "failed")
+        }
+        if(queuedContributions.length > 0) {
             aiPersistenceState.contributionRetryAt = Math.max(aiPersistenceState.contributionRetryAt, realNow() + 3000)
         }
         return false
@@ -2000,6 +2005,18 @@ function requestAIPublicContributionToken() {
     return refreshAILearningFromBackend(true)
 }
 
+function fetchAIWithTimeout(url, options) {
+    var controller = typeof AbortController == "function" ? new AbortController() : null
+    var requestOptions = Object.assign({}, options || {})
+    if(controller) requestOptions.signal = controller.signal
+    var timeoutId = setTimeout(function() {
+        if(controller) controller.abort()
+    }, AI_NETWORK_TIMEOUT_MS)
+    return fetch(url, requestOptions).finally(function() {
+        clearTimeout(timeoutId)
+    })
+}
+
 function queueAIPublicContribution(contribution) {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.contributionEnabled == false || !contribution) {
         return false
@@ -2033,7 +2050,8 @@ function flushAIPublicContributionQueue() {
 
     aiPersistenceState.contributionInFlight = true
     var pending = queue[0]
-    fetch(AI_LEARNING_ENDPOINT + "&action=contribute", {
+    markAIPublicContributionStatus(pending.contributionId, "queued")
+    fetchAIWithTimeout(AI_LEARNING_ENDPOINT + "&action=contribute", {
         method: "POST",
         cache: "no-store",
         credentials: "same-origin",
@@ -2118,6 +2136,7 @@ function flushAIPublicContributionQueue() {
         }
         aiPersistenceState.contributionRetryAt = realNow() + (error && error.status == 429 ? 60000 : 3000)
         aiPersistenceState.lastError = String(error)
+        markAIPublicContributionStatus(pending.contributionId, "failed")
     }).finally(function() {
         aiPersistenceState.contributionInFlight = false
         if(getAIPublicContributionQueue().length > 0) {
@@ -2150,7 +2169,7 @@ function saveAILearningSnapshot() {
     var savedLearningSnapshot = JSON.parse(JSON.stringify(aiLearning))
     var expectedRevision = aiPersistenceState.revision
     aiPersistenceState.saveInFlight = true
-    fetch(AI_LEARNING_ENDPOINT + "&action=commit", {
+    fetchAIWithTimeout(AI_LEARNING_ENDPOINT + "&action=commit", {
         method: "POST",
         cache: "no-store",
         credentials: "same-origin",
