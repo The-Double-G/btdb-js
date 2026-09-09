@@ -53,6 +53,7 @@ var aiTrainingHeadlessRenderContext = null
 var aiTrainingSessionLearning = null
 var aiTrainingHostedLearning = null
 var aiTrainingSessionModelActive = false
+var aiTrainingSelfPlaySetup = null
 
 function createAITrainingState() {
     return {
@@ -85,6 +86,7 @@ function createAITrainingState() {
         trueSelfPlayLastWinner: "",
         trueSelfPlayStallRecoveries: 0,
         trueSelfPlayDiscardCurrentMatch: false,
+        trueSelfPlaySetupPending: false,
         candidateSide: PLAYER_SIDE.left,
         candidateResponds: true,
         candidateTrainingMatches: 0,
@@ -202,6 +204,12 @@ function createAIProfileState() {
         tacticalTrace: [],
         placementOutcomes: {},
         placementSamples: [],
+        placementInference: null,
+        crosspathInference: null,
+        loadoutInference: null,
+        aimInference: null,
+        targetPriorityInference: null,
+        workerDecisionPending: false,
         observedLivesBySide: {},
         observedLivesLostBySide: {},
         decisionMemory: aiCreateVector(AI_DECISION_MEMORY_SIZE, 0),
@@ -1079,6 +1087,7 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary) {
     ensureAILearningLoaded()
     ensureAILoadoutLibraryInitialized()
     var chosenLoadout = chooseAILoadoutForMatch(observedLoadoutSummary)
+    if(!chosenLoadout) return false
     var loadoutDecisionSample = chosenLoadout.decisionSample || scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.loadout, {
         id: chosenLoadout.key,
         type: chosenLoadout.summary.towerTypes.join(","),
@@ -1103,25 +1112,34 @@ function prepareAITrainingStrategyForMatch(observedLoadoutSummary) {
     aiMatchTelemetry.aiLoadoutSummary = chosenLoadout.summary
     recordAIDecisionTraceSample(aiStrategySelection.decisionSample, 0)
     aiProfile.loadoutPlanReady = true
+    return true
 }
 
 function primeAITrainingTrueSelfPlayContext(side, observedLoadoutSummary, policyConfig) {
     var snapshot = captureActiveAIContextSnapshot()
     var chosenSummary = createEmptyLoadoutSummary()
-    aiContextsBySide[side] = createAIContext(side, getOpponentSide(side))
+    var existingContext = aiContextsBySide[side]
+    var resumingSetup = !!(existingContext && existingContext.aiProfile && existingContext.aiProfile.loadoutPlanReady == false && existingContext.aiProfile.loadoutInference)
+    aiContextsBySide[side] = existingContext || createAIContext(side, getOpponentSide(side))
     activateAIContext(side)
-    aiCurrentStrategy = null
-    aiMatchTelemetry = null
-    aiStrategySelection = null
-    aiDesiredLoadoutTowers = []
-    aiDesiredLoadoutBoosts = []
-    resetAIProfile()
-    aiProfile.policySnapshot = policyConfig && policyConfig.policySnapshot ? cloneAIPolicy(policyConfig.policySnapshot) : null
-    aiProfile.learningEnabled = !!(policyConfig && policyConfig.learningEnabled)
-    aiProfile.explorationEnabled = !!(policyConfig && policyConfig.explorationEnabled)
-    var configuredExplorationScale = Number(policyConfig && policyConfig.explorationScale)
-    aiProfile.explorationScale = Number.isFinite(configuredExplorationScale) ? clamp(configuredExplorationScale, 0, 1) : 1
-    prepareAITrainingStrategyForMatch(observedLoadoutSummary)
+    if(resumingSetup == false && aiProfile.loadoutPlanReady == false) {
+        aiCurrentStrategy = null
+        aiMatchTelemetry = null
+        aiStrategySelection = null
+        aiDesiredLoadoutTowers = []
+        aiDesiredLoadoutBoosts = []
+        resetAIProfile()
+        aiProfile.policySnapshot = policyConfig && policyConfig.policySnapshot ? cloneAIPolicy(policyConfig.policySnapshot) : null
+        aiProfile.learningEnabled = !!(policyConfig && policyConfig.learningEnabled)
+        aiProfile.explorationEnabled = !!(policyConfig && policyConfig.explorationEnabled)
+        var configuredExplorationScale = Number(policyConfig && policyConfig.explorationScale)
+        aiProfile.explorationScale = Number.isFinite(configuredExplorationScale) ? clamp(configuredExplorationScale, 0, 1) : 1
+    }
+    if(aiProfile.loadoutPlanReady == false && prepareAITrainingStrategyForMatch(observedLoadoutSummary) !== true) {
+        storeActiveAIContext()
+        restoreAIContextSnapshot(snapshot)
+        return null
+    }
     aiProfile.loadoutFilled = true
     aiProfile.currentAction = null
     aiTickState.lastLogicAt = gameNow()
@@ -1195,49 +1213,67 @@ function finishAITrainingEvaluation() {
 }
 
 function prepareAITrainingTrueSelfPlayContexts() {
-    clearAIContexts()
     ensureAILearningLoaded()
-    aiTrainingState.evaluationActive = aiTrainingState.candidateTrainingMatches >= 128
-    var curriculumStage = getAITrainingCurriculumStage(aiTrainingState.trueSelfPlayMatches, aiTrainingState.evaluationActive)
-    aiTrainingState.curriculumStage = curriculumStage.id
-    var scenario = getAITrainingScenarioForIndex(aiTrainingState.trueSelfPlayMatches)
-    var candidateSide = scenario.candidateSide == "left" ? PLAYER_SIDE.left : PLAYER_SIDE.right
-    var opponentSide = getOpponentSide(candidateSide)
-    aiTrainingState.candidateSide = candidateSide
+    if(aiTrainingState.trueSelfPlaySetupPending == false || !aiTrainingSelfPlaySetup) {
+        clearAIContexts()
+        aiTrainingState.evaluationActive = aiTrainingState.candidateTrainingMatches >= 128
+        var curriculumStage = getAITrainingCurriculumStage(aiTrainingState.trueSelfPlayMatches, aiTrainingState.evaluationActive)
+        aiTrainingState.curriculumStage = curriculumStage.id
+        var scenario = getAITrainingScenarioForIndex(aiTrainingState.trueSelfPlayMatches)
+        var candidateSide = scenario.candidateSide == "left" ? PLAYER_SIDE.left : PLAYER_SIDE.right
+        var opponentSide = getOpponentSide(candidateSide)
+        aiTrainingState.candidateSide = candidateSide
 
-    var opponentPolicy = aiLearning.championPolicy
-    aiTrainingState.opponentPolicyKind = "champion"
-    if(aiTrainingState.evaluationActive == false && aiLearning.populationPolicies.length > 0 && Math.random() < curriculumStage.populationOpponentRate) {
-        opponentPolicy = aiLearning.populationPolicies[Math.floor(Math.random() * aiLearning.populationPolicies.length)]
-        aiTrainingState.opponentPolicyKind = "population"
-    }
+        var opponentPolicy = aiLearning.championPolicy
+        aiTrainingState.opponentPolicyKind = "champion"
+        if(aiTrainingState.evaluationActive == false && aiLearning.populationPolicies.length > 0 && Math.random() < curriculumStage.populationOpponentRate) {
+            opponentPolicy = aiLearning.populationPolicies[Math.floor(Math.random() * aiLearning.populationPolicies.length)]
+            aiTrainingState.opponentPolicyKind = "population"
+        }
 
-    var candidateResponds = scenario.candidateRole == "responder"
-    aiTrainingState.candidateResponds = candidateResponds
-    var candidatePolicyConfig = {
-        policySnapshot: aiTrainingState.evaluationActive ? aiLearning.policy : null,
-        learningEnabled: aiTrainingState.evaluationActive == false,
-        explorationEnabled: aiTrainingState.evaluationActive == false,
-        explorationScale: curriculumStage.explorationScale,
+        var candidateResponds = scenario.candidateRole == "responder"
+        aiTrainingState.candidateResponds = candidateResponds
+        var candidatePolicyConfig = {
+            policySnapshot: aiTrainingState.evaluationActive ? aiLearning.policy : null,
+            learningEnabled: aiTrainingState.evaluationActive == false,
+            explorationEnabled: aiTrainingState.evaluationActive == false,
+            explorationScale: curriculumStage.explorationScale,
+        }
+        var opponentPolicyConfig = {
+            policySnapshot: opponentPolicy,
+            learningEnabled: false,
+            explorationEnabled: false,
+        }
+        var probeSide = candidateResponds ? opponentSide : candidateSide
+        var responderSide = getOpponentSide(probeSide)
+        var probePolicyConfig = probeSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
+        var responderPolicyConfig = responderSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
+        aiTrainingSelfPlaySetup = {
+            probeSide: probeSide,
+            responderSide: responderSide,
+            probePolicyConfig: probePolicyConfig,
+            responderPolicyConfig: responderPolicyConfig,
+        }
     }
-    var opponentPolicyConfig = {
-        policySnapshot: opponentPolicy,
-        learningEnabled: false,
-        explorationEnabled: false,
+    var setup = aiTrainingSelfPlaySetup
+    var probeSummary = primeAITrainingTrueSelfPlayContext(setup.probeSide, null, setup.probePolicyConfig)
+    if(!probeSummary) {
+        aiTrainingState.trueSelfPlaySetupPending = true
+        return false
     }
-    var probeSide = candidateResponds ? opponentSide : candidateSide
-    var responderSide = getOpponentSide(probeSide)
-    var probePolicyConfig = probeSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
-    var responderPolicyConfig = responderSide == candidateSide ? candidatePolicyConfig : opponentPolicyConfig
-    var probeSummary = primeAITrainingTrueSelfPlayContext(probeSide, null, probePolicyConfig)
-    primeAITrainingTrueSelfPlayContext(responderSide, probeSummary, responderPolicyConfig)
+    var responderSummary = primeAITrainingTrueSelfPlayContext(setup.responderSide, probeSummary, setup.responderPolicyConfig)
+    if(!responderSummary) {
+        aiTrainingState.trueSelfPlaySetupPending = true
+        return false
+    }
+    aiTrainingState.trueSelfPlaySetupPending = false
+    aiTrainingSelfPlaySetup = null
     registerAITrainingTrueSelfPlaySelections()
+    return true
 }
 
-function launchAITrainingTrueSelfPlayMatch() {
-    resetAITrainingTrueSelfPlayMatchState()
+function finishAITrainingTrueSelfPlayLaunch() {
     resetAITrainingTrueSelfPlayProgressWatchdog()
-    prepareAITrainingTrueSelfPlayContexts()
     var leftContext = aiContextsBySide[PLAYER_SIDE.left]
     var rightContext = aiContextsBySide[PLAYER_SIDE.right]
     p1Towers = leftContext.aiDesiredLoadoutTowers.slice(0)
@@ -1254,6 +1290,17 @@ function launchAITrainingTrueSelfPlayMatch() {
     aiTrainingState.trueSelfPlayDiscardCurrentMatch = false
     aiTrainingState.trueSelfPlayMatchFinalized = false
     aiTrainingState.trueSelfPlayPendingRestartAt = 0
+    aiTrainingState.trueSelfPlaySetupPending = false
+}
+
+function launchAITrainingTrueSelfPlayMatch() {
+    resetAITrainingTrueSelfPlayMatchState()
+    if(prepareAITrainingTrueSelfPlayContexts() == false) {
+        aiTrainingState.trueSelfPlaySetupPending = true
+        return false
+    }
+    finishAITrainingTrueSelfPlayLaunch()
+    return true
 }
 
 function recordAITrainingTrueSelfPlayMatchResult() {
@@ -1353,6 +1400,7 @@ function stopAITrainingTrueSelfPlay(openDashboardAfterStop) {
     resetAITrainingSimulationFrameStep()
     resetAITrainingTrueSelfPlayProgressWatchdog()
     clearAIContexts()
+    aiTrainingSelfPlaySetup = null
     aiEnabled = false
     resetAITrainingTrueSelfPlayMatchState()
     selectedMenuMode = ""
@@ -1399,6 +1447,10 @@ function startAITrainingTrueSelfPlay() {
 function tickAITrainingTrueSelfPlayLifecycle() {
     syncAITrainingSaveState()
     if(isAITrainingTrueSelfPlayActive() == false) {
+        return
+    }
+    if(aiTrainingState.trueSelfPlaySetupPending) {
+        if(prepareAITrainingTrueSelfPlayContexts()) finishAITrainingTrueSelfPlayLaunch()
         return
     }
     syncAITrainingTrueSelfPlayProgressWatchdog()
@@ -1898,6 +1950,9 @@ startVsAIGameSetup = function(side) {
 var baseTickAIControllers = tickAIControllers
 tickAIControllers = function() {
     if(aiEnabled == false) {
+        return
+    }
+    if(isAITrainingTrueSelfPlayActive() && aiTrainingState.trueSelfPlaySetupPending) {
         return
     }
     if(isAITrainingTrueSelfPlayActive()) {

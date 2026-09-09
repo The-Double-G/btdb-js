@@ -33,6 +33,12 @@ var aiProfile = {
     tacticalTrace: [],
     placementOutcomes: {},
     placementSamples: [],
+    placementInference: null,
+    crosspathInference: null,
+    loadoutInference: null,
+    aimInference: null,
+    targetPriorityInference: null,
+    workerDecisionPending: false,
     observedLivesBySide: {},
     observedLivesLostBySide: {},
     decisionMemory: [],
@@ -158,6 +164,12 @@ var aiLearningLastRefreshSucceeded = false
 var aiLoadoutLibraryReady = false
 var aiLoadoutLibrary = []
 var aiLoadoutsByKey = {}
+var aiInferenceWorker = null
+var aiInferenceWorkerDisabled = false
+var aiInferenceWorkerNextRequestId = 1
+var aiInferenceWorkerPending = {}
+var aiInferenceWorkerPolicy = null
+var aiInferenceWorkerPolicyEpoch = 0
 var aiTickState = {
     lastLogicAt: 0,
     lastCursorAt: 0,
@@ -204,6 +216,96 @@ var aiCurrentStrategy = null
 var aiMatchTelemetry = null
 var aiStrategySelection = null
 var localMatchCollectionState = null
+
+function disableAIInferenceWorker(error) {
+    aiInferenceWorkerDisabled = true
+    if(aiInferenceWorker) {
+        aiInferenceWorker.terminate()
+        aiInferenceWorker = null
+    }
+    aiInferenceWorkerPolicy = null
+    for(var requestId in aiInferenceWorkerPending) {
+        var pendingRequest = aiInferenceWorkerPending[requestId]
+        delete aiInferenceWorkerPending[requestId]
+        if(pendingRequest && typeof pendingRequest.onError == "function") pendingRequest.onError(error)
+    }
+}
+
+function getAIInferenceWorker() {
+    if(aiInferenceWorkerDisabled || AI_IS_LOCAL_RUNTIME || typeof Worker != "function" || typeof document == "undefined" || (document.location.protocol != "http:" && document.location.protocol != "https:")) {
+        return null
+    }
+    if(aiInferenceWorker) {
+        return aiInferenceWorker
+    }
+
+    try {
+        aiInferenceWorker = new Worker(new URL("js/ai-inference-worker.js?schema=14&rev=20260909-worker", document.baseURI))
+        aiInferenceWorker.onmessage = function(event) {
+            var message = event.data || {}
+            var pendingRequest = aiInferenceWorkerPending[message.requestId]
+            if(!pendingRequest) return
+            delete aiInferenceWorkerPending[message.requestId]
+            if(message.policyEpoch != pendingRequest.policyEpoch) {
+                if(typeof pendingRequest.onError == "function") pendingRequest.onError(new Error("AI inference response is stale"))
+                return
+            }
+            if(message.type == "error" || !Array.isArray(message.scores) || message.scores.length != pendingRequest.candidateCount) {
+                if(typeof pendingRequest.onError == "function") pendingRequest.onError(new Error(message.message || "AI inference response is invalid"))
+                return
+            }
+            pendingRequest.onResult(message.scores)
+        }
+        aiInferenceWorker.onerror = function(error) {
+            disableAIInferenceWorker(error)
+        }
+    } catch(error) {
+        disableAIInferenceWorker(error)
+        return null
+    }
+    return aiInferenceWorker
+}
+
+function requestAIInferenceBatch(familyIndex, stateFeatures, memoryIn, candidates, onResult, onError) {
+    var worker = getAIInferenceWorker()
+    if(!worker || !Array.isArray(candidates) || candidates.length <= 0) {
+        return 0
+    }
+    var policy = getAIPolicyForDecision()
+    if(!isValidAIPolicy(policy)) {
+        return 0
+    }
+    var policyChanged = aiInferenceWorkerPolicy != policy
+    if(policyChanged) {
+        aiInferenceWorkerPolicy = policy
+        aiInferenceWorkerPolicyEpoch++
+    }
+    var requestId = aiInferenceWorkerNextRequestId++
+    aiInferenceWorkerPending[requestId] = {
+        policy: policy,
+        policyEpoch: aiInferenceWorkerPolicyEpoch,
+        candidateCount: candidates.length,
+        onResult: onResult,
+        onError: onError,
+    }
+    try {
+        worker.postMessage({
+            type: "score",
+            requestId: requestId,
+            policyEpoch: aiInferenceWorkerPolicyEpoch,
+            policy: policyChanged ? policy.decision : null,
+            familyIndex: familyIndex,
+            stateFeatures: stateFeatures,
+            memoryIn: memoryIn,
+            candidates: candidates,
+        })
+    } catch(error) {
+        delete aiInferenceWorkerPending[requestId]
+        if(typeof onError == "function") onError(error)
+        return 0
+    }
+    return requestId
+}
 
 function createLocalMatchSideTelemetry() {
     return {
@@ -412,6 +514,12 @@ function resetAIProfile() {
     aiProfile.tacticalTrace = []
     aiProfile.placementOutcomes = {}
     aiProfile.placementSamples = []
+    aiProfile.placementInference = null
+    aiProfile.crosspathInference = null
+    aiProfile.loadoutInference = null
+    aiProfile.aimInference = null
+    aiProfile.targetPriorityInference = null
+    aiProfile.workerDecisionPending = false
     aiProfile.observedLivesBySide = {}
     aiProfile.observedLivesLostBySide = {}
     aiProfile.decisionMemory = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
@@ -457,6 +565,7 @@ function startLocalGameSetup() {
 }
 
 function startVsAIGameSetup(side) {
+    ensureAILearningLoaded()
     selectedMenuMode = "vs-ai"
     frontMenuState = "pregame"
     humanSide = side
@@ -773,6 +882,88 @@ function getAILoadoutCoverageBonus(loadoutKey) {
     return 0
 }
 
+function getAILoadoutInferenceState() {
+    if(!aiProfile.loadoutInference) {
+        aiProfile.loadoutInference = { pending: {}, results: {} }
+    }
+    return aiProfile.loadoutInference
+}
+
+function getAILoadoutInferenceKey(observedLoadoutSummary) {
+    return [aiSide, observedLoadoutSummary && observedLoadoutSummary.signature || "", getCurrentVisibleRound(), getCurrentAIStrategyId()].join("|")
+}
+
+function chooseAILoadoutWithWorker(observedLoadoutSummary) {
+    if(!getAIInferenceWorker()) return { supported: false, loadout: null }
+    var inferenceState = getAILoadoutInferenceState()
+    var inferenceKey = getAILoadoutInferenceKey(observedLoadoutSummary)
+    var policy = getAIPolicyForDecision()
+    var completed = inferenceState.results[inferenceKey]
+    if(completed && completed.policy == policy) {
+        delete inferenceState.results[inferenceKey]
+        var bestCompleted = null
+        for(var completedIndex = 0; completedIndex < completed.candidates.length; completedIndex++) {
+            var completedCandidate = completed.candidates[completedIndex]
+            var completedScore = completed.scores[completedIndex] + completedCandidate.counterLearningBonus + completedCandidate.performanceBonus + completedCandidate.explorationBonus + completedCandidate.coverageBonus + completedCandidate.humanTacticalBonus + completedCandidate.explorationNoise
+            var completedDecision = { id: completedCandidate.id, score: completedScore }
+            if(!bestCompleted || isAIDecisionScoreBetter(completedDecision, bestCompleted.decision)) bestCompleted = { candidate: completedCandidate, neuralScore: completed.scores[completedIndex], decision: completedDecision }
+        }
+        if(!bestCompleted) return { supported: true, loadout: null }
+        var bestMetadata = Object.assign({}, bestCompleted.candidate.metadata, { candidateFeatures: bestCompleted.candidate.features, explorationNoise: bestCompleted.candidate.explorationNoise, memoryIn: completed.memoryIn })
+        var decision = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.loadout, bestMetadata, null, completed.stateFeatures)
+        decision.score = bestCompleted.decision.score
+        decision.neuralScore = bestCompleted.neuralScore
+        var loadout = bestCompleted.candidate.loadout
+        return { supported: true, loadout: { key: loadout.key, towers: loadout.towers.slice(0), boosts: loadout.boosts.slice(0), summary: loadout.summary, decisionSample: decision } }
+    }
+
+    var pending = inferenceState.pending[inferenceKey]
+    if(pending && pending.policy == policy) return { supported: true, loadout: null }
+    var stateFeatures = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.loadout, null, observedLoadoutSummary ? getObservedLoadoutFeatureVector(observedLoadoutSummary) : null)
+    var workerCandidates = []
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, policy.decision.trainingSamples[AI_DECISION_FAMILY.loadout] || 0)) : 0
+    for(var candidateIndex = 0; candidateIndex < aiLoadoutLibrary.length; candidateIndex++) {
+        var loadout = aiLoadoutLibrary[candidateIndex]
+        var summary = loadout.summary
+        var metadata = {
+            id: loadout.key,
+            type: summary.towerTypes.join(","),
+            role: summary.boostImages.join(","),
+            actionKey: "loadout|" + loadout.key,
+            index: candidateIndex,
+            maxIndex: Math.max(1, aiLoadoutLibrary.length - 1),
+            count: summary.filledTowerSlots + summary.filledBoostSlots,
+            countScale: 5,
+            loadoutSummary: summary,
+            capabilityFacts: getAILoadoutCapabilityFacts(loadout.towers, loadout.boosts, typeof getCurrentVisibleRound == "function" ? getCurrentVisibleRound() : 1),
+        }
+        var explorationNoise = aiRandomWeight(explorationScale)
+        workerCandidates.push({
+            id: getAIStableCandidateId(AI_DECISION_FAMILY.loadout, metadata),
+            loadout: loadout,
+            metadata: metadata,
+            features: buildAIDecisionCandidateFeatures(aiSide, AI_DECISION_FAMILY.loadout, metadata),
+            counterLearningBonus: getAILoadoutCounterLearningBonus(loadout.key, observedLoadoutSummary),
+            performanceBonus: getAILoadoutPerformanceBonus(loadout.key),
+            explorationBonus: getAILoadoutExplorationBonus(loadout.key),
+            coverageBonus: getAILoadoutCoverageBonus(loadout.key),
+            humanTacticalBonus: getAIHumanTacticalCandidateBonus(aiSide, AI_DECISION_FAMILY.loadout, metadata),
+            explorationNoise: explorationNoise,
+        })
+    }
+    var requestCandidates = workerCandidates.map(function(candidate) { return candidate.features })
+    var requestId = requestAIInferenceBatch(AI_DECISION_FAMILY.loadout, stateFeatures, getAIDecisionMemory().slice(0), requestCandidates, function(scores) {
+        if(!inferenceState.pending[inferenceKey] || inferenceState.pending[inferenceKey].requestId != requestId) return
+        var active = inferenceState.pending[inferenceKey]
+        delete inferenceState.pending[inferenceKey]
+        inferenceState.results[inferenceKey] = { policy: active.policy, stateFeatures: active.stateFeatures, memoryIn: active.memoryIn, candidates: active.candidates, scores: scores }
+    }, function() {
+        if(inferenceState.pending[inferenceKey] && inferenceState.pending[inferenceKey].requestId == requestId) delete inferenceState.pending[inferenceKey]
+    })
+    if(requestId) inferenceState.pending[inferenceKey] = { requestId: requestId, policy: policy, stateFeatures: stateFeatures, memoryIn: getAIDecisionMemory().slice(0), candidates: workerCandidates }
+    return { supported: true, loadout: null }
+}
+
 function getAILoadoutCounterLearningBonus(loadoutKey, observedLoadoutSummary) {
     ensureAILearningLoaded()
     if(!observedLoadoutSummary || observedLoadoutSummary.hasAnySelection == false || observedLoadoutSummary.signature == "||") {
@@ -791,6 +982,8 @@ function chooseAILoadoutForMatch(observedLoadoutSummary) {
         }
     }
     ensureAILearningLoaded()
+    var workerLoadout = chooseAILoadoutWithWorker(observedLoadoutSummary)
+    if(workerLoadout.supported) return workerLoadout.loadout
     var scoredLoadouts = []
     for(var i = 0; i < aiLoadoutLibrary.length; i++) {
         var loadout = aiLoadoutLibrary[i]
@@ -1612,7 +1805,7 @@ function refreshAILearningFromBackend(forceModelInstall) {
 
     aiPersistenceState.restoreRequested = true
     aiPersistenceState.loadInFlight = true
-    aiLearningRefreshPromise = fetch(AI_LEARNING_ENDPOINT + "&t=" + realNow(), { cache: "no-store", credentials: "same-origin" }).then(function(response) {
+    aiLearningRefreshPromise = fetch(AI_LEARNING_ENDPOINT, { cache: "no-cache", credentials: "same-origin" }).then(function(response) {
         if(response.ok == false) {
             throw new Error("Backend load failed: " + response.status)
         }
@@ -2726,11 +2919,13 @@ function scoreAIDecisionCandidate(side, familyIndex, metadata, matchup, stateFea
     metadata = metadata || {}
     var stableId = getAIStableCandidateId(familyIndex, metadata)
     var resolvedState = stateFeatures || buildAIDecisionStateFeatures(side, familyIndex, matchup, metadata.contextFeatures)
-    var candidateFeatures = buildAIDecisionCandidateFeatures(side, familyIndex, metadata)
-    var memoryIn = getAIDecisionMemory()
+    var candidateFeatures = Array.isArray(metadata.candidateFeatures) ? metadata.candidateFeatures.slice(0) : buildAIDecisionCandidateFeatures(side, familyIndex, metadata)
+    var memoryIn = Array.isArray(metadata.memoryIn) ? metadata.memoryIn.slice(0) : getAIDecisionMemory()
     var forward = aiDecisionForward(resolvedState, candidateFeatures, familyIndex, memoryIn, policyOverride)
     var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, (policyOverride || getAIPolicyForDecision()).decision.trainingSamples[familyIndex] || 0)) : 0
     var humanTacticalBonus = getAIHumanTacticalCandidateBonus(side, familyIndex, metadata)
+    var explorationNoise = Number(metadata.explorationNoise)
+    if(Number.isFinite(explorationNoise) == false) explorationNoise = aiRandomWeight(explorationScale)
     var result = {
         id: stableId,
         side: side,
@@ -2741,7 +2936,7 @@ function scoreAIDecisionCandidate(side, familyIndex, metadata, matchup, stateFea
         memoryOut: forward ? forward.memoryOut : memoryIn.slice(0),
         neuralScore: forward ? forward.score : 0,
         humanTacticalBonus: humanTacticalBonus,
-        score: (forward ? forward.score : 0) + humanTacticalBonus + aiRandomWeight(explorationScale),
+        score: (forward ? forward.score : 0) + humanTacticalBonus + explorationNoise,
     }
     if(!Array.isArray(resolvedState.aiCandidateBatch)) {
         Object.defineProperty(resolvedState, "aiCandidateBatch", { value: [], configurable: true })
@@ -5122,8 +5317,7 @@ function ensureAIPregameLoadoutPlanReady() {
         return false
     }
 
-    prepareAIStrategyForMatch(aiProfile.loadoutObservedAny ? observedLoadoutSummary : null)
-    return true
+    return prepareAIStrategyForMatch(aiProfile.loadoutObservedAny ? observedLoadoutSummary : null) === true
 }
 
 function runAIPregameSelection(side) {
@@ -5410,6 +5604,124 @@ function getAISpotScore(side, x, y, radius, range, role, offsetIndex, towerType,
     return score
 }
 
+function getAIPlacementInferenceState() {
+    if(!aiProfile.placementInference) {
+        aiProfile.placementInference = { pending: {}, results: {} }
+    }
+    return aiProfile.placementInference
+}
+
+function getAIPlacementInferenceKey(side, radius, range, role, offsetIndex, towerType, intentSignature) {
+    return [side, mapNumber, radius, range, role, Math.floor(Number(offsetIndex) || 0), towerType, intentSignature || "", getCurrentAIStrategyId()].join("|")
+}
+
+function findAIPlacementWithWorker(side, radius, range, role, offsetIndex, towerType, matchup, normalizedIntent, intentSignature, candidates, stateFeatures) {
+    if(!getAIInferenceWorker()) {
+        return { supported: false, spot: null }
+    }
+
+    var inferenceState = getAIPlacementInferenceState()
+    var inferenceKey = getAIPlacementInferenceKey(side, radius, range, role, offsetIndex, towerType, intentSignature)
+    var policy = getAIPolicyForDecision()
+    var completed = inferenceState.results[inferenceKey]
+    if(completed && completed.policy == policy) {
+        delete inferenceState.results[inferenceKey]
+        var bestCompleted = null
+        for(var completedIndex = 0; completedIndex < completed.candidates.length; completedIndex++) {
+            var completedCandidate = completed.candidates[completedIndex]
+            if(!canPlaceTowerAt(side, completedCandidate.x, completedCandidate.y, radius)) continue
+            var completedScore = completed.scores[completedIndex] + completedCandidate.humanTacticalBonus + completedCandidate.explorationNoise + completedCandidate.spotBonus
+            var completedDecision = { id: completedCandidate.id, score: completedScore }
+            if(!bestCompleted || isAIDecisionScoreBetter(completedDecision, bestCompleted.decision)) {
+                bestCompleted = { candidate: completedCandidate, neuralScore: completed.scores[completedIndex], decision: completedDecision }
+            }
+        }
+        if(!bestCompleted) return { supported: true, spot: null }
+        var bestMetadata = Object.assign({}, bestCompleted.candidate.metadata, {
+            candidateFeatures: bestCompleted.candidate.features,
+            explorationNoise: bestCompleted.candidate.explorationNoise,
+            memoryIn: completed.memoryIn,
+        })
+        var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, bestMetadata, matchup, completed.stateFeatures)
+        decision.score = bestCompleted.decision.score
+        decision.neuralScore = bestCompleted.neuralScore
+        return {
+            supported: true,
+            spot: {
+                x: bestCompleted.candidate.x,
+                y: bestCompleted.candidate.y,
+                intentTiers: normalizedIntent,
+                intentSignature: intentSignature,
+                decisionSample: decision,
+            },
+        }
+    }
+
+    var pending = inferenceState.pending[inferenceKey]
+    if(pending && pending.policy == policy) {
+        aiProfile.workerDecisionPending = true
+        return { supported: true, spot: null }
+    }
+
+    var workerCandidates = []
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, policy.decision.trainingSamples[AI_DECISION_FAMILY.placement] || 0)) : 0
+    for(var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+        var candidate = candidates[candidateIndex]
+        var metadata = {
+            id: [mapNumber, towerType, role, Math.round(candidate.x), Math.round(candidate.y), intentSignature ? "i" + intentSignature : ""].join("|"),
+            type: towerType,
+            role: role,
+            actionKey: "place|" + towerType + "|" + role + (intentSignature ? "|" + intentSignature : ""),
+            cost: towerType == "farmer" ? baseFarmerPrice : getBaseTowerPriceByType(towerType),
+            money: Math.max(1, players[side].money),
+            x: candidate.x,
+            y: candidate.y,
+            placementGeometry: true,
+            intentTiers: normalizedIntent,
+            range: range,
+            index: candidateIndex,
+            maxIndex: Math.max(1, candidates.length - 1),
+        }
+        var explorationNoise = aiRandomWeight(explorationScale)
+        workerCandidates.push({
+            id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, metadata),
+            x: candidate.x,
+            y: candidate.y,
+            metadata: metadata,
+            features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, metadata),
+            humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, metadata),
+            explorationNoise: explorationNoise,
+            spotBonus: clamp(getAISpotScore(side, candidate.x, candidate.y, radius, range, role, offsetIndex, towerType, matchup, intentSignature) / 106, -1, 1) * 0.08,
+        })
+    }
+    var requestCandidates = workerCandidates.map(function(candidate) { return candidate.features })
+    var requestId = requestAIInferenceBatch(AI_DECISION_FAMILY.placement, stateFeatures, getAIDecisionMemory().slice(0), requestCandidates, function(scores) {
+        if(!inferenceState.pending[inferenceKey] || inferenceState.pending[inferenceKey].requestId != requestId) return
+        var active = inferenceState.pending[inferenceKey]
+        delete inferenceState.pending[inferenceKey]
+        inferenceState.results[inferenceKey] = {
+            policy: active.policy,
+            stateFeatures: active.stateFeatures,
+            memoryIn: active.memoryIn,
+            candidates: active.candidates,
+            scores: scores,
+        }
+    }, function() {
+        if(inferenceState.pending[inferenceKey] && inferenceState.pending[inferenceKey].requestId == requestId) delete inferenceState.pending[inferenceKey]
+    })
+    if(requestId) {
+        aiProfile.workerDecisionPending = true
+        inferenceState.pending[inferenceKey] = {
+            requestId: requestId,
+            policy: policy,
+            stateFeatures: stateFeatures,
+            memoryIn: getAIDecisionMemory().slice(0),
+            candidates: workerCandidates,
+        }
+    }
+    return { supported: true, spot: null }
+}
+
 function findAISpot(side, radius, range, role, offsetIndex, towerType, intentTiers) {
     var bounds = getSideBounds(side, radius)
     var step = role == "farm" || role == "farmer" ? 28 : 32
@@ -5439,6 +5751,10 @@ function findAISpot(side, radius, range, role, offsetIndex, towerType, intentTie
     }
 
     var stateFeatures = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.placement, matchup)
+    var workerPlacement = findAIPlacementWithWorker(side, radius, range, role, offsetIndex, towerType, matchup, normalizedIntent, intentSignature, candidates, stateFeatures)
+    if(workerPlacement.supported) {
+        return workerPlacement.spot
+    }
     var bestCandidate = null
     for(var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
         var candidate = candidates[candidateIndex]
@@ -6728,6 +7044,134 @@ function runAICursor() {
     }
 }
 
+function getAIAimInferenceState() {
+    if(!aiProfile.aimInference) {
+        aiProfile.aimInference = { pending: {}, results: {} }
+    }
+    return aiProfile.aimInference
+}
+
+function getAIAimInferenceKey(side, aimTowers) {
+    return [side, mapNumber, aimTowers.map(function(tower) { return tower.towerID }).join(","), bloons.map(function(bloon, index) { return (bloon && bloon.bloonID) || index }).join(","), getCurrentAIStrategyId()].join("|")
+}
+
+function getAIAimOptionWithWorker(side, matchup, decisionState, aimTowers) {
+    if(!getAIInferenceWorker()) {
+        return { supported: false, option: null }
+    }
+
+    var inferenceState = getAIAimInferenceState()
+    var inferenceKey = getAIAimInferenceKey(side, aimTowers)
+    var policy = getAIPolicyForDecision()
+    var completed = inferenceState.results[inferenceKey]
+    if(completed && completed.policy == policy) {
+        delete inferenceState.results[inferenceKey]
+        var choicesByTower = {}
+        var bestNoOp = null
+        for(var completedIndex = 0; completedIndex < completed.candidates.length; completedIndex++) {
+            var completedCandidate = completed.candidates[completedIndex]
+            var completedScore = completed.scores[completedIndex] + completedCandidate.humanTacticalBonus + completedCandidate.explorationNoise
+            var completedDecision = { id: completedCandidate.id, score: completedScore }
+            var towerChoice = choicesByTower[completedCandidate.towerID]
+            if(!towerChoice) towerChoice = choicesByTower[completedCandidate.towerID] = { noOp: null, action: null }
+            var choice = { candidate: completedCandidate, neuralScore: completed.scores[completedIndex], decision: completedDecision }
+            if(completedCandidate.optionType == "noop") {
+                if(!towerChoice.noOp || isAIDecisionScoreBetter(completedDecision, towerChoice.noOp.decision)) towerChoice.noOp = choice
+                if(!bestNoOp || isAIDecisionScoreBetter(completedDecision, bestNoOp.decision)) bestNoOp = choice
+            } else if(!towerChoice.action || isAIDecisionScoreBetter(completedDecision, towerChoice.action.decision)) {
+                towerChoice.action = choice
+            }
+        }
+
+        var selectedTowers = []
+        var targetByTowerID = {}
+        var typeByTowerID = {}
+        var decisionSamples = []
+        for(var towerIndex = 0; towerIndex < aimTowers.length; towerIndex++) {
+            var aimTower = aimTowers[towerIndex]
+            var towerChoice = choicesByTower[aimTower.towerID]
+            if(!towerChoice || !towerChoice.noOp || !towerChoice.action || !isAIDecisionScoreBetter(towerChoice.action.decision, towerChoice.noOp.decision)) continue
+            var selectedCandidate = towerChoice.action.candidate
+            var selectedMetadata = Object.assign({}, selectedCandidate.metadata, {
+                candidateFeatures: selectedCandidate.features,
+                explorationNoise: selectedCandidate.explorationNoise,
+                memoryIn: completed.memoryIn,
+            })
+            var selectedDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, selectedMetadata, matchup, completed.stateFeatures)
+            selectedDecision.score = towerChoice.action.decision.score
+            selectedDecision.neuralScore = towerChoice.action.neuralScore
+            selectedTowers.push(aimTower)
+            targetByTowerID[aimTower.towerID] = { x: selectedCandidate.targetX, y: selectedCandidate.targetY }
+            typeByTowerID[aimTower.towerID] = selectedCandidate.optionType
+            decisionSamples.push(selectedDecision)
+        }
+        if(selectedTowers.length == 0) {
+            if(!bestNoOp) return { supported: true, option: { type: "noop", decisionSample: null } }
+            var noOpMetadata = Object.assign({}, bestNoOp.candidate.metadata, {
+                candidateFeatures: bestNoOp.candidate.features,
+                explorationNoise: bestNoOp.candidate.explorationNoise,
+                memoryIn: completed.memoryIn,
+            })
+            var noOpDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, noOpMetadata, matchup, completed.stateFeatures)
+            noOpDecision.score = bestNoOp.decision.score
+            noOpDecision.neuralScore = bestNoOp.neuralScore
+            return { supported: true, option: { type: "noop", decisionSample: noOpDecision } }
+        }
+        var firstTarget = targetByTowerID[selectedTowers[0].towerID]
+        return {
+            supported: true,
+            option: {
+                type: "aim",
+                aimType: typeByTowerID[selectedTowers[0].towerID],
+                aimTowers: selectedTowers,
+                targetByTowerID: targetByTowerID,
+                typeByTowerID: typeByTowerID,
+                x: firstTarget.x,
+                y: firstTarget.y,
+                decisionSample: decisionSamples[0],
+                decisionSamples: decisionSamples,
+            },
+        }
+    }
+
+    var pending = inferenceState.pending[inferenceKey]
+    if(pending && pending.policy == policy) {
+        aiProfile.workerDecisionPending = true
+        return { supported: true, option: null }
+    }
+
+    var workerCandidates = []
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, policy.decision.trainingSamples[AI_DECISION_FAMILY.placement] || 0)) : 0
+    for(var towerIndex = 0; towerIndex < aimTowers.length; towerIndex++) {
+        var tower = aimTowers[towerIndex]
+        var noOpMetadata = { id: "aim|noop|" + tower.towerID, type: "aim|noop", actionKey: "aim|noop", tower: tower, count: 1, countScale: 8, noop: true }
+        workerCandidates.push({ towerID: tower.towerID, optionType: "noop", targetX: players[side].cursor.x, targetY: players[side].cursor.y, id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, noOpMetadata), metadata: noOpMetadata, features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, noOpMetadata), humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, noOpMetadata), explorationNoise: aiRandomWeight(explorationScale) })
+        var followMetadata = { id: "aim|follow|" + tower.towerID, type: "aim|follow", actionKey: "aim|follow", tower: tower, count: 1, countScale: 8, manualFollow: true }
+        workerCandidates.push({ towerID: tower.towerID, optionType: "follow", targetX: players[side].cursor.x, targetY: players[side].cursor.y, id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, followMetadata), metadata: followMetadata, features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, followMetadata), humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, followMetadata), explorationNoise: aiRandomWeight(explorationScale) })
+        for(var bloonIndex = 0; bloonIndex < bloons.length; bloonIndex++) {
+            var bloon = bloons[bloonIndex]
+            if(!bloon || bloon.playerSide != side) continue
+            var lockMetadata = { id: "aim|lock|" + tower.towerID + "|" + bloon.bloonID, type: "aim|lock|" + bloon.health, actionKey: "aim|lock", tower: tower, x: bloon.x, y: bloon.y, position: clamp((Number(bloon.pathPos) || 0) / 100, 0, 1), count: Math.max(0, Number(bloon.health) || 0), countScale: 1000, targetBloon: bloon, targetProgress: clamp((Number(bloon.pathPos) || 0) / 100, 0, 1), targetHealth: Math.max(0, Number(bloon.health) || 0), manualLock: true }
+            workerCandidates.push({ towerID: tower.towerID, optionType: "lock", targetX: bloon.x, targetY: bloon.y, id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, lockMetadata), metadata: lockMetadata, features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, lockMetadata), humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, lockMetadata), explorationNoise: aiRandomWeight(explorationScale) })
+        }
+    }
+    var requestCandidates = workerCandidates.map(function(candidate) { return candidate.features })
+    var requestId = requestAIInferenceBatch(AI_DECISION_FAMILY.placement, decisionState, getAIDecisionMemory().slice(0), requestCandidates, function(scores) {
+        if(!inferenceState.pending[inferenceKey] || inferenceState.pending[inferenceKey].requestId != requestId) return
+        var active = inferenceState.pending[inferenceKey]
+        delete inferenceState.pending[inferenceKey]
+        inferenceState.results[inferenceKey] = { policy: active.policy, stateFeatures: active.stateFeatures, memoryIn: active.memoryIn, candidates: active.candidates, scores: scores }
+    }, function() {
+        if(inferenceState.pending[inferenceKey] && inferenceState.pending[inferenceKey].requestId == requestId) delete inferenceState.pending[inferenceKey]
+    })
+    if(requestId) {
+        aiProfile.workerDecisionPending = true
+        inferenceState.pending[inferenceKey] = { requestId: requestId, policy: policy, stateFeatures: decisionState, memoryIn: getAIDecisionMemory().slice(0), candidates: workerCandidates
+        }
+    }
+    return { supported: true, option: null }
+}
+
 function getBestAIAimingOption(side) {
     if(gameStarted == false || aiProfile.manualAimAction) {
         return null
@@ -6740,6 +7184,8 @@ function getBestAIAimingOption(side) {
 
     var matchup = getCurrentPlayerMatchupStyle(side)
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.placement, matchup)
+    var workerOption = getAIAimOptionWithWorker(side, matchup, decisionState, aimTowers)
+    if(workerOption.supported) return workerOption.option
     var selectedTowers = []
     var targetByTowerID = {}
     var typeByTowerID = {}
@@ -6811,12 +7257,116 @@ function getBestAIAimingOption(side) {
     }
 }
 
+function getAITargetPriorityInferenceState() {
+    if(!aiProfile.targetPriorityInference) {
+        aiProfile.targetPriorityInference = { pending: {}, results: {} }
+    }
+    return aiProfile.targetPriorityInference
+}
+
+function getAITargetPriorityInferenceKey(side, priorityTowers) {
+    return [side, mapNumber, priorityTowers.map(function(tower) { return tower.towerID + ":" + tower.targetPrio }).join(","), getCurrentAIStrategyId()].join("|")
+}
+
+function getAITargetPriorityOptionWithWorker(side, matchup, decisionState, priorityTowers) {
+    if(!getAIInferenceWorker()) return { supported: false, option: null }
+
+    var inferenceState = getAITargetPriorityInferenceState()
+    var inferenceKey = getAITargetPriorityInferenceKey(side, priorityTowers)
+    var policy = getAIPolicyForDecision()
+    var completed = inferenceState.results[inferenceKey]
+    if(completed && completed.policy == policy) {
+        delete inferenceState.results[inferenceKey]
+        var choicesByTower = {}
+        for(var completedIndex = 0; completedIndex < completed.candidates.length; completedIndex++) {
+            var completedCandidate = completed.candidates[completedIndex]
+            var completedScore = completed.scores[completedIndex] + completedCandidate.humanTacticalBonus + completedCandidate.explorationNoise
+            var completedDecision = { id: completedCandidate.id, score: completedScore }
+            var towerChoice = choicesByTower[completedCandidate.towerID]
+            if(!towerChoice) towerChoice = choicesByTower[completedCandidate.towerID] = { noOp: null, action: null }
+            var choice = { candidate: completedCandidate, neuralScore: completed.scores[completedIndex], decision: completedDecision }
+            if(completedCandidate.optionType == "noop") {
+                if(!towerChoice.noOp || isAIDecisionScoreBetter(completedDecision, towerChoice.noOp.decision)) towerChoice.noOp = choice
+            } else if(!towerChoice.action || isAIDecisionScoreBetter(completedDecision, towerChoice.action.decision)) {
+                towerChoice.action = choice
+            }
+        }
+
+        var selectedTowers = []
+        var targetPriorities = {}
+        var decisionSamples = []
+        for(var towerIndex = 0; towerIndex < priorityTowers.length; towerIndex++) {
+            var tower = priorityTowers[towerIndex]
+            var towerChoice = choicesByTower[tower.towerID]
+            if(!towerChoice || !towerChoice.noOp || !towerChoice.action || !isAIDecisionScoreBetter(towerChoice.action.decision, towerChoice.noOp.decision)) continue
+            var selectedCandidate = towerChoice.action.candidate
+            var selectedMetadata = Object.assign({}, selectedCandidate.metadata, { candidateFeatures: selectedCandidate.features, explorationNoise: selectedCandidate.explorationNoise, memoryIn: completed.memoryIn })
+            var selectedDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, selectedMetadata, matchup, completed.stateFeatures)
+            selectedDecision.score = towerChoice.action.decision.score
+            selectedDecision.neuralScore = towerChoice.action.neuralScore
+            selectedTowers.push(tower)
+            targetPriorities[tower.towerID] = selectedCandidate.priority
+            decisionSamples.push(selectedDecision)
+        }
+        if(selectedTowers.length == 0) {
+            var noOpCandidate = null
+            for(var noOpIndex = 0; noOpIndex < completed.candidates.length; noOpIndex++) {
+                var candidate = completed.candidates[noOpIndex]
+                if(candidate.optionType != "noop") continue
+                var candidateScore = completed.scores[noOpIndex] + candidate.humanTacticalBonus + candidate.explorationNoise
+                if(!noOpCandidate || candidateScore > noOpCandidate.score) noOpCandidate = { candidate: candidate, score: candidateScore, neuralScore: completed.scores[noOpIndex] }
+            }
+            if(!noOpCandidate) return { supported: true, option: { type: "noop", decisionSample: null } }
+            var noOpMetadata = Object.assign({}, noOpCandidate.candidate.metadata, { candidateFeatures: noOpCandidate.candidate.features, explorationNoise: noOpCandidate.candidate.explorationNoise, memoryIn: completed.memoryIn })
+            var noOpDecision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, noOpMetadata, matchup, completed.stateFeatures)
+            noOpDecision.score = noOpCandidate.score
+            noOpDecision.neuralScore = noOpCandidate.neuralScore
+            return { supported: true, option: { type: "noop", decisionSample: noOpDecision } }
+        }
+        return { supported: true, option: { type: "priority", towerIDs: selectedTowers.map(function(tower) { return tower.towerID }), targetPriorities: targetPriorities, decisionSamples: decisionSamples, decisionSample: decisionSamples[0] } }
+    }
+
+    var pending = inferenceState.pending[inferenceKey]
+    if(pending && pending.policy == policy) {
+        aiProfile.workerDecisionPending = true
+        return { supported: true, option: null }
+    }
+    var workerCandidates = []
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, policy.decision.trainingSamples[AI_DECISION_FAMILY.placement] || 0)) : 0
+    for(var towerIndex = 0; towerIndex < priorityTowers.length; towerIndex++) {
+        var tower = priorityTowers[towerIndex]
+        var noOpMetadata = { id: "priority|noop|" + tower.towerID, type: "aim|priority|noop", actionKey: "aim|noop", tower: tower, noop: true }
+        workerCandidates.push({ towerID: tower.towerID, optionType: "noop", priority: tower.targetPrio, id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, noOpMetadata), metadata: noOpMetadata, features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, noOpMetadata), humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, noOpMetadata), explorationNoise: aiRandomWeight(explorationScale) })
+        for(var priority = 0; priority <= 3; priority++) {
+            if(tower.targetPrio == priority) continue
+            var metadata = { id: "priority|" + tower.towerID + "|" + priority, type: "aim|priority|" + priority, actionKey: "aim|priority|" + tower.towerType + "|" + priority, tower: tower, count: priority, countScale: 3, index: priority, maxIndex: 3 }
+            workerCandidates.push({ towerID: tower.towerID, optionType: "priority", priority: priority, id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, metadata), metadata: metadata, features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, metadata), humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, metadata), explorationNoise: aiRandomWeight(explorationScale) })
+        }
+    }
+    var requestCandidates = workerCandidates.map(function(candidate) { return candidate.features })
+    var requestId = requestAIInferenceBatch(AI_DECISION_FAMILY.placement, decisionState, getAIDecisionMemory().slice(0), requestCandidates, function(scores) {
+        if(!inferenceState.pending[inferenceKey] || inferenceState.pending[inferenceKey].requestId != requestId) return
+        var active = inferenceState.pending[inferenceKey]
+        delete inferenceState.pending[inferenceKey]
+        inferenceState.results[inferenceKey] = { policy: active.policy, stateFeatures: active.stateFeatures, memoryIn: active.memoryIn, candidates: active.candidates, scores: scores }
+    }, function() {
+        if(inferenceState.pending[inferenceKey] && inferenceState.pending[inferenceKey].requestId == requestId) delete inferenceState.pending[inferenceKey]
+    })
+    if(requestId) {
+        aiProfile.workerDecisionPending = true
+        inferenceState.pending[inferenceKey] = { requestId: requestId, policy: policy, stateFeatures: decisionState, memoryIn: getAIDecisionMemory().slice(0), candidates: workerCandidates }
+    }
+    return { supported: true, option: null }
+}
+
 function getBestAITargetPriorityOption(side) {
     if(gameStarted == false || aiProfile.manualAimAction || aiProfile.targetPriorityAction) return null
     var priorityTowers = getAITargetPriorityTowers(side)
     if(priorityTowers.length == 0) return null
     var matchup = getCurrentPlayerMatchupStyle(side)
     var decisionState = buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.placement, matchup)
+    var workerOption = getAITargetPriorityOptionWithWorker(side, matchup, decisionState, priorityTowers)
+    if(workerOption.supported) return workerOption.option
     var selectedTowers = []
     var targetPriorities = {}
     var decisionSamples = []
@@ -7590,8 +8140,125 @@ function getCrosspathCandidatesForTowerType(towerType) {
     return candidates
 }
 
+function getAICrosspathInferenceState() {
+    if(!aiProfile.crosspathInference) {
+        aiProfile.crosspathInference = { pending: {}, results: {} }
+    }
+    return aiProfile.crosspathInference
+}
+
+function getAICrosspathInferenceKey(side, towerType, role) {
+    return [side, mapNumber, towerType, role, getCurrentAIStrategyId()].join("|")
+}
+
+function chooseAICrosspathWithWorker(side, towerType, role, matchup, stateFeatures, candidates) {
+    if(!getAIInferenceWorker()) {
+        return { supported: false, intent: null }
+    }
+
+    var inferenceState = getAICrosspathInferenceState()
+    var inferenceKey = getAICrosspathInferenceKey(side, towerType, role)
+    var policy = getAIPolicyForDecision()
+    var completed = inferenceState.results[inferenceKey]
+    if(completed && completed.policy == policy) {
+        delete inferenceState.results[inferenceKey]
+        var bestCompleted = null
+        for(var completedIndex = 0; completedIndex < completed.candidates.length; completedIndex++) {
+            var completedCandidate = completed.candidates[completedIndex]
+            var completedScore = completed.scores[completedIndex] + completedCandidate.humanTacticalBonus + completedCandidate.explorationNoise + completedCandidate.crosspathBonus
+            var completedDecision = { id: completedCandidate.id, score: completedScore }
+            if(!bestCompleted || isAIDecisionScoreBetter(completedDecision, bestCompleted.decision)) {
+                bestCompleted = { candidate: completedCandidate, neuralScore: completed.scores[completedIndex], decision: completedDecision }
+            }
+        }
+        if(!bestCompleted) return { supported: true, intent: null }
+        var bestMetadata = Object.assign({}, bestCompleted.candidate.metadata, {
+            candidateFeatures: bestCompleted.candidate.features,
+            explorationNoise: bestCompleted.candidate.explorationNoise,
+            memoryIn: completed.memoryIn,
+        })
+        var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, bestMetadata, matchup, completed.stateFeatures)
+        decision.score = bestCompleted.decision.score
+        decision.neuralScore = bestCompleted.neuralScore
+        return {
+            supported: true,
+            intent: {
+                intentTiers: bestCompleted.candidate.intentTiers.slice(0),
+                intentSignature: bestCompleted.candidate.intentSignature,
+                decisionSample: decision,
+            },
+        }
+    }
+
+    var pending = inferenceState.pending[inferenceKey]
+    if(pending && pending.policy == policy) {
+        aiProfile.workerDecisionPending = true
+        return { supported: true, intent: null }
+    }
+
+    var workerCandidates = []
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, policy.decision.trainingSamples[AI_DECISION_FAMILY.placement] || 0)) : 0
+    for(var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+        var intentTiers = candidates[candidateIndex]
+        var intentSignature = getAIUpgradeIntentSignature(intentTiers)
+        var metadata = {
+            id: "placement-intent|" + mapNumber + "|" + towerType + "|" + role + "|i" + intentSignature,
+            type: towerType,
+            role: role,
+            actionKey: "place|" + towerType + "|" + role + "|intent",
+            cost: getBaseTowerPriceByType(towerType),
+            money: Math.max(1, players[side].money),
+            intentTiers: intentTiers,
+            index: candidateIndex,
+            maxIndex: Math.max(1, candidates.length - 1),
+        }
+        var explorationNoise = aiRandomWeight(explorationScale)
+        var crosspathBonus = matchup ? clamp(getAILearningScore(aiLearning.crosspathStats, getAICrosspathStatKey(towerType, getCrosspathContextKeyForMatchup(towerType, matchup), intentSignature)), -1, 1) * 0.12 : 0
+        workerCandidates.push({
+            id: getAIStableCandidateId(AI_DECISION_FAMILY.placement, metadata),
+            intentTiers: intentTiers.slice(0),
+            intentSignature: intentSignature,
+            metadata: metadata,
+            features: buildAIDecisionCandidateFeatures(side, AI_DECISION_FAMILY.placement, metadata),
+            humanTacticalBonus: getAIHumanTacticalCandidateBonus(side, AI_DECISION_FAMILY.placement, metadata),
+            explorationNoise: explorationNoise,
+            crosspathBonus: crosspathBonus,
+        })
+    }
+    var requestCandidates = workerCandidates.map(function(candidate) { return candidate.features })
+    var requestId = requestAIInferenceBatch(AI_DECISION_FAMILY.placement, stateFeatures, getAIDecisionMemory().slice(0), requestCandidates, function(scores) {
+        if(!inferenceState.pending[inferenceKey] || inferenceState.pending[inferenceKey].requestId != requestId) return
+        var active = inferenceState.pending[inferenceKey]
+        delete inferenceState.pending[inferenceKey]
+        inferenceState.results[inferenceKey] = {
+            policy: active.policy,
+            stateFeatures: active.stateFeatures,
+            memoryIn: active.memoryIn,
+            candidates: active.candidates,
+            scores: scores,
+        }
+    }, function() {
+        if(inferenceState.pending[inferenceKey] && inferenceState.pending[inferenceKey].requestId == requestId) delete inferenceState.pending[inferenceKey]
+    })
+    if(requestId) {
+        aiProfile.workerDecisionPending = true
+        inferenceState.pending[inferenceKey] = {
+            requestId: requestId,
+            policy: policy,
+            stateFeatures: stateFeatures,
+            memoryIn: getAIDecisionMemory().slice(0),
+            candidates: workerCandidates,
+        }
+    }
+    return { supported: true, intent: null }
+}
+
 function chooseAIPlacementIntent(side, towerType, role, matchup, stateFeatures) {
     var candidates = getCrosspathCandidatesForTowerType(towerType)
+    var workerIntent = chooseAICrosspathWithWorker(side, towerType, role, matchup, stateFeatures, candidates)
+    if(workerIntent.supported) {
+        return workerIntent.intent
+    }
     var bestIntent = null
     for(var intentIndex = 0; intentIndex < candidates.length; intentIndex++) {
         var intentTiers = candidates[intentIndex]
@@ -7711,6 +8378,7 @@ function getLearnedPlacementOption(side, image, matchup, defenseMath) {
     var role = getStrategyPlacementRoleForImage(image)
     var spotIndex = getSideTowersByType(side, towerConfig.towerType).length
     var placementIntent = chooseAIPlacementIntent(side, towerConfig.towerType, role, matchup, buildAIDecisionStateFeatures(side, AI_DECISION_FAMILY.placement, matchup))
+    if(getAIInferenceWorker() && !placementIntent) return null
     var spot = findAISpot(side, towerConfig.radius, towerConfig.range, role, spotIndex, towerConfig.towerType, placementIntent && placementIntent.intentTiers)
     if(!spot) return null
     var decision = spot.decisionSample || scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, {
@@ -7850,11 +8518,13 @@ function getAIGameplayOptionScore(option) {
 function getBestAIGameplayOption(side, matchup) {
     var options = []
     var defenseOption = getBestDefenseOption(side, matchup, false)
+    if(aiProfile.workerDecisionPending) return null
     var ecoOption = getBestAIEcoOption(side, matchup)
     var rushPlan = getBestRushPlan(side, matchup)
     var boostOption = getBestAIBoostOption(side)
     var aimOption = getBestAIAimingOption(side)
     var targetPriorityOption = getBestAITargetPriorityOption(side)
+    if(aiProfile.workerDecisionPending) return null
     if(defenseOption) options.push(defenseOption)
     if(ecoOption && ecoOption.type != "noop") options.push(ecoOption)
     if(rushPlan && rushPlan.noop == false) options.push({ type: "rush", plan: rushPlan, decisionSample: rushPlan.decisionSample })
@@ -7944,6 +8614,7 @@ function runAIGameplayDecisionCycle(side) {
     handleAIRoundStartBoosts(side)
     updateAIMatchTelemetry()
     if(aiProfile.currentAction || aiProfile.manualAimAction || aiProfile.targetPriorityAction) return
+    aiProfile.workerDecisionPending = false
     var matchup = getCurrentPlayerMatchupStyle(side)
     applyAIGameplayOption(side, matchup, getBestAIGameplayOption(side, matchup))
 }
@@ -7984,8 +8655,6 @@ function tickAIControllers() {
         runAICursor()
     }
 }
-
-ensureAILearningLoaded()
 
 function handleAIWindowFocus() {
     updateAIPregameObservePauseState()

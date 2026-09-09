@@ -7,8 +7,11 @@ set_time_limit(30);
 // Ensure no output buffering issues
 if (ob_get_level()) ob_end_clean();
 
+// Keep round-trippable weights compact when the model is sent to browsers.
+ini_set('serialize_precision', '-1');
+
 header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Cache-Control: private, no-cache, must-revalidate, max-age=0');
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 
@@ -2505,6 +2508,12 @@ try {
     if ($method === 'GET') {
     $state = read_state_locked($stateFile, $lockFile);
     $model = $state['model'];
+    $responseEtag = '"' . hash('sha256', (string)($state['modelDigest'] ?? '')) . '"';
+    header('ETag: ' . $responseEtag);
+    if (trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')) === $responseEtag) {
+        http_response_code(304);
+        exit;
+    }
     $contributionEnabled = valid_model($model);
     $token = $contributionEnabled ? contribution_token(contribution_secret($contributionSecretFile)) : '';
     $policyDigest = $contributionEnabled ? model_digest($model['policy']) : '';
