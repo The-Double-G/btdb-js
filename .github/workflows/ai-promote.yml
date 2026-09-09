@@ -101,7 +101,7 @@ jobs:
           cp "$RUNNER_TEMP/bundle/candidate.json" training/checkpoints/champion.json
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for promotion checks
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run promotion checks
         run: npm test
 

@@ -208,7 +208,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ai-hosted-baseline
@@ -271,7 +271,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ai-hosted-baseline
@@ -375,7 +375,7 @@ jobs:
           echo "candidate_sha256=$(sha256sum "$RUNNER_TEMP/bundle/candidate.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Install browser for continuous promotion checks
         if: ${{ needs.prepare.outputs.continuous == 'true' && steps.decision.outputs.promotable == 'true' }}
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run continuous promotion checks
         if: ${{ needs.prepare.outputs.continuous == 'true' && steps.decision.outputs.promotable == 'true' }}
         run: npm test
