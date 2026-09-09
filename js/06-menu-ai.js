@@ -124,6 +124,7 @@ var AI_SCHEMA13_VERSION = 13
 var AI_DECISION_CREDIT_VERSION = 4
 var AI_DECISION_TD_STEPS = 4
 var AI_DECISION_DISCOUNT_PER_SECOND = 0.99
+var AI_DECISION_TOWER_TYPES = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
 var aiDecisionStateCache = null
 var aiPersistenceState = {
     backend: AI_CROSS_MATCH_LEARNING_ENABLED ? "php backend shared" : "session only",
@@ -2566,10 +2567,9 @@ function buildAIDecisionStateFeatures(side, familyIndex, matchup, contextFeature
         features[77] = clamp(typeof timeRoundEnded != "undefined" && typeof gameNow == "function" ? Math.max(0, gameNow() - timeRoundEnded) / 6000 : 0, 0, 1)
     }
     // Schema-13 extension: per-tower-type composition for both sides (32 dims at 80-111).
-    var towerTypesForState = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var perTypeBase = 80
-    for(var typeIdx = 0; typeIdx < towerTypesForState.length; typeIdx++) {
-        var towerType = towerTypesForState[typeIdx]
+    for(var typeIdx = 0; typeIdx < AI_DECISION_TOWER_TYPES.length; typeIdx++) {
+        var towerType = AI_DECISION_TOWER_TYPES[typeIdx]
         var ownTypeCount = typeof getSideTowersByType == "function" ? getSideTowersByType(side, towerType).length : 0
         var enemyTypeCount = typeof getSideTowersByType == "function" ? getSideTowersByType(enemySide, towerType).length : 0
         if(perTypeBase + typeIdx < features.length) features[perTypeBase + typeIdx] = clamp(ownTypeCount / 6, 0, 1)
@@ -2604,9 +2604,11 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     var money = Math.max(1, Number(metadata.money) || 1)
     var width = Math.max(1, typeof canvas != "undefined" ? canvas.width : 1366)
     var height = Math.max(1, typeof canvas != "undefined" ? canvas.height : 768)
+    var distanceScale = Math.sqrt(width * width + height * height)
     var candidateX = Number(metadata.x)
     var candidateY = Number(metadata.y)
     var hasPosition = Number.isFinite(candidateX) && Number.isFinite(candidateY)
+    var perspectivePlacementX = hasPosition ? getAIPerspectivePlacementX(side, candidateX) : 0
     var nearestOwnDistance = 1
     var nearestEnemyDistance = 1
     var sameTypeCount = 0
@@ -2617,40 +2619,38 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
             if(!tower) continue
             if(tower.playerSide == side && String(tower.towerType) == String(metadata.type || "")) sameTypeCount++
             if(!hasPosition) continue
-            var normalizedDistance = Math.sqrt(Math.pow((Number(tower.x) || 0) - candidateX, 2) + Math.pow((Number(tower.y) || 0) - candidateY, 2)) / Math.sqrt(width * width + height * height)
+            var normalizedDistance = Math.sqrt(Math.pow((Number(tower.x) || 0) - candidateX, 2) + Math.pow((Number(tower.y) || 0) - candidateY, 2)) / distanceScale
             if(tower.playerSide == side) nearestOwnDistance = Math.min(nearestOwnDistance, normalizedDistance)
             if(tower.playerSide == enemySide) nearestEnemyDistance = Math.min(nearestEnemyDistance, normalizedDistance)
         }
     }
     var candidateCost = Math.max(0, Number(metadata.cost) || 0)
     var availableMoney = Math.max(1, Number(metadata.money) || Number(typeof players != "undefined" && players[side] && players[side].money) || 1)
-    var genericFeatures = [
-        clamp(candidateCost / money, 0, 2) - 1,
-        clamp(Math.log1p(candidateCost) / Math.log(100001), 0, 1),
-         hasPosition ? getAIPerspectivePlacementX(side, candidateX) : 0,
-        clamp((Number(metadata.y) || 0) / height, 0, 1),
-        clamp(Number(metadata.position) || 0, 0, 1),
-        clamp((Number(metadata.count) || 0) / Math.max(1, Number(metadata.countScale) || 16), 0, 1),
-        metadata.cooldownReady === false ? -1 : 1,
-        metadata.affordable === false ? -1 : 1,
-        metadata.legal === false ? -1 : 1,
-        metadata.selected ? 1 : 0,
-        clamp((Number(metadata.tier1) || 0) / 5, 0, 1),
-        clamp((Number(metadata.tier2) || 0) / 5, 0, 1),
-        clamp((Number(metadata.tier3) || 0) / 5, 0, 1),
-        metadata.noop ? 1 : 0,
-        metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1,
-        clamp(Math.log1p(money) / Math.log(100001), 0, 1),
-        clamp((availableMoney - candidateCost) / availableMoney, -1, 1),
-        hasPosition ? (side == PLAYER_SIDE.left ? candidateX < width / 2 : candidateX >= width / 2) ? 1 : -1 : 0,
-        hasPosition ? 1 - clamp(nearestOwnDistance, 0, 1) : 0,
-        hasPosition ? 1 - clamp(nearestEnemyDistance, 0, 1) : 0,
-        clamp(sameTypeCount / 12, 0, 1),
-        clamp(((Number(metadata.tier1) || 0) + (Number(metadata.tier2) || 0) + (Number(metadata.tier3) || 0)) / 15, 0, 1),
-        clamp(Number(metadata.capacityHeadroom) || 0, 0, 1),
-        hasPosition ? 1 : 0,
-    ]
-    for(var genericIndex = 0; genericIndex < genericFeatures.length; genericIndex++) features[AI_DECISION_FAMILY_COUNT + genericIndex] = clampAIDecisionFeature(genericFeatures[genericIndex])
+    var genericBase = AI_DECISION_FAMILY_COUNT
+    features[genericBase] = clampAIDecisionFeature(clamp(candidateCost / money, 0, 2) - 1)
+    features[genericBase + 1] = clampAIDecisionFeature(clamp(Math.log1p(candidateCost) / Math.log(100001), 0, 1))
+    features[genericBase + 2] = clampAIDecisionFeature(perspectivePlacementX)
+    features[genericBase + 3] = clampAIDecisionFeature(clamp((Number(metadata.y) || 0) / height, 0, 1))
+    features[genericBase + 4] = clampAIDecisionFeature(clamp(Number(metadata.position) || 0, 0, 1))
+    features[genericBase + 5] = clampAIDecisionFeature(clamp((Number(metadata.count) || 0) / Math.max(1, Number(metadata.countScale) || 16), 0, 1))
+    features[genericBase + 6] = clampAIDecisionFeature(metadata.cooldownReady === false ? -1 : 1)
+    features[genericBase + 7] = clampAIDecisionFeature(metadata.affordable === false ? -1 : 1)
+    features[genericBase + 8] = clampAIDecisionFeature(metadata.legal === false ? -1 : 1)
+    features[genericBase + 9] = clampAIDecisionFeature(metadata.selected ? 1 : 0)
+    features[genericBase + 10] = clampAIDecisionFeature(clamp((Number(metadata.tier1) || 0) / 5, 0, 1))
+    features[genericBase + 11] = clampAIDecisionFeature(clamp((Number(metadata.tier2) || 0) / 5, 0, 1))
+    features[genericBase + 12] = clampAIDecisionFeature(clamp((Number(metadata.tier3) || 0) / 5, 0, 1))
+    features[genericBase + 13] = clampAIDecisionFeature(metadata.noop ? 1 : 0)
+    features[genericBase + 14] = clampAIDecisionFeature(metadata.playerSide == null ? 0 : metadata.playerSide == side ? 1 : -1)
+    features[genericBase + 15] = clampAIDecisionFeature(clamp(Math.log1p(money) / Math.log(100001), 0, 1))
+    features[genericBase + 16] = clampAIDecisionFeature(clamp((availableMoney - candidateCost) / availableMoney, -1, 1))
+    features[genericBase + 17] = clampAIDecisionFeature(hasPosition ? (side == PLAYER_SIDE.left ? candidateX < width / 2 : candidateX >= width / 2) ? 1 : -1 : 0)
+    features[genericBase + 18] = clampAIDecisionFeature(hasPosition ? 1 - clamp(nearestOwnDistance, 0, 1) : 0)
+    features[genericBase + 19] = clampAIDecisionFeature(hasPosition ? 1 - clamp(nearestEnemyDistance, 0, 1) : 0)
+    features[genericBase + 20] = clampAIDecisionFeature(clamp(sameTypeCount / 12, 0, 1))
+    features[genericBase + 21] = clampAIDecisionFeature(clamp(((Number(metadata.tier1) || 0) + (Number(metadata.tier2) || 0) + (Number(metadata.tier3) || 0)) / 15, 0, 1))
+    features[genericBase + 22] = clampAIDecisionFeature(clamp(Number(metadata.capacityHeadroom) || 0, 0, 1))
+    features[genericBase + 23] = clampAIDecisionFeature(hasPosition ? 1 : 0)
 
     var semanticFeatures
     var placementCoverage = null
@@ -2672,41 +2672,32 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
     for(var semanticIndex = 0; semanticIndex < AI_CAPABILITY_KEYS.length; semanticIndex++) features[32 + semanticIndex] = clampAIDecisionFeature(semanticFeatures[semanticIndex])
     if(metadata.loadoutSummary && metadata.placementGeometry !== true) {
         var loadoutSummary = metadata.loadoutSummary
-        var loadoutFeatures = [
-            loadoutSummary.eco,
-            loadoutSummary.pressure,
-            loadoutSummary.heavy,
-            loadoutSummary.camo,
-            loadoutSummary.support,
-            loadoutSummary.late,
-            loadoutSummary.ecoBoost,
-            (Number(loadoutSummary.defenseBoost) + Number(loadoutSummary.offenseBoost)) / 2,
-        ]
-        for(var loadoutFeatureIndex = 0; loadoutFeatureIndex < loadoutFeatures.length; loadoutFeatureIndex++) {
-            features[72 + loadoutFeatureIndex] = clampAIDecisionFeature(loadoutFeatures[loadoutFeatureIndex])
-        }
+        features[72] = clampAIDecisionFeature(loadoutSummary.eco)
+        features[73] = clampAIDecisionFeature(loadoutSummary.pressure)
+        features[74] = clampAIDecisionFeature(loadoutSummary.heavy)
+        features[75] = clampAIDecisionFeature(loadoutSummary.camo)
+        features[76] = clampAIDecisionFeature(loadoutSummary.support)
+        features[77] = clampAIDecisionFeature(loadoutSummary.late)
+        features[78] = clampAIDecisionFeature(loadoutSummary.ecoBoost)
+        features[79] = clampAIDecisionFeature((Number(loadoutSummary.defenseBoost) + Number(loadoutSummary.offenseBoost)) / 2)
     } else if(metadata.placementGeometry === true && hasPosition) {
         var coverage = getPlacementCoverageStats(side, candidateX, candidateY, Number(metadata.range) || 0)
         placementCoverage = coverage
         var sidePathCount = Math.max(1, getSidePathObjectCount(side))
-        var placementFeatures = [
-            getAIPerspectivePlacementX(side, candidateX),
-            1 - clamp(coverage.nearestTrackDistance / 260, 0, 1),
-            clamp(coverage.coverageCount / sidePathCount, 0, 1),
-            clamp(coverage.averageProgress, 0, 1),
-            clamp(coverage.span, 0, 1),
-            clamp(coverage.longestRun, 0, 1),
-            clamp(coverage.straightRun, 0, 1),
-            clamp(coverage.lineAimScore, 0, 1),
-        ]
-        for(var placementIndex = 0; placementIndex < placementFeatures.length; placementIndex++) features[72 + placementIndex] = placementFeatures[placementIndex]
+        features[72] = perspectivePlacementX
+        features[73] = 1 - clamp(coverage.nearestTrackDistance / 260, 0, 1)
+        features[74] = clamp(coverage.coverageCount / sidePathCount, 0, 1)
+        features[75] = clamp(coverage.averageProgress, 0, 1)
+        features[76] = clamp(coverage.span, 0, 1)
+        features[77] = clamp(coverage.longestRun, 0, 1)
+        features[78] = clamp(coverage.straightRun, 0, 1)
+        features[79] = clamp(coverage.lineAimScore, 0, 1)
     }
     // Schema-13 extension: placement intent, tower-type one-hot, and detailed tier/cost context.
-    var towerTypesForCandidate = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
     var rawType = String(metadata.type || metadata.towerType || "").split("|")[0].split(",")[0]
     var intentTiers = normalizeAIUpgradeIntent(metadata.intentTiers)
-    for(var typeIdx = 0; typeIdx < towerTypesForCandidate.length; typeIdx++) {
-        if(rawType === towerTypesForCandidate[typeIdx] && 80 + typeIdx < features.length) features[80 + typeIdx] = 1
+    for(var typeIdx = 0; typeIdx < AI_DECISION_TOWER_TYPES.length; typeIdx++) {
+        if(rawType === AI_DECISION_TOWER_TYPES[typeIdx] && 80 + typeIdx < features.length) features[80 + typeIdx] = 1
     }
     if(intentTiers) {
         if(96 < features.length) features[96] = clamp(intentTiers[0] / 5, 0, 1)
@@ -2766,9 +2757,11 @@ function buildAIDecisionCandidateFeatures(side, familyIndex, metadata) {
         features[120] = clamp(Number.isFinite(targetProgress) ? targetProgress : 0, 0, 1)
         features[121] = clamp(Math.log1p(Math.max(0, Number.isFinite(targetHealth) ? targetHealth : 0)) / Math.log(100001), 0, 1)
         features[122] = clamp(Math.log1p(Math.max(0, Number.isFinite(expectedOutput) ? expectedOutput : 0)) / Math.log(100001), 0, 1)
-        var candidateFacts = copyAICapabilities(metadata.capabilityAfter || metadata.capabilityFacts)
-        if(!metadata.capabilityAfter && !metadata.capabilityFacts && candidateTower) candidateFacts = getAITowerCapabilityFacts(candidateTower)
-        else if(!metadata.capabilityAfter && !metadata.capabilityFacts && AI_BASE_TOWER_CAPABILITIES[rawType]) candidateFacts = getAITowerCapabilityFacts(rawType)
+        var candidateFacts
+        if(metadata.capabilityAfter || metadata.capabilityFacts) candidateFacts = copyAICapabilities(metadata.capabilityAfter || metadata.capabilityFacts)
+        else if(candidateTower) candidateFacts = getAITowerCapabilityFacts(candidateTower)
+        else if(AI_BASE_TOWER_CAPABILITIES[rawType]) candidateFacts = getAITowerCapabilityFacts(rawType)
+        else candidateFacts = copyAICapabilities(null)
         var candidateCapabilityVector = typeof getNormalizedAICapabilityVector == "function" ? getNormalizedAICapabilityVector(candidateFacts) : []
         var candidateCapabilityValue = function(key) {
             var index = typeof AI_CAPABILITY_KEYS != "undefined" ? AI_CAPABILITY_KEYS.indexOf(key) : -1
@@ -4118,6 +4111,7 @@ function getAIFarmerPlacementCoverage(side, x, y, range) {
     if(!Number.isFinite(candidateX) || !Number.isFinite(candidateY)) return coverage
 
     var farms = getSideTowersByType(side, "farm")
+    var farmers = getSideTowersByType(side, "farmer")
     coverage.farmCount = farms.length
     for(var farmIndex = 0; farmIndex < farms.length; farmIndex++) {
         var farm = farms[farmIndex]
@@ -4125,14 +4119,14 @@ function getAIFarmerPlacementCoverage(side, x, y, range) {
         var candidateServices = Math.sqrt((candidateX - farm.x) ** 2 + (candidateY - farm.y) ** 2) <= farmRange
         if(candidateServices == false) continue
         coverage.coveredFarmCount++
-        if(isFarmServicedByFarmer(farm)) coverage.redundantFarmCount++
+        if(isFarmServicedByFarmer(farm, farmers)) coverage.redundantFarmCount++
         else coverage.marginalFarmCount++
     }
 
     var sideBananas = typeof getBananasForSide == "function" ? getBananasForSide(side) : []
     for(var bananaIndex = 0; bananaIndex < sideBananas.length; bananaIndex++) {
         var banana = sideBananas[bananaIndex]
-        if(isBananaCoveredByFarmer(side, banana)) continue
+        if(isBananaCoveredByFarmer(side, banana, farmers)) continue
         if(Math.sqrt((candidateX - banana.x) ** 2 + (candidateY - banana.y) ** 2) <= farmerRange) {
             coverage.uncoveredBananaCount++
             coverage.uncoveredBananaCash += Math.max(0, Number(banana.cashGiven) || 0)
@@ -5547,7 +5541,8 @@ function getPlacementCoverageStats(side, x, y, range) {
     var longestStraightRun = 0
     var currentCoveredRun = 0
     var currentStraightRun = 0
-    var previousDirection = null
+    var previousDirectionX = null
+    var previousDirectionY = null
     var previousLocallyCovered = false
     for(var i = 0; i < sidePathPoints.length; i++) {
         var dx = x - sidePathPoints[i].x
@@ -5596,23 +5591,26 @@ function getPlacementCoverageStats(side, x, y, range) {
                         stats.lineAimScore = Math.max(stats.lineAimScore, Math.abs(directionX * aimX + directionY * aimY))
                     }
                 }
-                if(previousLocallyCovered && currentStraightRun > 0 && previousDirection) {
-                    var directionDot = directionX * previousDirection.x + directionY * previousDirection.y
+                if(previousLocallyCovered && currentStraightRun > 0 && previousDirectionX != null) {
+                    var directionDot = directionX * previousDirectionX + directionY * previousDirectionY
                     currentStraightRun = directionDot >= 0.94 ? currentStraightRun + 1 : 1
                 } else {
                     currentStraightRun = 1
                 }
-                previousDirection = { x: directionX, y: directionY }
+                previousDirectionX = directionX
+                previousDirectionY = directionY
             } else {
                 currentStraightRun = 1
-                previousDirection = null
+                previousDirectionX = null
+                previousDirectionY = null
             }
             longestStraightRun = Math.max(longestStraightRun, currentStraightRun)
             previousLocallyCovered = true
         } else {
             currentCoveredRun = 0
             currentStraightRun = 0
-            previousDirection = null
+            previousDirectionX = null
+            previousDirectionY = null
             previousLocallyCovered = false
         }
     }
@@ -6209,8 +6207,8 @@ function getBananasForSide(side) {
     return sideBananas
 }
 
-function isBananaCoveredByFarmer(side, banana) {
-    var farmers = getSideTowersByType(side, "farmer")
+function isBananaCoveredByFarmer(side, banana, farmers) {
+    farmers = farmers || getSideTowersByType(side, "farmer")
     for(var i = 0; i < farmers.length; i++) {
         if(Math.sqrt((farmers[i].x - banana.x) ** 2 + (farmers[i].y - banana.y) ** 2) <= farmers[i].range) {
             return true
@@ -6220,8 +6218,8 @@ function isBananaCoveredByFarmer(side, banana) {
     return false
 }
 
-function isFarmServicedByFarmer(farm) {
-    var farmers = getSideTowersByType(farm.playerSide, "farmer")
+function isFarmServicedByFarmer(farm, farmers) {
+    farmers = farmers || getSideTowersByType(farm.playerSide, "farmer")
     for(var i = 0; i < farmers.length; i++) {
         if(Math.sqrt((farmers[i].x - farm.x) ** 2 + (farmers[i].y - farm.y) ** 2) <= Math.max(90, farmers[i].range - farm.range * 0.6)) {
             return true
@@ -8378,6 +8376,7 @@ function getBestTowerUpgradeOption(side, matchup, defenseMath) {
         if(tower.playerSide != side || tower.towerType == "farmer") {
             continue
         }
+        var capabilityBefore = getAITowerCapabilityFacts(tower)
         for(var pathNumber = 1; pathNumber <= 3; pathNumber++) {
             if(canTowerUpgradePathNow(side, tower, pathNumber) == false) {
                 continue
@@ -8400,7 +8399,7 @@ function getBestTowerUpgradeOption(side, matchup, defenseMath) {
                 tier1: hypotheticalTower.path1Upgrades,
                 tier2: hypotheticalTower.path2Upgrades,
                 tier3: hypotheticalTower.path3Upgrades,
-                capabilityBefore: getAITowerCapabilityFacts(tower),
+                capabilityBefore: capabilityBefore,
                 capabilityAfter: getAITowerCapabilityFacts(hypotheticalTower),
             }, matchup, decisionState)
 
