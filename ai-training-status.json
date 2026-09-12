@@ -3,29 +3,29 @@
   "formatVersion": 1,
   "repository": "The-Double-G/btdb-js",
   "branch": "main",
-  "publishedAt": "2026-09-12T08:52:58.217Z",
+  "publishedAt": "2026-09-12T09:05:06.739Z",
   "current": {
     "runId": 34674135061,
     "runNumber": 105,
     "runAttempt": 1,
-    "state": "in_progress",
-    "conclusion": null,
+    "state": "completed",
+    "conclusion": "success",
     "headSha": "cdf7eb4ee8087a8b6d024b6c4afa893796e11e1c",
     "url": "https://github.com/The-Double-G/btdb-js/actions/runs/34674135061",
     "createdAt": "2026-09-12T04:52:17.000Z",
     "startedAt": "2026-09-12T04:52:17.000Z",
-    "updatedAt": "2026-09-12T08:17:53.000Z",
-    "phase": "evaluating",
+    "updatedAt": "2026-09-12T09:04:45.000Z",
+    "phase": "completed",
     "projection": {
       "jobs": {
-        "total": 42,
+        "total": 47,
         "queued": 0,
-        "inProgress": 18,
-        "completed": 24,
-        "succeeded": 24,
+        "inProgress": 0,
+        "completed": 47,
+        "succeeded": 44,
         "failed": 0,
         "cancelled": 0,
-        "skipped": 0
+        "skipped": 3
       },
       "workers": {
         "training": {
@@ -40,8 +40,8 @@
         "evaluation": {
           "total": 20,
           "queued": 0,
-          "inProgress": 18,
-          "succeeded": 2,
+          "inProgress": 0,
+          "succeeded": 20,
           "failed": 0,
           "cancelled": 0,
           "skipped": 0
@@ -50,13 +50,13 @@
     }
   },
   "latestEvaluation": {
-    "runId": 34234386167,
-    "runNumber": 88,
+    "runId": 34674135061,
+    "runNumber": 105,
     "runAttempt": 1,
-    "aggregateId": "sha256:c8c1abe7ff2e07a945df0f6fb1499dbadc22c51f1005fbe21cd2862ecd413fd5",
-    "candidateCheckpointId": "sha256:21166f1989e711f710b4268315784cfdff1a4b11216730eb5945bb1298e84448",
-    "baselineCheckpointId": "sha256:17a1d8361dce195dd9ef063e11759cd625a7525bbd1cb2c31de73b798341371f",
-    "passed": true,
+    "aggregateId": "sha256:cf198c0ff3507ca65270b29ba615f7123b56b3b983ae05c23a5ef3ed91afdbb9",
+    "candidateCheckpointId": "sha256:3dc1079cfaeb0b32ef3f8519ea17fa9e749b600b065b3b805acb814f190f5a70",
+    "baselineCheckpointId": "sha256:36985fbecdd6782319d829f1f06f36238dcf033d2e723a582d282ab4c1324c99",
+    "passed": false,
     "games": 320,
     "wins": 320,
     "losses": 0,
@@ -71,12 +71,12 @@
     "severeCollapseRate": 0,
     "maximumSevereCollapseRate": 0.27,
     "defensiveGames": 160,
-    "defensiveProtectedGames": 138,
-    "defensiveProtectionRate": 0.8625,
+    "defensiveProtectedGames": 140,
+    "defensiveProtectionRate": 0.875,
     "minimumDefensiveRate": 0.75,
     "minimumDefensiveLives": 50,
     "minimumDefensiveFloorLives": 25,
-    "minimumDefensiveObservedLives": 40
+    "minimumDefensiveObservedLives": 24
   },
   "latestPromotion": {
     "runId": 34234386167,
