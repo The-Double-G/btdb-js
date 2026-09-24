@@ -777,6 +777,7 @@ class Tower {
     }
 
     draw() {
+        if(typeof multiplayerShouldSuppressRemoteEntityDraw == "function" && multiplayerShouldSuppressRemoteEntityDraw(this)) return
         drawRotatedCenteredAsset(this.getImagePath(), this.x, this.y, this.radius, this.rotationAngle)
         this.drawDebugLabel()
     }

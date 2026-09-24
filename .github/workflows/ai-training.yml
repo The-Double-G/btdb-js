@@ -343,12 +343,18 @@ jobs:
           MINIMUM_GAMES: ${{ needs.prepare.outputs.minimum_games }}
         run: |
           npm run ai:evaluate-report -- --results-dir "$RUNNER_TEMP/baseline-eval-results" --output "$RUNNER_TEMP/bundle/baseline-evaluation.json" --report "$RUNNER_TEMP/bundle/baseline-evaluation.md" --minimum-score 0 --minimum-games "$MINIMUM_GAMES" --manifest "$RUNNER_TEMP/bundle/scenario-manifest.json" --scenario-report "$RUNNER_TEMP/bundle/scenario-baseline-evaluation.json"
+          set +e
           npm run ai:compare-quality -- --candidate "$RUNNER_TEMP/bundle/evaluation.json" --baseline "$RUNNER_TEMP/bundle/baseline-evaluation.json" --output "$RUNNER_TEMP/bundle/quality.json" --report "$RUNNER_TEMP/bundle/quality.md" --minimum-games "$MINIMUM_GAMES"
+          quality_status=$?
+          set -e
+          if [ "$quality_status" -ne 0 ]; then
+            echo "Candidate quality was rejected; retaining the report and continuing the training series."
+          fi
       - name: Publish job summary
         run: cat "$RUNNER_TEMP/bundle/evaluation.md" >> "$GITHUB_STEP_SUMMARY"
       - id: decision
         name: Record evaluation decision
-        run: node -e "const fs=require('node:fs');const evaluation=require(process.argv[1]);fs.appendFileSync(process.env.GITHUB_OUTPUT,'promotable='+(evaluation.passed===true)+'\n');" "$RUNNER_TEMP/bundle/evaluation.json"
+        run: node -e "const fs=require('node:fs');const evaluation=require(process.argv[1]);const quality=require(process.argv[2]);fs.appendFileSync(process.env.GITHUB_OUTPUT,'promotable='+(evaluation.passed===true&&quality.passed===true)+'\n');" "$RUNNER_TEMP/bundle/evaluation.json" "$RUNNER_TEMP/bundle/quality.json"
       - name: Enforce promotion artifact size limit
         run: |
           oversized=$(find "$RUNNER_TEMP/bundle" -type f -size "+${AI_ARTIFACT_MAX_BYTES}c" -print -quit)

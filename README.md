@@ -30,6 +30,10 @@ GitHub Actions can run deterministic Chromium self-play without a laptop remaini
 
 See [DISTRIBUTED-AI.md](DISTRIBUTED-AI.md) for operation, checkpoint promotion, limits, and safety guarantees.
 
+## Online Multiplayer
+
+The Multiplayer menu supports casual two-player standard matches. Players can create or browse named public lobbies; active matches remain listed for read-only spectators. `lobbies.php` maintains the lobby directory and spectator snapshots over HTTPS, while the Render-hosted secure WebSocket relay at `wss://cursor-share-server.onrender.com/` carries player traffic over HTTPS-compatible port 443 for restrictive networks such as school networks. The six-digit WebSocket key stays internal to the lobby service. Each peer owns its assigned side, while the host also publishes shared match timing and referee state; spectators receive snapshots with all input disabled. Both players choose three towers and two boosts locally. Online pause, boss mode, mastery, and host migration are intentionally not enabled in this v1 mode.
+
 ## Repository Safety
 
 Runtime files under `data/`, browser automation captures, production credentials, and local screenshots are excluded from Git. Distributed workers run only on `127.0.0.1`, block hosted writes, and have read-only repository access. Only the protected publisher job receives a policy-promotion credential; it cannot perform full-model commits or resets.

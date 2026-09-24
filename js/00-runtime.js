@@ -130,6 +130,11 @@ function runDueRuntimeTasks() {
 
 function advanceRuntimeClock() {
     var currentRuntimeNow = getRuntimeClockNow()
+    if(typeof isMultiplayerTabInactive == "function" && isMultiplayerTabInactive()) {
+        runtimeLastTick = currentRuntimeNow
+        nativeRequestAnimationFrame(advanceRuntimeClock)
+        return
+    }
     if(gamePaused == false) {
         var runtimeClockMultiplier = typeof getAITrainingRuntimeClockMultiplier == "function" ? getAITrainingRuntimeClockMultiplier() : 1
         var gameDelta = Math.max(0, currentRuntimeNow - runtimeLastTick) * runtimeClockMultiplier
@@ -153,6 +158,7 @@ function advanceRuntimeClock() {
 }
 
 function canPauseGame() {
+    if(typeof isMultiplayerActive == "function" && isMultiplayerActive()) return false
     return typeof gameStarted != "undefined" && gameStarted && typeof gameOver != "undefined" && gameOver == false
 }
 

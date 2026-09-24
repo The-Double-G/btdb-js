@@ -462,6 +462,7 @@ class Bloon {
 
     draw()
     {
+        if(typeof multiplayerShouldSuppressRemoteEntityDraw == "function" && multiplayerShouldSuppressRemoteEntityDraw(this)) return
         /*
         ctx.fillStyle = this.color
         ctx.strokeStyle = "black"

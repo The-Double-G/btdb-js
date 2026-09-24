@@ -65,6 +65,7 @@ class Projectile {
 
 
     draw() {
+        if(typeof multiplayerShouldSuppressRemoteEntityDraw == "function" && multiplayerShouldSuppressRemoteEntityDraw(this)) return
         if(this.image != "") {
             drawRotatedCenteredAsset(this.image, this.x, this.y, this.radius, this.rotationAngle)
         }
@@ -350,6 +351,7 @@ class Banana {
     }
 
     draw() {
+        if(typeof multiplayerShouldSuppressRemoteEntityDraw == "function" && multiplayerShouldSuppressRemoteEntityDraw(this)) return
         drawCenteredAsset(this.image, this.x, this.y, this.radius)
     }
 
@@ -827,6 +829,7 @@ class Subtower {
     }
 
     draw() {
+        if(typeof multiplayerShouldSuppressRemoteEntityDraw == "function" && multiplayerShouldSuppressRemoteEntityDraw(this)) return
         drawRotatedCenteredAsset(this.towerType, this.x, this.y, this.radius, this.rotationAngle)
     }
 

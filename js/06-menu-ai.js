@@ -118,6 +118,9 @@ var AI_DECISION_FAMILY = {
     boost: 7,
 }
 var AI_DECISION_FAMILY_LABELS = ["Loadout", "Strategy", "Placement", "Upgrade", "Sale", "Eco", "Rush", "Boost"]
+// Placement naturally emits far more traces than tactical actions. Keep candidates
+// exploring the underrepresented families until they have useful evidence too.
+var AI_DECISION_FAMILY_BALANCE_TARGETS = [1200, 1200, 30000, 6000, 6000, 20000, 6000, 6000]
 var AI_POLICY_PARAMETER_LIMIT = 4
 var AI_LEARNING_SCHEMA_VERSION = 14
 var AI_MODEL_FAMILY = "semantic-intent-spatial-recurrent-actor-critic-v6"
@@ -486,6 +489,10 @@ function isAISide(side) {
 }
 
 function isHumanControlledSide(side) {
+    if(typeof isMultiplayerSpectator == "function" && isMultiplayerSpectator()) return false
+    if(typeof isMultiplayerHumanControlledSide == "function" && isMultiplayerHumanControlledSide(side)) {
+        return true
+    }
     return isAISide(side) == false
 }
 
@@ -2370,6 +2377,31 @@ function getAIDecisionBootstrapWeight(familyIndex, policyOverride) {
     return 1 - clamp(samples / AI_DECISION_BOOTSTRAP_SAMPLES, 0, 1)
 }
 
+function getAIDecisionFamilyBalancePressure(familyIndex, policyOverride) {
+    if(!Number.isInteger(familyIndex) || familyIndex < 0 || familyIndex >= AI_DECISION_FAMILY_COUNT) return 0
+    var policy = policyOverride || getAIPolicyForDecision()
+    var samples = policy && policy.decision && Array.isArray(policy.decision.trainingSamples) ? Number(policy.decision.trainingSamples[familyIndex]) || 0 : 0
+    var target = AI_DECISION_FAMILY_BALANCE_TARGETS[familyIndex] || 1
+    return clamp(1 - samples / target, 0, 1)
+}
+
+function getAIDecisionFamilyExplorationMultiplier(familyIndex, policyOverride) {
+    return 1 + getAIDecisionFamilyBalancePressure(familyIndex, policyOverride) * 1.25
+}
+
+function getAIDecisionFamilyLearningMultiplier(familyIndex, policyOverride) {
+    return 1 + getAIDecisionFamilyBalancePressure(familyIndex, policyOverride) * 0.55
+}
+
+function getAIDecisionActionScore(decisionSample, actionable, policyOverride) {
+    if(!decisionSample) return -Infinity
+    var score = Number(decisionSample.score) || 0
+    if(actionable !== true || !aiProfile || aiProfile.explorationEnabled == false) return score
+    var familyIndex = Number(decisionSample.familyIndex)
+    if(familyIndex <= AI_DECISION_FAMILY.placement) return score
+    return score + getAIDecisionFamilyBalancePressure(familyIndex, policyOverride) * 0.18
+}
+
 function getAIDecisionTowerTargetProgress(tower, side) {
     var targetIndex = Number(tower && tower.target)
     if(!Number.isInteger(targetIndex) || targetIndex < 0 || typeof bloons == "undefined" || !Array.isArray(bloons) || !bloons[targetIndex]) return 0
@@ -2934,7 +2966,8 @@ function scoreAIDecisionCandidate(side, familyIndex, metadata, matchup, stateFea
     var candidateFeatures = Array.isArray(metadata.candidateFeatures) ? metadata.candidateFeatures.slice(0) : buildAIDecisionCandidateFeatures(side, familyIndex, metadata)
     var memoryIn = Array.isArray(metadata.memoryIn) ? metadata.memoryIn.slice(0) : getAIDecisionMemory()
     var forward = aiDecisionForward(resolvedState, candidateFeatures, familyIndex, memoryIn, policyOverride)
-    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.997, (policyOverride || getAIPolicyForDecision()).decision.trainingSamples[familyIndex] || 0)) : 0
+    var activePolicy = policyOverride || getAIPolicyForDecision()
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * getAIDecisionFamilyExplorationMultiplier(familyIndex, activePolicy) * Math.pow(0.997, activePolicy.decision.trainingSamples[familyIndex] || 0)) : 0
     var humanTacticalBonus = getAIHumanTacticalCandidateBonus(side, familyIndex, metadata)
     var explorationNoise = Number(metadata.explorationNoise)
     if(Number.isFinite(explorationNoise) == false) explorationNoise = aiRandomWeight(explorationScale)
@@ -3100,7 +3133,7 @@ function trainAIDecision(sample, target, survivalClass, policyOverride) {
         return deltas
     }
     var chosenCandidateHiddenDelta = candidateHiddenDeltas(chosen, chosenActorDeltas.candidate)
-    var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500) * getAIDecisionLearningWeight(sample, target, survivalClass)
+    var learningRate = policy.decisionLearningRate / Math.sqrt(1 + decision.trainingSamples[familyIndex] / 500) * getAIDecisionLearningWeight(sample, target, survivalClass) * getAIDecisionFamilyLearningMultiplier(familyIndex, policy)
     for(var valueWeightIndex = 0; valueWeightIndex < AI_DECISION_EMBEDDING_SIZE; valueWeightIndex++) decision.WValue[valueWeightIndex] = clampAIPolicyParameter(decision.WValue[valueWeightIndex] + learningRate * valueDelta * chosen.stateEmbedding[valueWeightIndex])
     decision.bValue = clampAIPolicyParameter(decision.bValue + learningRate * valueDelta)
     for(var economyWeightIndex = 0; economyWeightIndex < AI_DECISION_EMBEDDING_SIZE; economyWeightIndex++) {
@@ -3161,7 +3194,7 @@ function chooseAIStrategyFromFeaturesWithObservation(features, observedLoadoutSu
     var pass = aiPolicyForward(features)
     var chosenIndex = 0
     var bestScore = -Infinity
-    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
+    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * getAIDecisionFamilyExplorationMultiplier(AI_DECISION_FAMILY.strategy) * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
     var scoredOutputs = []
     var decisionScores = []
     var decisionState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.strategy, null, features)
@@ -3218,7 +3251,7 @@ function chooseAIArchetypeFromFeatures(features, excludedStrategyIndex, loadoutK
     var pass = aiPolicyForward(features)
     var chosenIndex = 0
     var bestScore = -Infinity
-    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
+    var explorationChance = aiProfile && aiProfile.explorationEnabled ? Math.max(0.04, 0.22 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * getAIDecisionFamilyExplorationMultiplier(AI_DECISION_FAMILY.strategy) * Math.pow(0.985, aiLearning.totalPolicySamples || aiLearning.totalGames)) * getAIDecisionBootstrapWeight(AI_DECISION_FAMILY.strategy) : 0
     var scoredOutputs = []
     var decisionScores = []
     var decisionState = buildAIDecisionStateFeatures(aiSide, AI_DECISION_FAMILY.strategy, null, features)
@@ -4417,6 +4450,9 @@ function getCompletedMatchAIRematchMessage() {
 
 function getFrontMenuButtons() {
     var buttons = []
+    if(frontMenuState == "multiplayer" && typeof getMultiplayerMenuButtons == "function") {
+        return getMultiplayerMenuButtons()
+    }
     if(frontMenuState == "mode") {
         var buttonWidth = canvas.width / 4
         var buttonHeight = canvas.height / 12
@@ -4475,7 +4511,8 @@ function handleFrontMenuClick(x, y) {
     if(button.id == "local") {
         startLocalGameSetup()
     } else if(button.id == "multiplayer") {
-        multiplayerMenuMessageUntil = realNow() + 1800
+        if(typeof openMultiplayerMenu == "function") openMultiplayerMenu()
+        else multiplayerMenuMessageUntil = realNow() + 1800
     } else if(button.id == "classic") {
         window.location.href = "classic/index.html"
     } else if(button.id == "vs-ai") {
@@ -5256,6 +5293,11 @@ function drawFrontMenu() {
     drawAsset(frontMenuBackgroundAsset, 0, 0, canvas.width, canvas.height)
     ctx.fillStyle = "rgba(18, 22, 52, 0.12)"
     ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    if(frontMenuState == "multiplayer" && typeof drawMultiplayerMenu == "function") {
+        drawMultiplayerMenu()
+        return
+    }
 
     if(frontMenuState == "stats") {
         drawAIStatsScreen()
@@ -7537,7 +7579,7 @@ function getBestAIEcoOption(side, matchup) {
         actionKey: "auto|0",
         noop: true,
     }, matchup, decisionState)
-    if(bestDecision && isAIDecisionScoreBetter(noOpDecision, bestDecision)) {
+    if(bestDecision && getAIDecisionActionScore(noOpDecision, false) > getAIDecisionActionScore(bestDecision, true)) {
         return { type: "noop", decisionSample: noOpDecision }
     }
 
@@ -7611,7 +7653,7 @@ function getBestRushPlan(side, matchup) {
                 send: candidate,
                 sendGroups: groups,
             }, matchup, decisionState)
-            if(isAIDecisionScoreBetter(decision, bestPlan.decisionSample)) {
+            if(getAIDecisionActionScore(decision, true) > getAIDecisionActionScore(bestPlan.decisionSample, bestPlan.noop == false)) {
                 bestPlan = { index: i, groups: groups, noop: false, decisionSample: decision }
             }
         }
@@ -8564,7 +8606,7 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
             noop: true,
         }, matchup, candidate.decisionSample.stateFeatures)
         if(isAIDecisionScoreBetter(noOp, bestNoOp)) bestNoOp = noOp
-        if(isAIDecisionScoreBetter(noOp, candidate.decisionSample) == false) actionableCandidates.push(candidate)
+        if(getAIDecisionActionScore(candidate.decisionSample, true) >= getAIDecisionActionScore(noOp, false)) actionableCandidates.push(candidate)
     }
     if(actionableCandidates.length == 0) {
         var placedTowerCount = 0
@@ -8587,7 +8629,7 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
 
 function getAIGameplayOptionScore(option) {
     if(!option || !option.decisionSample) return -Infinity
-    return Number(option.decisionSample.score) || 0
+    return getAIDecisionActionScore(option.decisionSample, true)
 }
 
 function getBestAIGameplayOption(side, matchup) {
@@ -8674,7 +8716,7 @@ function getBestAIBoostOption(side) {
         actionKey: "noop",
         noop: true,
     }, matchup, stateFeatures)
-    if(isAIDecisionScoreBetter(noOpDecision, bestBoost.decisionSample)) {
+    if(getAIDecisionActionScore(noOpDecision, false) > getAIDecisionActionScore(bestBoost.decisionSample, true)) {
         return { type: "noop", decisionSample: noOpDecision }
     }
     return { type: "boost", boostType: bestBoost.type, decisionSample: bestBoost.decisionSample }

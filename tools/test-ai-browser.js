@@ -1299,6 +1299,27 @@ async function main() {
                 frozen: getAITrainingCurriculumStage(0, true).id,
                 populationRates: [0, 32, 64, 96].map(matchIndex => getAITrainingCurriculumStage(matchIndex, false).populationOpponentRate),
             }
+            const familyBalanceContract = (() => {
+                const policy = cloneAIPolicy(aiLearning.policy)
+                policy.decision.trainingSamples = [50, 50, 50000, 1200, 4400, 15800, 1000, 1200]
+                const savedExplorationEnabled = aiProfile.explorationEnabled
+                aiProfile.explorationEnabled = true
+                const rushActionScore = getAIDecisionActionScore({ familyIndex: AI_DECISION_FAMILY.rush, score: 0 }, true, policy)
+                const placementActionScore = getAIDecisionActionScore({ familyIndex: AI_DECISION_FAMILY.placement, score: 0 }, true, policy)
+                aiProfile.explorationEnabled = false
+                const frozenRushActionScore = getAIDecisionActionScore({ familyIndex: AI_DECISION_FAMILY.rush, score: 0 }, true, policy)
+                aiProfile.explorationEnabled = savedExplorationEnabled
+                return {
+                    placementPressure: getAIDecisionFamilyBalancePressure(AI_DECISION_FAMILY.placement, policy),
+                    rushPressure: getAIDecisionFamilyBalancePressure(AI_DECISION_FAMILY.rush, policy),
+                    boostPressure: getAIDecisionFamilyBalancePressure(AI_DECISION_FAMILY.boost, policy),
+                    rushLearningMultiplier: getAIDecisionFamilyLearningMultiplier(AI_DECISION_FAMILY.rush, policy),
+                    placementLearningMultiplier: getAIDecisionFamilyLearningMultiplier(AI_DECISION_FAMILY.placement, policy),
+                    rushActionScore: rushActionScore,
+                    placementActionScore: placementActionScore,
+                    frozenRushActionScore: frozenRushActionScore,
+                }
+            })()
             const savedRewardAction = aiProfile.currentAction
             aiProfile.currentAction = null
             const rewardActionSample = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.placement, { id: "reward-baseline", type: "farmer" })
@@ -1711,6 +1732,7 @@ async function main() {
                 denseRewardContract,
                 learningWeightContract,
                 curriculumContract,
+                familyBalanceContract,
                 acceptedContributionMessage,
                 authenticatedSaveState,
                 goalCompleteStartDisabled,
@@ -2119,8 +2141,14 @@ async function main() {
         assert.deepEqual(result.curriculumContract, {
             stages: ["foundation", "diverse", "pressure", "hard-cases"],
             frozen: "frozen",
-            populationRates: [0.15, 0.4, 0.65, 0.85],
+            populationRates: [0.3, 0.6, 0.85, 1],
         })
+        assert.equal(result.familyBalanceContract.placementPressure, 0)
+        assert.ok(result.familyBalanceContract.rushPressure > result.familyBalanceContract.boostPressure)
+        assert.ok(result.familyBalanceContract.boostPressure > 0)
+        assert.ok(result.familyBalanceContract.rushLearningMultiplier > result.familyBalanceContract.placementLearningMultiplier)
+        assert.ok(result.familyBalanceContract.rushActionScore > result.familyBalanceContract.placementActionScore)
+        assert.equal(result.familyBalanceContract.frozenRushActionScore, 0)
         assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
         assert.deepEqual(result.gameplayArbitration, { familyIndex: 5, type: "eco" })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)

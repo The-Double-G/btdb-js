@@ -1517,7 +1517,7 @@ function animate() {
         }
 
         if(autostart) {
-            if(roundReady && gameNow() - timeRoundEnded >= 6000) {
+            if((typeof isMultiplayerActive != "function" || !isMultiplayerActive() || typeof isMultiplayerHost != "function" || isMultiplayerHost()) && roundReady && gameNow() - timeRoundEnded >= 6000) {
                 round += 2
                 if(round != 2) {
                     images2.push(new Images(canvas.width/2, canvas.height/2, canvas.height/12, "", gameNow() + 1000, "Round " + Math.floor(round/2).toLocaleString()))
@@ -2198,6 +2198,7 @@ function animate() {
                 projectiles[i].draw()
             }
         }
+        if(typeof multiplayerDrawRemoteEntities == "function") multiplayerDrawRemoteEntities("projectiles")
         for(var i = 0; i < bananas.length; i++) {
             if(bananas[i].playerSide == 1) {
                 if(bananas[i].x < canvas.width/8 + bananas[i].radius) {
@@ -2295,9 +2296,11 @@ function animate() {
             subtowers[i].update()
             subtowers[i].draw()
         }
+        if(typeof multiplayerDrawRemoteEntities == "function") multiplayerDrawRemoteEntities("subtowers")
         for(var i = 0; i < towers.length; i++) {
             towers[i].draw()
         }
+        if(typeof multiplayerDrawRemoteEntities == "function") multiplayerDrawRemoteEntities("towers")
         for(var i = 0; i < bloons.length; i++) {
             if(bloons[i].dpsTicks == 0 && bloons[i].dpsType != 0) {
                 bloons[i].dpsType = 0
@@ -3316,6 +3319,7 @@ function animate() {
                 bloons[i].draw()
             }
         }
+        if(typeof multiplayerDrawRemoteEntities == "function") multiplayerDrawRemoteEntities("bloons")
         for(var i = 0; i < images.length; i++) {
             images[i].draw()
             if(images[i] && images[i].lifespan <= gameNow()) {
@@ -3346,6 +3350,7 @@ function animate() {
         for(var i = 0; i < bananas.length; i++) {
             bananas[i].draw()
         }
+        if(typeof multiplayerDrawRemoteEntities == "function") multiplayerDrawRemoteEntities("bananas")
         for(var i = 0; i < moneyText.length; i++) {
             for(var k = 0; k < moneyText.length; k++) {
                 if(moneyText[i].x == moneyText[k].x && moneyText[i].y == moneyText[k].y && i != k && moneyText[i].mode != moneyText[k].mode) {
@@ -3401,7 +3406,9 @@ function animate() {
                 ctx.stroke()
             }
         }
+        var multiplayerRuntimeScalarsBeforeDraw = typeof multiplayerPrepareAuthoritativeDisplayScalars == "function" ? multiplayerPrepareAuthoritativeDisplayScalars() : null
         drawUI()
+        if(typeof multiplayerRestoreRuntimeScalars == "function") multiplayerRestoreRuntimeScalars(multiplayerRuntimeScalarsBeforeDraw)
         if(bossMode == true) {
             if(bossCountP1 == 0) {
                 ctx.fillStyle = "white"
@@ -3539,6 +3546,9 @@ function animate() {
         drawAITrainingTrueSelfPlayOverlay()
         if(typeof updateLocalMatchCollectionTelemetry == "function") {
             updateLocalMatchCollectionTelemetry()
+        }
+        if(typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof isMultiplayerHost == "function" && isMultiplayerHost() == false && multiplayerState.authoritativeScalars && Object.prototype.hasOwnProperty.call(multiplayerState.authoritativeScalars, "gameOver")) {
+            gameOver = multiplayerState.authoritativeScalars.gameOver
         }
         if(p1lives <= 0 || p2lives <= 0) {
             gameOver = true

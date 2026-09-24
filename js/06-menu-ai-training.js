@@ -33,10 +33,10 @@ var AI_TRAINING_TRUE_SELF_PLAY_STALL_TIMEOUT_MS = 12000
 var AI_TRAINING_TRUE_SELF_PLAY_PREGAME_STALL_TIMEOUT_MS = 10000
 var AI_TRAINING_CURRICULUM_BLOCK_MATCHES = 32
 var AI_TRAINING_CURRICULUM = [
-    { id: "foundation", populationOpponentRate: 0.15, explorationScale: 1 },
-    { id: "diverse", populationOpponentRate: 0.4, explorationScale: 0.9 },
-    { id: "pressure", populationOpponentRate: 0.65, explorationScale: 0.75 },
-    { id: "hard-cases", populationOpponentRate: 0.85, explorationScale: 0.6 },
+    { id: "foundation", populationOpponentRate: 0.3, explorationScale: 1 },
+    { id: "diverse", populationOpponentRate: 0.6, explorationScale: 0.95 },
+    { id: "pressure", populationOpponentRate: 0.85, explorationScale: 0.85 },
+    { id: "hard-cases", populationOpponentRate: 1, explorationScale: 0.75 },
 ]
 var AI_TRAINING_MODES = [
     {

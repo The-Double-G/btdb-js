@@ -16,6 +16,7 @@ function markKeyUsed(keyCode) {
 }
 
 function handlePauseToggleInput(eventType) {
+    if(typeof isMultiplayerActive == "function" && isMultiplayerActive()) return false
     if(eventType == "keydown" && keyState[KEY_CODES.pause] && pauseToggleReady()) {
         markPauseToggleUsed()
         toggleGamePaused()
@@ -160,36 +161,36 @@ function trySelectLoadoutOrTower(side) {
 
 // Pregame-only toggles.
 function handlePregameInput() {
-    if(keyState[KEY_CODES.p1Decal] && isKeyReady(KEY_CODES.p1Decal)) {
+    if((typeof isMultiplayerActive != "function" || !isMultiplayerActive() || isMultiplayerLocalSide(PLAYER_SIDE.left)) && keyState[KEY_CODES.p1Decal] && isKeyReady(KEY_CODES.p1Decal)) {
         markKeyUsed(KEY_CODES.p1Decal)
         players[PLAYER_SIDE.left].decalEnabled = !players[PLAYER_SIDE.left].decalEnabled
     }
-    if(keyState[KEY_CODES.p2Decal] && isKeyReady(KEY_CODES.p2Decal)) {
+    if((typeof isMultiplayerActive != "function" || !isMultiplayerActive() || isMultiplayerLocalSide(PLAYER_SIDE.right)) && keyState[KEY_CODES.p2Decal] && isKeyReady(KEY_CODES.p2Decal)) {
         markKeyUsed(KEY_CODES.p2Decal)
         players[PLAYER_SIDE.right].decalEnabled = !players[PLAYER_SIDE.right].decalEnabled
     }
-    if(keyState[KEY_CODES.cycleMap] && isKeyReady(KEY_CODES.cycleMap)) {
+    if(keyState[KEY_CODES.cycleMap] && isKeyReady(KEY_CODES.cycleMap) && (typeof isMultiplayerActive != "function" || !isMultiplayerActive() || typeof isMultiplayerHost != "function" || isMultiplayerHost())) {
         markKeyUsed(KEY_CODES.cycleMap)
         mapNumber++
         if(mapNumber > 1) {
             mapNumber = 0
         }
     }
-    if(aiEnabled == false && keyState[KEY_CODES.togglePractice] && isKeyReady(KEY_CODES.togglePractice)) {
+    if((typeof isMultiplayerActive != "function" || !isMultiplayerActive()) && aiEnabled == false && keyState[KEY_CODES.togglePractice] && isKeyReady(KEY_CODES.togglePractice)) {
         markKeyUsed(KEY_CODES.togglePractice)
         practiceMode = !practiceMode
         if(practiceMode && nonPlayableSide != 1 && nonPlayableSide != 2) {
             nonPlayableSide = 2
         }
     }
-    if(aiEnabled == false && keyState[KEY_CODES.cyclePracticeSide] && isKeyReady(KEY_CODES.cyclePracticeSide)) {
+    if((typeof isMultiplayerActive != "function" || !isMultiplayerActive()) && aiEnabled == false && keyState[KEY_CODES.cyclePracticeSide] && isKeyReady(KEY_CODES.cyclePracticeSide)) {
         markKeyUsed(KEY_CODES.cyclePracticeSide)
         nonPlayableSide++
         if(nonPlayableSide > 2) {
             nonPlayableSide = 1
         }
     }
-    if(keyState[KEY_CODES.toggleBossMode] && isKeyReady(KEY_CODES.toggleBossMode)) {
+    if((typeof isMultiplayerActive != "function" || !isMultiplayerActive()) && keyState[KEY_CODES.toggleBossMode] && isKeyReady(KEY_CODES.toggleBossMode)) {
         markKeyUsed(KEY_CODES.toggleBossMode)
         bossMode = !bossMode
     }
@@ -997,6 +998,10 @@ function clearKeyState() {
 
 function autoPauseOnVisibilityLoss() {
     clearKeyState()
+    if(typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof multiplayerSetTabInactive == "function") {
+        multiplayerSetTabInactive(true)
+        return
+    }
     if(typeof isAITrainingBackgroundProgressActive == "function" && isAITrainingBackgroundProgressActive()) {
         return
     }
@@ -1008,11 +1013,17 @@ function autoPauseOnVisibilityLoss() {
 document.addEventListener("visibilitychange", function() {
     if(document.hidden) {
         autoPauseOnVisibilityLoss()
+    } else if(typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof multiplayerSetTabInactive == "function") {
+        multiplayerSetTabInactive(false)
     }
 })
 
 addEventListener("blur", function() {
     autoPauseOnVisibilityLoss()
+})
+
+addEventListener("focus", function() {
+    if(typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof multiplayerSetTabInactive == "function") multiplayerSetTabInactive(false)
 })
 
 onkeydown = onkeyup = function(e){
