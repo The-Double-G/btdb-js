@@ -749,37 +749,53 @@ function validateBranchRef(response, branch, label) {
 }
 
 class GitHubApi {
-    constructor(repository, token, fetchImplementation = global.fetch) {
+    constructor(repository, token, fetchImplementation = global.fetch, sleepImplementation = delay => new Promise(resolve => setTimeout(resolve, delay))) {
         assertRepository(repository, "repository")
         assertString(token, "GitHub token", 4096)
         if(typeof fetchImplementation != "function") fail("fetch is unavailable")
+        if(typeof sleepImplementation != "function") fail("sleep is unavailable")
         this.repository = repository
         this.token = token
         this.fetch = fetchImplementation
+        this.sleep = sleepImplementation
         this.base = `https://api.github.com/repos/${repository}`
     }
 
     async request(path, options = {}) {
-        let response
-        try {
-            response = await this.fetch(`${this.base}${path}`, {
-                method: options.method || "GET",
-                redirect: "follow",
-                headers: {
-                    Accept: "application/vnd.github+json",
-                    Authorization: `Bearer ${this.token}`,
-                    "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "btdb-ai-training-status",
-                    ...(options.body == null ? {} : { "Content-Type": "application/json" }),
-                },
-                body: options.body == null ? undefined : JSON.stringify(options.body),
-            })
-        } catch(error) {
-            throw new ApiError(`GitHub API request failed: ${error.message}`, 0)
+        const method = options.method || "GET"
+        const retryable = method == "GET"
+        for(let attempt = 1; attempt <= 3; attempt++) {
+            let response
+            try {
+                response = await this.fetch(`${this.base}${path}`, {
+                    method,
+                    redirect: "follow",
+                    headers: {
+                        Accept: "application/vnd.github+json",
+                        Authorization: `Bearer ${this.token}`,
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "User-Agent": "btdb-ai-training-status",
+                        ...(options.body == null ? {} : { "Content-Type": "application/json" }),
+                    },
+                    body: options.body == null ? undefined : JSON.stringify(options.body),
+                })
+            } catch(error) {
+                if(retryable && attempt < 3) {
+                    await this.sleep(attempt * 250)
+                    continue
+                }
+                throw new ApiError(`GitHub API request failed: ${error.message}`, 0)
+            }
+            if(options.notFoundIsNull && response.status == 404) return null
+            if(!response.ok) {
+                if(retryable && attempt < 3 && (response.status == 429 || response.status >= 500)) {
+                    await this.sleep(attempt * 250)
+                    continue
+                }
+                throw new ApiError(`GitHub API request failed with HTTP ${response.status}`, response.status)
+            }
+            return readResponseBytes(response, options.maximum || API_JSON_MAX_BYTES)
         }
-        if(options.notFoundIsNull && response.status == 404) return null
-        if(!response.ok) throw new ApiError(`GitHub API request failed with HTTP ${response.status}`, response.status)
-        return readResponseBytes(response, options.maximum || API_JSON_MAX_BYTES)
     }
 
     async requestJson(path, options = {}) {

@@ -292,6 +292,7 @@ function queuedFetch(responses, requests) {
         })
         const response = responses.shift()
         if(response === undefined) throw new Error(`Unexpected request: ${options.method} ${url}`)
+        if(response instanceof Error) throw response
         return jsonResponse(response.status, response.value)
     }
 }
@@ -348,6 +349,12 @@ async function publish(api, payload, instant) {
 
 async function main() {
     const identity = workflowIdentity()
+    const retryRequests = []
+    const retryDelays = []
+    const retryApi = new GitHubApi(REPOSITORY, "test-token", queuedFetch([new Error("temporary network failure"), { status: 200, value: identity }], retryRequests), async delay => { retryDelays.push(delay) })
+    assert.deepEqual(await retryApi.getTrainingWorkflow(), identity)
+    assert.equal(retryRequests.length, 2)
+    assert.deepEqual(retryDelays, [250])
     const dynamicQueued = restRun({ status: "queued", runId: 90, runNumber: 9 })
     assert.equal(validateSourceRun(dynamicQueued, identity, REPOSITORY, REPOSITORY_ID).state, "requested")
     for(const [status, state] of [["queued", "requested"], ["requested", "requested"], ["pending", "requested"], ["waiting", "requested"], ["in_progress", "in_progress"], ["completed", "completed"]]) {

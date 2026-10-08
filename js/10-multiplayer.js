@@ -1,10 +1,12 @@
 // Casual two-player online mode. Each peer owns its assigned side; the host also
 // publishes shared match timing while both peers exchange semantic actions.
 var MULTIPLAYER_PROTOCOL_VERSION = 1
-var MULTIPLAYER_BUILD = "v2.6.0-multiplayer27"
+var MULTIPLAYER_BUILD = "v2.6.0-multiplayer31"
 var MULTIPLAYER_WEBSOCKET_URL = "wss://cursor-share-server.onrender.com/"
 var MULTIPLAYER_DIRECTORY_ENDPOINT = "lobbies.php?protocol=1"
 var MULTIPLAYER_SNAPSHOT_INTERVAL_MS = 100
+var MULTIPLAYER_REMOTE_INTERPOLATION_MS = 125
+var MULTIPLAYER_POP_EFFECT_RETENTION_MS = 500
 var multiplayerState = {
     active: false,
     role: "",
@@ -50,6 +52,10 @@ var multiplayerState = {
     remoteEntityTargets: null,
     remoteEntityOrder: { bloons: [], towers: [], projectiles: [], bananas: [], subtowers: [] },
     remoteEntityRenderState: { bloons: {}, towers: {}, projectiles: {}, bananas: {}, subtowers: {} },
+    popEffects: [],
+    nextPopEffectID: 1,
+    receivedPopEffects: {},
+    guestSelectionDisplayProxy: null,
     authoritativeScalars: {},
     tabInactive: false,
     tabAutoPaused: false,
@@ -387,6 +393,10 @@ function multiplayerResetConnection() {
     multiplayerState.remoteEntityTargets = null
     multiplayerState.remoteEntityOrder = { bloons: [], towers: [], projectiles: [], bananas: [], subtowers: [] }
     multiplayerState.remoteEntityRenderState = { bloons: {}, towers: {}, projectiles: {}, bananas: {}, subtowers: {} }
+    multiplayerState.popEffects = []
+    multiplayerState.nextPopEffectID = 1
+    multiplayerState.receivedPopEffects = {}
+    multiplayerState.guestSelectionDisplayProxy = null
     multiplayerState.authoritativeScalars = {}
     multiplayerState.tabInactive = false
     multiplayerState.tabAutoPaused = false
@@ -927,17 +937,44 @@ function multiplayerSendLocalKey(event) {
     }
 }
 
+function multiplayerSelectGuestRemoteTowerAtCursor() {
+    if(multiplayerState.role != "guest") return
+    var targets = multiplayerState.remoteEntityTargets && multiplayerState.remoteEntityTargets.towers
+    if(!targets) return
+    var cursorIndex = multiplayerState.localSide == PLAYER_SIDE.left ? 0 : 1
+    var activeCursor = cursor[cursorIndex]
+    var ids = Object.keys(targets)
+    for(var targetIndex = 0; targetIndex < ids.length; targetIndex++) {
+        var target = targets[ids[targetIndex]]
+        if(!Array.isArray(target) || target[3] != multiplayerState.localSide) continue
+        var radius = Number(target[5]) || 0
+        target[7] = activeCursor.x >= Number(target[1]) - radius * 0.707 && activeCursor.x <= Number(target[1]) + radius * 0.707 && activeCursor.y >= Number(target[2]) - radius * 0.707 && activeCursor.y <= Number(target[2]) + radius * 0.707
+    }
+}
+
+function multiplayerHandleGuestLiveKey(event) {
+    var control = multiplayerControlForKey(multiplayerState.localSide, event.keyCode)
+    if(!control) return false
+    keyState[event.keyCode] = event.type == "keydown"
+    if(multiplayerIsCursorControl(control) && event.type == "keydown") handleCursorMovementInput()
+    if(control == "select" && event.type == "keydown") multiplayerSelectGuestRemoteTowerAtCursor()
+    multiplayerSendLocalKey(event)
+    return true
+}
+
 var multiplayerBaseKeydown = typeof onkeydown == "function" ? onkeydown : null
 var multiplayerBaseKeyup = typeof onkeyup == "function" ? onkeyup : null
 if(multiplayerBaseKeydown && multiplayerBaseKeyup) {
     onkeydown = function(event) {
         if(multiplayerState.active && multiplayerControlForKey(multiplayerState.remoteSide, event.keyCode)) return false
+        if(multiplayerState.active && multiplayerState.role == "guest" && gameStarted && multiplayerHandleGuestLiveKey(event)) return false
         var result = multiplayerBaseKeydown.call(this, event)
         multiplayerSendLocalKey(event)
         return result
     }
     onkeyup = function(event) {
         if(multiplayerState.active && multiplayerControlForKey(multiplayerState.remoteSide, event.keyCode)) return false
+        if(multiplayerState.active && multiplayerState.role == "guest" && gameStarted && multiplayerHandleGuestLiveKey(event)) return false
         var result = multiplayerBaseKeyup.call(this, event)
         multiplayerSendLocalKey(event)
         return result
@@ -1038,13 +1075,62 @@ function multiplayerTransientEntityId(entity, prefix) {
     return id
 }
 
+function multiplayerRecordPopEffect(x, y, radius, rotationAngle) {
+    if(!isMultiplayerHost()) return
+    var now = realNow()
+    multiplayerPrunePopEffects(now)
+    multiplayerState.popEffects.push({
+        id: multiplayerState.nextPopEffectID++,
+        x: multiplayerQuantize(x),
+        y: multiplayerQuantize(y),
+        radius: multiplayerQuantize(radius),
+        rotationAngle: multiplayerQuantize(rotationAngle, 1000),
+        createdAt: now,
+    })
+}
+
+function multiplayerPrunePopEffects(now) {
+    var cutoff = now - MULTIPLAYER_POP_EFFECT_RETENTION_MS
+    multiplayerState.popEffects = multiplayerState.popEffects.filter(function(effect) { return effect && effect.createdAt >= cutoff })
+}
+
+function multiplayerPopEffectsForSnapshot() {
+    multiplayerPrunePopEffects(realNow())
+    return multiplayerState.popEffects.map(function(effect) {
+        return [effect.id, effect.x, effect.y, effect.radius, effect.rotationAngle]
+    })
+}
+
+function multiplayerApplyPopEffects(effects) {
+    if(multiplayerState.role != "guest" && multiplayerState.role != "spectator") return
+    if(!Array.isArray(effects)) return
+    var now = realNow()
+    var seen = multiplayerState.receivedPopEffects
+    var ids = Object.keys(seen)
+    for(var seenIndex = 0; seenIndex < ids.length; seenIndex++) if(now - seen[ids[seenIndex]] > MULTIPLAYER_POP_EFFECT_RETENTION_MS * 2) delete seen[ids[seenIndex]]
+    for(var effectIndex = 0; effectIndex < effects.length; effectIndex++) {
+        var effect = effects[effectIndex]
+        if(!Array.isArray(effect) || effect[0] == null || seen[effect[0]]) continue
+        var x = Number(effect[1])
+        var y = Number(effect[2])
+        var radius = Number(effect[3])
+        var rotationAngle = Number(effect[4])
+        if(!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(radius) || !Number.isFinite(rotationAngle)) continue
+        seen[effect[0]] = now
+        var pop = new Images(x, y, radius, "pop.png", gameNow() + 100, "")
+        pop.rotationAngle = rotationAngle
+        pop.multiplayerRemotePop = true
+        images.push(pop)
+    }
+}
+
 function multiplayerCreateCompactEntities(side) {
     return {
         bloons: bloons.filter(function(bloon) { return !side || bloon.playerSide == side }).map(function(bloon) {
             return [bloon.bloonID, multiplayerQuantize(bloon.x), multiplayerQuantize(bloon.y), multiplayerQuantize(bloon.pathPos, 100), multiplayerQuantize(bloon.health, 1), multiplayerQuantize(bloon.radius), multiplayerQuantize(bloon.drawRad), bloon.image, bloon.playerSide, multiplayerQuantize(bloon.iced), multiplayerQuantize(bloon.glued), multiplayerQuantize(bloon.stunned), multiplayerQuantize(bloon.dpsTicks, 1), bloon.dpsType, bloon.isAI === true]
         }),
         towers: towers.filter(function(tower) { return !side || tower.playerSide == side }).map(function(tower) {
-            return [tower.towerID, multiplayerQuantize(tower.x), multiplayerQuantize(tower.y), tower.playerSide, tower.towerType, multiplayerQuantize(tower.radius), typeof tower.getImagePath == "function" ? tower.getImagePath() : "000" + tower.towerType + ".png", tower.selected === true, tower.path1Upgrades, tower.path2Upgrades, tower.path3Upgrades, multiplayerQuantize(tower.rotationAngle, 100)]
+            return [tower.towerID, multiplayerQuantize(tower.x), multiplayerQuantize(tower.y), tower.playerSide, tower.towerType, multiplayerQuantize(tower.radius), typeof tower.getImagePath == "function" ? tower.getImagePath() : "000" + tower.towerType + ".png", tower.selected === true, tower.path1Upgrades, tower.path2Upgrades, tower.path3Upgrades, multiplayerQuantize(tower.rotationAngle, 100), multiplayerQuantize(tower.range), tower.targetPrio, multiplayerQuantize(tower.totalCost), multiplayerQuantize(tower.popCount), multiplayerQuantize(tower.towerVar), multiplayerQuantize(tower.cashGenerated), multiplayerQuantize(tower.dpsCount), tower.degree]
         }),
         projectiles: projectiles.filter(function(projectile) { return !side || projectile.playerSide == side }).map(function(projectile) {
             return [multiplayerTransientEntityId(projectile, "projectile-"), multiplayerQuantize(projectile.x), multiplayerQuantize(projectile.y), multiplayerQuantize(projectile.radius), projectile.image, multiplayerQuantize(projectile.rotationAngle, 100), projectile.playerSide]
@@ -1058,8 +1144,41 @@ function multiplayerCreateCompactEntities(side) {
     }
 }
 
+function multiplayerRemoteEntityRotationIndex(category) {
+    if(category == "towers") return 11
+    if(category == "projectiles" || category == "subtowers") return 5
+    return -1
+}
+
+function multiplayerIsRenderableRemoteEntity(category, target) {
+    if(!Array.isArray(target)) return false
+    if(category == "bloons" && Number(target[3]) <= 0) return false
+    return Number.isFinite(Number(target[1])) && Number.isFinite(Number(target[2]))
+}
+
+function multiplayerInterpolateAngle(from, to, progress) {
+    var delta = ((to - from + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+    return from + delta * progress
+}
+
+function multiplayerInterpolateRemoteEntity(position, now) {
+    if(!position) return null
+    var progress = clamp((now - position.receivedAt) / MULTIPLAYER_REMOTE_INTERPOLATION_MS, 0, 1)
+    position.x = position.fromX + (position.toX - position.fromX) * progress
+    position.y = position.fromY + (position.toY - position.fromY) * progress
+    position.rotationAngle = multiplayerInterpolateAngle(position.fromRotationAngle, position.toRotationAngle, progress)
+    return position
+}
+
+function multiplayerRemoteEntityIdsForDraw(category) {
+    var targets = multiplayerState.remoteEntityTargets && multiplayerState.remoteEntityTargets[category]
+    var ids = multiplayerState.remoteEntityOrder[category] || Object.keys(targets || {})
+    return category == "bloons" ? ids.slice(0).reverse() : ids
+}
+
 function multiplayerStoreCompactEntities(entities) {
     if(!entities || typeof entities != "object") return
+    var now = realNow()
     var targets = { bloons: {}, towers: {}, projectiles: {}, bananas: {}, subtowers: {} }
     var order = { bloons: [], towers: [], projectiles: [], bananas: [], subtowers: [] }
     var categories = ["bloons", "towers", "projectiles", "bananas", "subtowers"]
@@ -1072,7 +1191,30 @@ function multiplayerStoreCompactEntities(entities) {
             var id = String(value[0])
             targets[category][id] = value
             order[category].push(id)
+            var current = multiplayerState.remoteEntityRenderState[category][id]
+            if(!multiplayerIsRenderableRemoteEntity(category, value)) {
+                delete multiplayerState.remoteEntityRenderState[category][id]
+                continue
+            }
+            var x = Number(value[1])
+            var y = Number(value[2])
+            var rotationIndex = multiplayerRemoteEntityRotationIndex(category)
+            var rotationAngle = rotationIndex < 0 ? 0 : Number(value[rotationIndex]) || 0
+            if(!current) {
+                multiplayerState.remoteEntityRenderState[category][id] = { x: x, y: y, fromX: x, fromY: y, toX: x, toY: y, rotationAngle: rotationAngle, fromRotationAngle: rotationAngle, toRotationAngle: rotationAngle, receivedAt: now }
+            } else {
+                multiplayerInterpolateRemoteEntity(current, now)
+                current.fromX = current.x
+                current.fromY = current.y
+                current.toX = x
+                current.toY = y
+                current.fromRotationAngle = current.rotationAngle
+                current.toRotationAngle = rotationAngle
+                current.receivedAt = now
+            }
         }
+        var renderedIds = Object.keys(multiplayerState.remoteEntityRenderState[category])
+        for(var renderedIndex = 0; renderedIndex < renderedIds.length; renderedIndex++) if(!multiplayerIsRenderableRemoteEntity(category, targets[category][renderedIds[renderedIndex]])) delete multiplayerState.remoteEntityRenderState[category][renderedIds[renderedIndex]]
     }
     multiplayerState.remoteEntityTargets = targets
     multiplayerState.remoteEntityOrder = order
@@ -1084,6 +1226,15 @@ function multiplayerShouldSuppressRemoteEntityDraw(entity) {
     return multiplayerState.role == "guest"
 }
 
+function multiplayerDrawRemoteBloon(target, position) {
+    var radius = Number(target[5]) || 25
+    drawCenteredAsset(String(target[7] || "red.png"), position.x, position.y, radius)
+    if(target[8] == PLAYER_SIDE.left && p2decal && target[14] === false || target[8] == PLAYER_SIDE.right && p1decal && target[14] === false) {
+        drawCenteredAsset(radius != Number(target[6]) ? "decaliceswagmoab.png" : "decaliceswag.png", position.x, position.y, radius)
+    }
+    if(Number(target[12]) > 0) drawCenteredAsset(radius != Number(target[6]) ? "onfiremoab.png" : "onfire.png", position.x, position.y, radius)
+}
+
 function multiplayerDrawRemoteEntities(categoryFilter) {
     if(!multiplayerState.active || !multiplayerState.remoteEntityTargets || gameOver) return
     var categories = categoryFilter ? [categoryFilter] : ["bloons", "towers", "projectiles", "bananas", "subtowers"]
@@ -1092,33 +1243,101 @@ function multiplayerDrawRemoteEntities(categoryFilter) {
         var category = categories[categoryIndex]
         var targets = multiplayerState.remoteEntityTargets[category] || {}
         var current = renderState[category]
-        var targetIds = multiplayerState.remoteEntityOrder[category] || Object.keys(targets)
+        var targetIds = multiplayerRemoteEntityIdsForDraw(category)
         for(var targetIndex = 0; targetIndex < targetIds.length; targetIndex++) {
             var id = targetIds[targetIndex]
             var target = targets[id]
-            if(!Array.isArray(target)) continue
+            if(!multiplayerIsRenderableRemoteEntity(category, target)) {
+                delete current[id]
+                continue
+            }
             var position = current[id]
             if(!position) {
-                position = { x: Number(target[1]) || 0, y: Number(target[2]) || 0 }
+                var rotationIndex = multiplayerRemoteEntityRotationIndex(category)
+                var rotationAngle = rotationIndex < 0 ? 0 : Number(target[rotationIndex]) || 0
+                position = { x: Number(target[1]), y: Number(target[2]), fromX: Number(target[1]), fromY: Number(target[2]), toX: Number(target[1]), toY: Number(target[2]), rotationAngle: rotationAngle, fromRotationAngle: rotationAngle, toRotationAngle: rotationAngle, receivedAt: realNow() }
                 current[id] = position
             }
-            position.x += ((Number(target[1]) || 0) - position.x) * 0.45
-            position.y += ((Number(target[2]) || 0) - position.y) * 0.45
+            multiplayerInterpolateRemoteEntity(position, realNow())
             if(category == "bloons") {
-                drawCenteredAsset(String(target[7] || "red.png"), position.x, position.y, Number(target[5]) || 25)
+                multiplayerDrawRemoteBloon(target, position)
             } else if(category == "towers") {
-                drawRotatedCenteredAsset(String(target[6] || "000" + target[4] + ".png"), position.x, position.y, Number(target[5]) || 30, Number(target[11]) || 0)
+                drawRotatedCenteredAsset(String(target[6] || "000" + target[4] + ".png"), position.x, position.y, Number(target[5]) || 30, position.rotationAngle)
             } else if(category == "projectiles") {
-                drawRotatedCenteredAsset(String(target[4] || ""), position.x, position.y, Number(target[3]) || 10, Number(target[5]) || 0)
+                drawRotatedCenteredAsset(String(target[4] || ""), position.x, position.y, Number(target[3]) || 10, position.rotationAngle)
             } else if(category == "bananas") {
                 drawCenteredAsset(String(target[4] || "banana.png"), position.x, position.y, Number(target[3]) || 15)
             } else if(category == "subtowers") {
-                drawRotatedCenteredAsset(String(target[4] || ""), position.x, position.y, Number(target[3]) || 15, Number(target[5]) || 0)
+                drawRotatedCenteredAsset(String(target[4] || ""), position.x, position.y, Number(target[3]) || 15, position.rotationAngle)
             }
         }
         var renderedIds = Object.keys(current)
-        for(var renderedIndex = 0; renderedIndex < renderedIds.length; renderedIndex++) if(!Object.prototype.hasOwnProperty.call(targets, renderedIds[renderedIndex])) delete current[renderedIds[renderedIndex]]
+        for(var renderedIndex = 0; renderedIndex < renderedIds.length; renderedIndex++) if(!multiplayerIsRenderableRemoteEntity(category, targets[renderedIds[renderedIndex]])) delete current[renderedIds[renderedIndex]]
     }
+}
+
+function multiplayerDrawRemoteTowerSelectionRanges() {
+    if(!multiplayerState.active || multiplayerState.role != "guest") return
+    var targets = multiplayerState.remoteEntityTargets && multiplayerState.remoteEntityTargets.towers
+    if(!targets) return
+    var positions = multiplayerState.remoteEntityRenderState.towers || {}
+    var ids = Object.keys(targets)
+    for(var targetIndex = 0; targetIndex < ids.length; targetIndex++) {
+        var target = targets[ids[targetIndex]]
+        if(!Array.isArray(target) || target[3] != multiplayerState.localSide || target[7] !== true) continue
+        var position = positions[ids[targetIndex]] || { x: Number(target[1]) || 0, y: Number(target[2]) || 0 }
+        var range = Number(target[12]) || 50
+        ctx.lineWidth = 3
+        ctx.strokeStyle = "black"
+        ctx.beginPath()
+        ctx.arc(position.x, position.y, range, 0, Math.PI * 2)
+        ctx.stroke()
+    }
+}
+
+function multiplayerCreateGuestSelectionDisplayProxy() {
+    if(multiplayerState.role != "guest" || typeof Tower != "function") return null
+    var targets = multiplayerState.remoteEntityTargets && multiplayerState.remoteEntityTargets.towers
+    if(!targets) return null
+    var ids = Object.keys(targets)
+    var target = null
+    for(var targetIndex = 0; targetIndex < ids.length; targetIndex++) {
+        var candidate = targets[ids[targetIndex]]
+        if(Array.isArray(candidate) && candidate[3] == multiplayerState.localSide && candidate[7] === true) {
+            target = candidate
+            break
+        }
+    }
+    if(!target) {
+        multiplayerState.guestSelectionDisplayProxy = null
+        return null
+    }
+    var proxy = multiplayerState.guestSelectionDisplayProxy
+    if(!proxy || proxy.multiplayerSourceID != target[0] || proxy.towerType != target[4]) {
+        var nextID = nextTowerID
+        proxy = new Tower(Number(target[1]) || 0, Number(target[2]) || 0, Number(target[5]) || 30, Number(target[12]) || 50, target[4], target[3])
+        nextTowerID = nextID
+        proxy.multiplayerSourceID = target[0]
+        multiplayerState.guestSelectionDisplayProxy = proxy
+    }
+    proxy.x = Number(target[1]) || 0
+    proxy.y = Number(target[2]) || 0
+    proxy.radius = Number(target[5]) || 30
+    proxy.range = Number(target[12]) || 50
+    proxy.playerSide = target[3]
+    proxy.selected = true
+    proxy.path1Upgrades = Number(target[8]) || 0
+    proxy.path2Upgrades = Number(target[9]) || 0
+    proxy.path3Upgrades = Number(target[10]) || 0
+    proxy.rotationAngle = Number(target[11]) || 0
+    proxy.targetPrio = Number(target[13]) || 0
+    proxy.totalCost = Number(target[14]) || 0
+    proxy.popCount = Number(target[15]) || 0
+    proxy.towerVar = Number(target[16]) || 0
+    proxy.cashGenerated = Number(target[17]) || 0
+    proxy.dpsCount = Number(target[18]) || 0
+    proxy.degree = Number(target[19]) || 0
+    return proxy
 }
 
 function multiplayerSnapshotIncludesScalar(key, side, includeShared) {
@@ -1176,6 +1395,7 @@ function multiplayerCreateSnapshot(side, includeShared, entitySide) {
         },
         cursors: [{ x: cursor[0].x, y: cursor[0].y }, { x: cursor[1].x, y: cursor[1].y }],
         entities: multiplayerCreateCompactEntities(entitySide),
+        popEffects: multiplayerPopEffectsForSnapshot(),
     }
 }
 
@@ -1205,6 +1425,7 @@ function multiplayerApplySnapshot(snapshot, isWorldSnapshot, applyEntities, term
     if(isWorldSnapshot) multiplayerState.lastSnapshotReceivedAt = realNow()
     else multiplayerState.lastSideSnapshotReceivedAt = realNow()
     if(applyEntities !== false) multiplayerStoreCompactEntities(snapshot.entities)
+    if(isWorldSnapshot) multiplayerApplyPopEffects(snapshot.popEffects)
     if(multiplayerState.role == "spectator" && snapshot.loadouts) {
         if(Array.isArray(snapshot.loadouts.p1Towers)) p1Towers = snapshot.loadouts.p1Towers.slice(0)
         if(Array.isArray(snapshot.loadouts.p2Towers)) p2Towers = snapshot.loadouts.p2Towers.slice(0)
@@ -1258,15 +1479,9 @@ function multiplayerSendSnapshotIfDue() {
 }
 
 function multiplayerSendSideSnapshotIfDue() {
-    if(!multiplayerState.active || multiplayerState.role != "guest" || !multiplayerState.socket || multiplayerState.socket.readyState != WebSocket.OPEN) return
-    var now = realNow()
-    var localLives = multiplayerState.localSide == PLAYER_SIDE.left ? p1lives : p2lives
-    var terminal = gameOver === true || Number(localLives) <= 0
-    if(!terminal && now < multiplayerState.lastSideSnapshotSentAt + MULTIPLAYER_SNAPSHOT_INTERVAL_MS) return
-    if(terminal && multiplayerState.sideTerminalSent) return
-    multiplayerState.lastSideSnapshotSentAt = now
-    multiplayerSendMessage("sideSnapshot", { side: multiplayerState.localSide, terminal: terminal, snapshot: multiplayerCreateSideSnapshot(multiplayerState.localSide) })
-    if(terminal) multiplayerState.sideTerminalSent = true
+    // The host simulates both sides. Guest input is semantic `key` data only;
+    // sending guest runtime scalars back would race the canonical world snapshot.
+    return
 }
 
 function multiplayerPublishSpectatorSnapshotIfDue(force) {

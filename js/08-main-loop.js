@@ -3406,8 +3406,15 @@ function animate() {
                 ctx.stroke()
             }
         }
+        if(typeof multiplayerDrawRemoteTowerSelectionRanges == "function") multiplayerDrawRemoteTowerSelectionRanges()
         var multiplayerRuntimeScalarsBeforeDraw = typeof multiplayerPrepareAuthoritativeDisplayScalars == "function" ? multiplayerPrepareAuthoritativeDisplayScalars() : null
-        drawUI()
+        var multiplayerSelectionDisplayProxy = typeof multiplayerCreateGuestSelectionDisplayProxy == "function" ? multiplayerCreateGuestSelectionDisplayProxy() : null
+        if(multiplayerSelectionDisplayProxy) towers.push(multiplayerSelectionDisplayProxy)
+        try {
+            drawUI()
+        } finally {
+            if(multiplayerSelectionDisplayProxy) towers.pop()
+        }
         if(typeof multiplayerRestoreRuntimeScalars == "function") multiplayerRestoreRuntimeScalars(multiplayerRuntimeScalarsBeforeDraw)
         if(bossMode == true) {
             if(bossCountP1 == 0) {

@@ -720,10 +720,12 @@ class Images {
         this.rotationAngle = 0
         if(this.image == "pop.png") {
             this.rotationAngle = Math.random() * 2 * Math.PI
+            if(typeof multiplayerRecordPopEffect == "function") multiplayerRecordPopEffect(this.x, this.y, this.radius, this.rotationAngle)
         }
     }
 
     draw() {
+        if(this.image == "pop.png" && typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof isMultiplayerHost == "function" && isMultiplayerHost() == false && this.multiplayerRemotePop !== true) return
         drawRotatedCenteredAsset(this.image, this.x, this.y, this.radius, this.rotationAngle)
         ctx.lineWidth = 5
         ctx.strokeStyle = "black"

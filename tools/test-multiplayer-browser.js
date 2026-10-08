@@ -125,6 +125,19 @@ async function main() {
         })
         await guest.waitForFunction(() => p1money == 10000 && p1eco == 42 && p1lives == 99)
         await guest.evaluate(() => {
+            p1money = 1
+            p1eco = 0
+            p1lives = 1
+            multiplayerSendSideSnapshotIfDue()
+        })
+        await host.waitForTimeout(250)
+        assert.deepEqual(await host.evaluate(() => ({ money: p1money, eco: p1eco, lives: p1lives })), { money: 10000, eco: 42, lives: 99 })
+        await host.evaluate(() => {
+            multiplayerState.lastSnapshotSentAt = 0
+            multiplayerSendSnapshotIfDue()
+        })
+        await guest.waitForFunction(() => p1money == 10000 && p1eco == 42 && p1lives == 99)
+        await guest.evaluate(() => {
             onkeydown({ keyCode: KEY_CODES.p1Path1, type: "keydown" })
             onkeyup({ keyCode: KEY_CODES.p1Path1, type: "keyup" })
         })
@@ -144,12 +157,77 @@ async function main() {
             const localTower = towers.find(tower => tower && tower.playerSide == multiplayerState.localSide && tower.towerType == "dart")
             const remoteTargets = Object.values(multiplayerState.remoteEntityTargets?.towers || {})
             return {
-                localSuppressed: multiplayerShouldSuppressRemoteEntityDraw(localTower),
+                localRuntimeTower: !!localTower,
                 localEchoedByHost: remoteTargets.some(tower => tower[3] == multiplayerState.localSide),
             }
         })
-        assert.equal(guestLocalRender.localSuppressed, true)
+        assert.equal(guestLocalRender.localRuntimeTower, false)
         assert.equal(guestLocalRender.localEchoedByHost, true)
+
+        const selectableTowers = await host.evaluate(() => {
+            const secondTower = new Tower(canvas.width / 3, canvas.height * 0.3, 30, 125, "tack", PLAYER_SIDE.left)
+            secondTower.path1Upgrades = 2
+            towers.push(secondTower)
+            multiplayerState.lastSnapshotSentAt = 0
+            multiplayerSendSnapshotIfDue()
+            return towers.filter(tower => tower && tower.playerSide == PLAYER_SIDE.left).slice(-2).map(tower => ({ id: String(tower.towerID), x: tower.x, y: tower.y }))
+        })
+        await guest.waitForFunction(ids => ids.every(id => multiplayerState.remoteEntityTargets.towers[id]), selectableTowers.map(tower => tower.id))
+        for(let towerIndex = 0; towerIndex < selectableTowers.length; towerIndex++) {
+            if(towerIndex > 0) await host.waitForTimeout(350)
+            const selectedTower = selectableTowers[towerIndex]
+            const optimisticSelection = await guest.evaluate(tower => {
+                players[PLAYER_SIDE.left].cursor.x = tower.x
+                players[PLAYER_SIDE.left].cursor.y = tower.y
+                onkeydown({ keyCode: KEY_CODES.p1Select, type: "keydown" })
+                onkeyup({ keyCode: KEY_CODES.p1Select, type: "keyup" })
+                return Object.keys(multiplayerState.remoteEntityTargets.towers).filter(id => multiplayerState.remoteEntityTargets.towers[id][7] === true)
+            }, selectedTower)
+            assert.deepEqual(optimisticSelection, [selectedTower.id])
+            await host.waitForFunction(id => towers.some(tower => tower && String(tower.towerID) == id && tower.selected), selectedTower.id)
+            await guest.waitForFunction(id => Object.keys(multiplayerState.remoteEntityTargets.towers).filter(towerId => multiplayerState.remoteEntityTargets.towers[towerId][7] === true).join(",") == id, selectedTower.id)
+        }
+        assert.deepEqual(await guest.evaluate(() => {
+            const proxy = multiplayerCreateGuestSelectionDisplayProxy()
+            return proxy && { type: proxy.towerType, path1: proxy.path1Upgrades, selected: proxy.selected, side: proxy.playerSide }
+        }), { type: "tack", path1: 2, selected: true, side: 1 })
+
+        const remoteRenderProfile = await guest.evaluate(() => {
+            const emptyEntities = () => ({ towers: [], projectiles: [], bananas: [], subtowers: [] })
+            const bloon = (id, x, y, pathPos) => [id, x, y, pathPos, 1, 25, 25, "red.png", PLAYER_SIDE.left, 1, 1, 0, 0, 0, false]
+            multiplayerStoreCompactEntities(Object.assign({ bloons: [bloon("first", 100, 100, 1), bloon("pre-track", -1000, 0, 0), bloon("last", 300, 300, 1)] }, emptyEntities()))
+            const order = multiplayerRemoteEntityIdsForDraw("bloons")
+            const preTrackHidden = !multiplayerState.remoteEntityRenderState.bloons["pre-track"]
+            const interpolation = { fromX: 0, fromY: 0, toX: 100, toY: 50, fromRotationAngle: 0, toRotationAngle: 0, receivedAt: 0 }
+            multiplayerInterpolateRemoteEntity(interpolation, MULTIPLAYER_REMOTE_INTERPOLATION_MS / 2)
+            multiplayerStoreCompactEntities(Object.assign({ bloons: [bloon("pre-track", 420, 260, 1)] }, emptyEntities()))
+            const firstVisiblePosition = multiplayerState.remoteEntityRenderState.bloons["pre-track"]
+            return {
+                order,
+                preTrackHidden,
+                interpolation: { x: interpolation.x, y: interpolation.y },
+                firstVisiblePosition: { x: firstVisiblePosition.x, y: firstVisiblePosition.y },
+            }
+        })
+        assert.deepEqual(remoteRenderProfile.order, ["last", "pre-track", "first"])
+        assert.equal(remoteRenderProfile.preTrackHidden, true)
+        assert.deepEqual(remoteRenderProfile.interpolation, { x: 50, y: 25 })
+        assert.deepEqual(remoteRenderProfile.firstVisiblePosition, { x: 420, y: 260 })
+
+        const popEventID = await host.evaluate(() => {
+            images.push(new Images(321, 222, 25, "pop.png", gameNow() + 100, ""))
+            multiplayerState.lastSnapshotSentAt = 0
+            multiplayerSendSnapshotIfDue()
+            return multiplayerState.popEffects[multiplayerState.popEffects.length - 1].id
+        })
+        await guest.waitForFunction(id => images.some(image => image.multiplayerRemotePop === true && image.x == 321 && image.y == 222) && multiplayerState.receivedPopEffects[id], popEventID)
+        assert.equal(await host.evaluate(() => images.some(image => image.multiplayerRemotePop === true)), false)
+        await host.evaluate(() => {
+            multiplayerState.lastSnapshotSentAt = 0
+            multiplayerSendSnapshotIfDue()
+        })
+        await guest.waitForTimeout(25)
+        assert.equal(await guest.evaluate(() => images.filter(image => image.multiplayerRemotePop === true && image.x == 321 && image.y == 222).length), 1)
 
         await spectator.evaluate(() => openMultiplayerMenu())
         const spectatorLobby = spectator.locator("[data-multiplayer-lobby-item]").filter({ hasText: expectedLobbyName })
@@ -169,7 +247,6 @@ async function main() {
             return { bytes: JSON.stringify({ v: 1, type: "snapshot", snapshot }).length, bloons: snapshot.entities.bloons.length }
         })
         assert.equal(snapshotProfile.bytes < 100000, true)
-        await host.waitForFunction(() => multiplayerState.lastSideSnapshotReceivedSequence > 0)
         await guest.waitForFunction(() => multiplayerState.remoteEntityTargets && multiplayerState.remoteEntityTargets.bloons)
         if(snapshotProfile.bloons > 0) await guest.waitForFunction(count => Object.keys(multiplayerState.remoteEntityTargets.bloons).length >= count, snapshotProfile.bloons)
         const guestEntityProfile = await guest.evaluate(() => ({
@@ -194,14 +271,14 @@ async function main() {
         })
         await guest.waitForFunction(() => Object.values(multiplayerState.remoteEntityTargets.towers || {}).some(tower => tower[6] == "100dart.png"))
 
-        await guest.evaluate(() => {
+        await host.evaluate(() => {
             p1BoostTypes = ["towerboost.png", "bloonboost.png"]
             p1Boost1Count = 1
             p1Boost1Expires = -100000
-            multiplayerState.lastSideSnapshotSentAt = 0
-            multiplayerSendSideSnapshotIfDue()
+            multiplayerState.lastSnapshotSentAt = 0
+            multiplayerSendSnapshotIfDue()
         })
-        await host.waitForFunction(() => p1Boost1Count == 1)
+        await guest.waitForFunction(() => p1Boost1Count == 1)
         await guest.evaluate(() => {
             onkeydown({ keyCode: KEY_CODES.p1Boost1, type: "keydown" })
             onkeyup({ keyCode: KEY_CODES.p1Boost1, type: "keyup" })
@@ -262,22 +339,12 @@ async function main() {
         assert.equal(snapshotState[1].gameStarted, true)
         assert.equal(snapshotState[1].snapshots > 0, true)
 
-        await guest.evaluate(() => {
+        await host.evaluate(() => {
             p1lives = 0
             gameOver = true
-            multiplayerState.sideTerminalSent = false
-            multiplayerSendSideSnapshotIfDue()
+            multiplayerState.lastSnapshotSentAt = 0
+            multiplayerSendSnapshotIfDue()
         })
-        try {
-            await host.waitForFunction(() => gameOver && p1lives == 0, null, { timeout: 10000 })
-        } catch(error) {
-            const diagnostic = await Promise.all([
-                host.evaluate(() => ({ phase: multiplayerState.phase, active: multiplayerState.active, gameOver, p1lives, received: multiplayerState.lastSideSnapshotReceivedSequence })),
-                guest.evaluate(() => ({ phase: multiplayerState.phase, active: multiplayerState.active, gameOver, p1lives, sent: multiplayerState.sideSnapshotSequence, terminal: multiplayerState.sideTerminalSent, socket: multiplayerState.socket?.readyState })),
-            ])
-            throw new Error(`${error.message}; terminal diagnostic: ${JSON.stringify(diagnostic)}`)
-        }
-        await host.evaluate(() => { p1lives = 0; p2lives = 150; gameOver = true })
         await guest.waitForFunction(() => gameOver && p1lives == 0)
 
         const finalState = await guest.evaluate(() => ({ gameOver, p1lives, p2lives, message: multiplayerState.error || "" }))
