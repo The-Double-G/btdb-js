@@ -3,48 +3,48 @@
   "formatVersion": 1,
   "repository": "The-Double-G/btdb-js",
   "branch": "main",
-  "publishedAt": "2026-10-08T21:33:13.963Z",
+  "publishedAt": "2026-10-09T00:14:06.861Z",
   "current": {
-    "runId": 37793765166,
-    "runNumber": 186,
+    "runId": 37863694252,
+    "runNumber": 187,
     "runAttempt": 1,
-    "state": "completed",
-    "conclusion": "failure",
-    "headSha": "4dbdd85d81ecf3ffab19b0814e248eadf8cfdef1",
-    "url": "https://github.com/The-Double-G/btdb-js/actions/runs/37793765166",
-    "createdAt": "2026-10-08T14:35:49.000Z",
-    "startedAt": "2026-10-08T14:35:49.000Z",
-    "updatedAt": "2026-10-08T20:17:18.000Z",
-    "phase": "completed",
+    "state": "in_progress",
+    "conclusion": null,
+    "headSha": "d64c84aef5ed21912bd9ea625ff3e1ca6327fcc1",
+    "url": "https://github.com/The-Double-G/btdb-js/actions/runs/37863694252",
+    "createdAt": "2026-10-09T00:13:50.000Z",
+    "startedAt": "2026-10-09T00:13:50.000Z",
+    "updatedAt": "2026-10-09T00:13:56.000Z",
+    "phase": "preparing",
     "projection": {
       "jobs": {
-        "total": 28,
+        "total": 1,
         "queued": 0,
-        "inProgress": 0,
-        "completed": 28,
-        "succeeded": 17,
-        "failed": 4,
+        "inProgress": 1,
+        "completed": 0,
+        "succeeded": 0,
+        "failed": 0,
         "cancelled": 0,
-        "skipped": 7
+        "skipped": 0
       },
       "workers": {
         "training": {
-          "total": 20,
-          "queued": 0,
-          "inProgress": 0,
-          "succeeded": 16,
-          "failed": 4,
-          "cancelled": 0,
-          "skipped": 0
-        },
-        "evaluation": {
-          "total": 1,
+          "total": 0,
           "queued": 0,
           "inProgress": 0,
           "succeeded": 0,
           "failed": 0,
           "cancelled": 0,
-          "skipped": 1
+          "skipped": 0
+        },
+        "evaluation": {
+          "total": 0,
+          "queued": 0,
+          "inProgress": 0,
+          "succeeded": 0,
+          "failed": 0,
+          "cancelled": 0,
+          "skipped": 0
         }
       }
     }
