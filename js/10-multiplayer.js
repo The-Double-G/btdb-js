@@ -1,7 +1,7 @@
 // Casual two-player online mode. Each peer owns its assigned side; the host also
 // publishes shared match timing while both peers exchange semantic actions.
 var MULTIPLAYER_PROTOCOL_VERSION = 1
-var MULTIPLAYER_BUILD = "v2.6.0-multiplayer31"
+var MULTIPLAYER_BUILD = "v2.6.0-multiplayer33"
 var MULTIPLAYER_WEBSOCKET_URL = "wss://cursor-share-server.onrender.com/"
 var MULTIPLAYER_DIRECTORY_ENDPOINT = "lobbies.php?protocol=1"
 var MULTIPLAYER_SNAPSHOT_INTERVAL_MS = 100
@@ -28,6 +28,7 @@ var multiplayerState = {
     lobbyListRequestInFlight: false,
     localReady: false,
     remoteReady: false,
+    remoteContributionStatus: "not-eligible",
     remoteLoadoutTowers: [],
     remoteLoadoutBoosts: [],
     localLoadoutKey: "",
@@ -365,6 +366,7 @@ function multiplayerResetConnection() {
     multiplayerState.phase = "idle"
     multiplayerState.localReady = false
     multiplayerState.remoteReady = false
+    multiplayerState.remoteContributionStatus = "not-eligible"
     multiplayerState.remoteLoadoutTowers = []
     multiplayerState.remoteLoadoutBoosts = []
     multiplayerState.localLoadoutKey = ""
@@ -700,6 +702,11 @@ function multiplayerHandleMessage(raw) {
         multiplayerMaybeStartMatch()
         return
     }
+    if(message.type == "contributionStatus" && multiplayerState.role == "guest" && message.side == multiplayerState.remoteSide) {
+        var allowedContributionStatuses = ["not-eligible", "queued", "accepted", "failed", "discarded", "unavailable"]
+        if(allowedContributionStatuses.indexOf(message.status) >= 0) multiplayerState.remoteContributionStatus = message.status
+        return
+    }
     if(message.type == "start") {
         if(multiplayerState.role == "guest" && Number(message.map) >= 0 && Number(message.map) <= 1) {
             mapNumber = Math.floor(Number(message.map))
@@ -754,6 +761,8 @@ function multiplayerEnterPregame() {
     multiplayerState.remoteReady = false
     multiplayerState.matchStarted = false
     multiplayerState.terminalSent = false
+    multiplayerState.remoteContributionStatus = "not-eligible"
+    if(typeof resetLocalMatchCollection == "function") resetLocalMatchCollection()
 }
 
 function multiplayerLoadoutKey(towersForSide, boostsForSide) {

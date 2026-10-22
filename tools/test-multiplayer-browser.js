@@ -64,6 +64,10 @@ async function main() {
         ])
         assert.deepEqual(await host.evaluate(() => ({ local: multiplayerState.localSide, remote: multiplayerState.remoteSide })), { local: 2, remote: 1 })
         assert.deepEqual(await guest.evaluate(() => ({ local: multiplayerState.localSide, remote: multiplayerState.remoteSide })), { local: 1, remote: 2 })
+        await host.evaluate(() => multiplayerSendMessage("contributionStatus", { side: multiplayerState.localSide, status: "queued" }))
+        await guest.waitForFunction(() => multiplayerState.remoteContributionStatus == "queued")
+        await host.evaluate(() => multiplayerSendMessage("contributionStatus", { side: multiplayerState.localSide, status: "accepted" }))
+        await guest.waitForFunction(() => multiplayerState.remoteContributionStatus == "accepted")
 
         const unauthorizedGuestCursor = await guest.evaluate(() => {
             const before = players[PLAYER_SIDE.right].cursor.x
@@ -214,20 +218,40 @@ async function main() {
         assert.deepEqual(remoteRenderProfile.interpolation, { x: 50, y: 25 })
         assert.deepEqual(remoteRenderProfile.firstVisiblePosition, { x: 420, y: 260 })
 
+        await guest.evaluate(() => {
+            window.__remotePopCreationCount = 0
+            const applyPopEffects = multiplayerApplyPopEffects
+            multiplayerApplyPopEffects = function(effects) {
+                const before = images.filter(image => image.multiplayerRemotePop === true).length
+                const result = applyPopEffects.apply(this, arguments)
+                const after = images.filter(image => image.multiplayerRemotePop === true).length
+                window.__remotePopCreationCount += Math.max(0, after - before)
+                return result
+            }
+        })
         const popEventID = await host.evaluate(() => {
             images.push(new Images(321, 222, 25, "pop.png", gameNow() + 100, ""))
             multiplayerState.lastSnapshotSentAt = 0
             multiplayerSendSnapshotIfDue()
             return multiplayerState.popEffects[multiplayerState.popEffects.length - 1].id
         })
-        await guest.waitForFunction(id => images.some(image => image.multiplayerRemotePop === true && image.x == 321 && image.y == 222) && multiplayerState.receivedPopEffects[id], popEventID)
+        try {
+            await guest.waitForFunction(id => window.__remotePopCreationCount == 1 && multiplayerState.receivedPopEffects[id], popEventID, { timeout: 10000 })
+        } catch(error) {
+            const popDiagnostic = await Promise.all([
+                host.evaluate(() => ({ role: multiplayerState.role, active: multiplayerState.active, popEffects: multiplayerState.popEffects, sentAt: multiplayerState.lastSnapshotSentAt, sequence: multiplayerState.snapshotSequence, socket: multiplayerState.socket && multiplayerState.socket.readyState })),
+                guest.evaluate(() => ({ role: multiplayerState.role, active: multiplayerState.active, popCount: window.__remotePopCreationCount, received: multiplayerState.receivedPopEffects, sequence: multiplayerState.snapshotSequence, lastReceived: multiplayerState.lastSnapshotReceivedAt, targets: multiplayerState.remoteEntityTargets && Object.keys(multiplayerState.remoteEntityTargets.bloons || {}).length, socket: multiplayerState.socket && multiplayerState.socket.readyState })),
+            ])
+            throw new Error(`${error.message}; pop diagnostic: ${JSON.stringify(popDiagnostic)}`)
+        }
         assert.equal(await host.evaluate(() => images.some(image => image.multiplayerRemotePop === true)), false)
+        const guestSnapshotSequenceBeforeDuplicate = await guest.evaluate(() => multiplayerState.snapshotSequence)
         await host.evaluate(() => {
             multiplayerState.lastSnapshotSentAt = 0
             multiplayerSendSnapshotIfDue()
         })
-        await guest.waitForTimeout(25)
-        assert.equal(await guest.evaluate(() => images.filter(image => image.multiplayerRemotePop === true && image.x == 321 && image.y == 222).length), 1)
+        await guest.waitForFunction(sequence => multiplayerState.snapshotSequence > sequence, guestSnapshotSequenceBeforeDuplicate)
+        assert.equal(await guest.evaluate(() => window.__remotePopCreationCount), 1)
 
         await spectator.evaluate(() => openMultiplayerMenu())
         const spectatorLobby = spectator.locator("[data-multiplayer-lobby-item]").filter({ hasText: expectedLobbyName })

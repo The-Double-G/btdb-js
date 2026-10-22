@@ -723,7 +723,7 @@ function getAITrainingSaveButtonState() {
 function requestAITrainingControlSave() {
     var saveState = getAITrainingSaveButtonState()
     if(saveState.action == "contributions") {
-        flushAIPublicContributionQueue()
+        flushAIPublicContributionQueue(true)
         setAITrainingNotice("Saving...", 2200)
         return true
     }

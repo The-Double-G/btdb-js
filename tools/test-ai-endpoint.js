@@ -569,8 +569,14 @@ function decisionPrediction(sample, decision) {
 function matchReward(aiLives, enemyLives) {
     const result = aiLives > enemyLives ? 1 : aiLives < enemyLives ? -1 : 0
     const margin = Math.max(-1, Math.min(1, (aiLives - enemyLives) / 150))
-    return Math.max(-1, Math.min(1, result * 0.9 + margin * 0.1))
+    return Math.max(-1, Math.min(1, result * 0.7 + margin * 0.3))
 }
+
+assert.equal(matchReward(150, 0), 1)
+assert.equal(matchReward(1, 0), 0.702)
+assert.ok(matchReward(1, 0) < matchReward(150, 0))
+assert.equal(matchReward(0, 150), -1)
+assert.equal(matchReward(0, 1), -0.702)
 
 async function reservePort() {
     const server = net.createServer()

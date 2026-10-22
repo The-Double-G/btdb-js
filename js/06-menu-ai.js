@@ -57,6 +57,7 @@ var AI_TRAINING_JOBS_MAX_BYTES = 1048576
 var AI_TRAINING_STATUS_REFRESH_INTERVAL = 120000
 var AI_CONTRIBUTION_STORAGE_KEY = "aiPendingContributionsV3"
 var AI_MAX_PENDING_CONTRIBUTIONS = 8
+var AI_MAX_CONTRIBUTION_AUTO_RETRIES = 3
 var AI_MAX_CONTRIBUTION_OBSERVATIONS = 320
 var AI_MAX_PUBLIC_CONTRIBUTION_BYTES = 131072
 var AI_NETWORK_TIMEOUT_MS = 15000
@@ -128,6 +129,9 @@ var AI_SCHEMA13_VERSION = 13
 var AI_DECISION_CREDIT_VERSION = 4
 var AI_DECISION_TD_STEPS = 4
 var AI_DECISION_DISCOUNT_PER_SECOND = 0.99
+var AI_LIVE_EXPLORATION_FLOOR = 0.035
+var AI_NOOP_MAX_DEFER_MS = 2500
+var AI_NOOP_DANGER_DEFER_MS = 750
 var AI_DECISION_TOWER_TYPES = ["dart", "tack", "bomb", "ice", "super", "farm", "dartling", "wizard", "cobra", "boomer", "sniper", "ninja", "engi", "buccaneer", "mortar", "sword"]
 var aiDecisionStateCache = null
 var aiPersistenceState = {
@@ -148,6 +152,7 @@ var aiPersistenceState = {
     contributionInFlight: false,
     pendingContributions: 0,
     contributionRetryAt: 0,
+    contributionRetryCounts: {},
     lastContributionAt: 0,
     contributionEpoch: 1,
 }
@@ -334,6 +339,7 @@ function resetLocalMatchCollection() {
         contributionStatus: "not-eligible",
         contributionIds: [],
         acceptedContributionIds: {},
+        contributionResults: {},
         contributionEpoch: Math.max(1, Math.floor(aiPersistenceState.contributionEpoch)),
         sides: {
             1: createLocalMatchSideTelemetry(),
@@ -342,8 +348,26 @@ function resetLocalMatchCollection() {
     }
 }
 
+function isHumanDemonstrationMatchMode() {
+    var localMatch = selectedMenuMode == "local"
+    var multiplayerHostMatch = selectedMenuMode == "multiplayer" && typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof isMultiplayerHost == "function" && isMultiplayerHost()
+    return (localMatch || multiplayerHostMatch) && !aiEnabled && !practiceMode && !bossMode
+}
+
+function isHumanDemonstrationMatchActive() {
+    return isHumanDemonstrationMatchMode() && gameStarted && !gameOver
+}
+
 function isLocalHumanTacticalCaptureActive(side) {
-    return selectedMenuMode == "local" && !aiEnabled && !practiceMode && !bossMode && gameStarted && !gameOver && isHumanControlledSide(side) && localMatchCollectionState && localMatchCollectionState.sides[side]
+    return isHumanDemonstrationMatchActive() && isHumanControlledSide(side) && localMatchCollectionState && localMatchCollectionState.sides[side]
+}
+
+function setLocalMatchContributionStatus(status) {
+    if(!localMatchCollectionState) return
+    localMatchCollectionState.contributionStatus = status
+    if(selectedMenuMode == "multiplayer" && typeof isMultiplayerHost == "function" && isMultiplayerHost() && typeof multiplayerSendMessage == "function") {
+        multiplayerSendMessage("contributionStatus", { side: multiplayerState.localSide, status: status })
+    }
 }
 
 function getLocalHumanTacticalTime() {
@@ -519,6 +543,7 @@ function resetAIProfile() {
     aiProfile.learningEnabled = false
     aiProfile.explorationEnabled = false
     aiProfile.explorationScale = 1
+    aiProfile.liveExploration = false
     aiProfile.pendingTacticalDecision = null
     aiProfile.tacticalTrace = []
     aiProfile.placementOutcomes = {}
@@ -529,6 +554,7 @@ function resetAIProfile() {
     aiProfile.aimInference = null
     aiProfile.targetPriorityInference = null
     aiProfile.workerDecisionPending = false
+    aiProfile.noOpStartedAt = 0
     aiProfile.observedLivesBySide = {}
     aiProfile.observedLivesLostBySide = {}
     aiProfile.decisionMemory = aiCreateVector(AI_DECISION_MEMORY_SIZE, 0)
@@ -588,6 +614,9 @@ function startVsAIGameSetup(side) {
     aiDesiredLoadoutTowers = []
     aiDesiredLoadoutBoosts = []
     resetAIProfile()
+    aiProfile.explorationEnabled = true
+    aiProfile.explorationScale = 0.35
+    aiProfile.liveExploration = true
     aiProfile.loadoutObserveDelayMs = getAIPregameObserveDelayMs()
     aiProfile.loadoutObserveUntil = realNow() + aiProfile.loadoutObserveDelayMs
 }
@@ -1922,7 +1951,7 @@ function setAIPublicContributionQueue(queue) {
     var boundedQueue = Array.isArray(queue) ? queue.slice(-AI_MAX_PENDING_CONTRIBUTIONS) : []
     aiPersistenceState.pendingContributions = boundedQueue.length
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false || typeof localStorage == "undefined") {
-        return
+        return false
     }
     try {
         if(boundedQueue.length == 0) {
@@ -1930,8 +1959,10 @@ function setAIPublicContributionQueue(queue) {
         } else {
             localStorage.setItem(AI_CONTRIBUTION_STORAGE_KEY, JSON.stringify(boundedQueue))
         }
+        return true
     } catch(error) {
         aiPersistenceState.lastError = "Unable to store the pending global AI contribution."
+        return false
     }
 }
 
@@ -1955,14 +1986,19 @@ function markAIPublicContributionStatus(contributionId, status) {
         }
     }
     if(localMatchCollectionState && Array.isArray(localMatchCollectionState.contributionIds) && localMatchCollectionState.contributionIds.indexOf(contributionId) >= 0) {
-        if(status == "accepted") {
-            localMatchCollectionState.acceptedContributionIds[contributionId] = true
-            var allAccepted = localMatchCollectionState.contributionIds.every(function(id) {
-                return localMatchCollectionState.acceptedContributionIds[id] === true
-            })
-            localMatchCollectionState.contributionStatus = allAccepted ? "accepted" : "queued"
+        if(!localMatchCollectionState.contributionResults) localMatchCollectionState.contributionResults = {}
+        localMatchCollectionState.contributionResults[contributionId] = status
+        if(status == "accepted") localMatchCollectionState.acceptedContributionIds[contributionId] = true
+        var contributionStatuses = localMatchCollectionState.contributionIds.map(function(id) { return localMatchCollectionState.contributionResults[id] || "queued" })
+        var allAccepted = contributionStatuses.every(function(value) { return value == "accepted" })
+        if(allAccepted) {
+            setLocalMatchContributionStatus("accepted")
+        } else if(contributionStatuses.indexOf("discarded") >= 0) {
+            setLocalMatchContributionStatus("discarded")
+        } else if(contributionStatuses.indexOf("failed") >= 0) {
+            setLocalMatchContributionStatus("failed")
         } else {
-            localMatchCollectionState.contributionStatus = status
+            setLocalMatchContributionStatus("queued")
         }
     }
 }
@@ -2030,19 +2066,34 @@ function queueAIPublicContribution(contribution) {
     }
     var queue = getAIPublicContributionQueue()
     queue.push(contribution)
-    setAIPublicContributionQueue(queue)
+    if(!setAIPublicContributionQueue(queue) || !getAIPublicContributionQueue().some(function(item) { return item.contributionId == contribution.contributionId })) {
+        markAIPublicContributionStatus(contribution.contributionId, "failed")
+        aiPersistenceState.lastError = "Unable to persist the pending global AI contribution in this browser."
+        return false
+    }
+    if(!aiPersistenceState.contributionRetryCounts) aiPersistenceState.contributionRetryCounts = {}
+    delete aiPersistenceState.contributionRetryCounts[contribution.contributionId]
     markAIPublicContributionStatus(contribution.contributionId, "queued")
     flushAIPublicContributionQueue()
     return true
 }
 
-function flushAIPublicContributionQueue() {
+function flushAIPublicContributionQueue(forceRetry) {
     if(AI_CROSS_MATCH_LEARNING_ENABLED == false || aiPersistenceState.contributionEnabled == false || aiPersistenceState.restoreComplete == false || aiPersistenceState.loadInFlight || aiPersistenceState.saveInFlight || aiPersistenceState.contributionInFlight) {
         return false
     }
     var queue = getAIPublicContributionQueue()
     setAIPublicContributionQueue(queue)
     if(queue.length == 0) {
+        return false
+    }
+    var pending = queue[0]
+    if(!aiPersistenceState.contributionRetryCounts) aiPersistenceState.contributionRetryCounts = {}
+    if(forceRetry === true) {
+        aiPersistenceState.contributionRetryCounts[pending.contributionId] = 0
+        aiPersistenceState.contributionRetryAt = 0
+    } else if((Number(aiPersistenceState.contributionRetryCounts[pending.contributionId]) || 0) >= AI_MAX_CONTRIBUTION_AUTO_RETRIES) {
+        markAIPublicContributionStatus(pending.contributionId, "failed")
         return false
     }
     var now = realNow()
@@ -2056,7 +2107,6 @@ function flushAIPublicContributionQueue() {
     }
 
     aiPersistenceState.contributionInFlight = true
-    var pending = queue[0]
     markAIPublicContributionStatus(pending.contributionId, "queued")
     fetchAIWithTimeout(AI_LEARNING_ENDPOINT + "&action=contribute", {
         method: "POST",
@@ -2088,6 +2138,7 @@ function flushAIPublicContributionQueue() {
             latestQueue = latestQueue.filter(function(item) { return item.contributionId != pending.contributionId })
         }
         setAIPublicContributionQueue(latestQueue)
+        delete aiPersistenceState.contributionRetryCounts[pending.contributionId]
         markAIPublicContributionStatus(pending.contributionId, "accepted")
         var contributionRevision = Math.max(0, Math.floor(parsed.revision))
         var contributionEpoch = Math.max(1, Math.floor(Number(parsed.contributionEpoch) || 1))
@@ -2106,6 +2157,7 @@ function flushAIPublicContributionQueue() {
             return refreshAILearningFromBackend(true)
         }
     }).catch(function(error) {
+        aiPersistenceState.contributionRetryCounts[pending.contributionId] = (Number(aiPersistenceState.contributionRetryCounts[pending.contributionId]) || 0) + 1
         var payload = error && error.payload
         var code = payload && payload.error ? payload.error.code : ""
         if(error && (error.status == 400 || error.status == 422)) {
@@ -2146,7 +2198,12 @@ function flushAIPublicContributionQueue() {
         markAIPublicContributionStatus(pending.contributionId, "failed")
     }).finally(function() {
         aiPersistenceState.contributionInFlight = false
-        if(getAIPublicContributionQueue().length > 0) {
+        var remainingQueue = getAIPublicContributionQueue()
+        var remainingPending = remainingQueue[0]
+        if(remainingPending && (Number(aiPersistenceState.contributionRetryCounts[remainingPending.contributionId]) || 0) >= AI_MAX_CONTRIBUTION_AUTO_RETRIES) {
+            markAIPublicContributionStatus(remainingPending.contributionId, "failed")
+        }
+        if(remainingQueue.length > 0 && (!remainingPending || (Number(aiPersistenceState.contributionRetryCounts[remainingPending.contributionId]) || 0) < AI_MAX_CONTRIBUTION_AUTO_RETRIES)) {
             setTimeout(flushAIPublicContributionQueue, Math.max(0, aiPersistenceState.contributionRetryAt - realNow()))
         }
     })
@@ -2967,7 +3024,8 @@ function scoreAIDecisionCandidate(side, familyIndex, metadata, matchup, stateFea
     var memoryIn = Array.isArray(metadata.memoryIn) ? metadata.memoryIn.slice(0) : getAIDecisionMemory()
     var forward = aiDecisionForward(resolvedState, candidateFeatures, familyIndex, memoryIn, policyOverride)
     var activePolicy = policyOverride || getAIPolicyForDecision()
-    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * getAIDecisionFamilyExplorationMultiplier(familyIndex, activePolicy) * Math.pow(0.997, activePolicy.decision.trainingSamples[familyIndex] || 0)) : 0
+    var explorationFloor = aiProfile && aiProfile.liveExploration ? AI_LIVE_EXPLORATION_FLOOR : 0
+    var explorationScale = aiProfile && aiProfile.explorationEnabled ? Math.max(explorationFloor, 0.02, 0.24 * clamp(Number(aiProfile.explorationScale) || 1, 0, 1) * getAIDecisionFamilyExplorationMultiplier(familyIndex, activePolicy) * Math.pow(0.997, activePolicy.decision.trainingSamples[familyIndex] || 0)) : 0
     var humanTacticalBonus = getAIHumanTacticalCandidateBonus(side, familyIndex, metadata)
     var explorationNoise = Number(metadata.explorationNoise)
     if(Number.isFinite(explorationNoise) == false) explorationNoise = aiRandomWeight(explorationScale)
@@ -3723,12 +3781,15 @@ function createAIPlacementOutcomeSample(decision) {
     }
 }
 
-function bindAITowerPlacementOutcome(tower) {
-    if(!aiProfile || !tower || !aiProfile.pendingTacticalDecision || aiProfile.pendingTacticalDecision.familyIndex != AI_DECISION_FAMILY.placement) return false
+function bindAITowerPlacementOutcome(tower, familyIndex, actionCost) {
+    familyIndex = familyIndex == null ? AI_DECISION_FAMILY.placement : familyIndex
+    if(!aiProfile || !tower || !aiProfile.pendingTacticalDecision || aiProfile.pendingTacticalDecision.familyIndex != familyIndex) return false
     if(!aiProfile.placementOutcomes) aiProfile.placementOutcomes = {}
     var factualBefore = getAIFactualDecisionOutcomeSnapshot(tower.playerSide)
-    aiProfile.placementOutcomes[tower.towerID] = {
+    var outcomeKey = familyIndex + "|" + tower.towerID + "|" + aiProfile.pendingTacticalDecision.startedAtMs
+    aiProfile.placementOutcomes[outcomeKey] = {
         towerID: tower.towerID,
+        familyIndex: familyIndex,
         sample: createAIPlacementOutcomeSample(aiProfile.pendingTacticalDecision),
         initialReward: clamp(Number(aiProfile.pendingTacticalDecision.initialReward) || 0, -1, 1),
         outputBefore: getAITowerPlacementOutputValue(tower),
@@ -3736,7 +3797,7 @@ function bindAITowerPlacementOutcome(tower) {
         ownLivesBefore: factualBefore.ownLives,
         ownLivesLostBefore: factualBefore.ownLivesLost,
         ownMoneyBefore: factualBefore.ownMoney,
-        placementCost: Math.max(1, Number(tower.totalCost) || getBaseTowerPriceByType(tower.towerType)),
+        placementCost: Math.max(1, Number(actionCost) || Number(tower.totalCost) || getBaseTowerPriceByType(tower.towerType)),
         expectsCombatOutput: doesAITowerHaveCombatOutput(tower),
     }
     return true
@@ -3754,30 +3815,34 @@ function captureAITowerPlacementOutcome(tower) {
     }
 }
 
-function finalizeAITowerPlacementOutcome(tower, outcome) {
+function finalizeAITowerPlacementOutcome(tower, outcome, familyIndex) {
     if(!aiProfile || !aiProfile.placementOutcomes || !tower) return false
-    var placement = aiProfile.placementOutcomes[tower.towerID]
-    if(!placement) return false
-    delete aiProfile.placementOutcomes[tower.towerID]
-
     outcome = outcome || captureAITowerPlacementOutcome(tower)
     if(!outcome) return false
-    var output = Math.max(0, (Number(outcome.outputAfter) || 0) - placement.outputBefore)
-    var reward = placement.initialReward
-    if(output > 0) {
-        reward = clamp(Math.log1p(output) / Math.log1p(placement.placementCost), 0, 1)
-    } else if(placement.expectsCombatOutput && ((Number(outcome.ownPopsAfter) || 0) > placement.ownPopsBefore || (Number(outcome.ownLivesLostAfter) || 0) > placement.ownLivesLostBefore)) {
-        reward = -1
+    var outcomeKeys = Object.keys(aiProfile.placementOutcomes)
+    var finalized = false
+    for(var outcomeIndex = 0; outcomeIndex < outcomeKeys.length; outcomeIndex++) {
+        var placement = aiProfile.placementOutcomes[outcomeKeys[outcomeIndex]]
+        if(!placement || placement.towerID != tower.towerID || familyIndex != null && placement.familyIndex != familyIndex) continue
+        delete aiProfile.placementOutcomes[outcomeKeys[outcomeIndex]]
+        var output = Math.max(0, (Number(outcome.outputAfter) || 0) - placement.outputBefore)
+        var reward = placement.initialReward
+        if(output > 0) {
+            reward = clamp(Math.log1p(output) / Math.log1p(placement.placementCost), 0, 1)
+        } else if(placement.expectsCombatOutput && ((Number(outcome.ownPopsAfter) || 0) > placement.ownPopsBefore || (Number(outcome.ownLivesLostAfter) || 0) > placement.ownLivesLostBefore)) {
+            reward = -1
+        }
+        if(!placement.sample) continue
+        placement.sample.settledAtMs = Math.max(placement.sample.startedAtMs, Math.floor(gameNow()))
+        placement.sample.intervalReward = clamp(reward, -1, 1)
+        placement.sample.economyReward = clamp(((Number(outcome.ownMoneyAfter) || 0) - placement.ownMoneyBefore + placement.placementCost) / 2000, -1, 1)
+        placement.sample.catastropheTarget = outcome.ownLivesAfter <= 0 ? 1 : clamp(((Number(outcome.ownLivesLostAfter) || 0) - placement.ownLivesLostBefore) / 30, 0, 1)
+        if(!aiProfile.placementSamples) aiProfile.placementSamples = []
+        aiProfile.placementSamples.push(placement.sample)
+        while(aiProfile.placementSamples.length > AI_MAX_PLACEMENT_SAMPLES) aiProfile.placementSamples.shift()
+        finalized = true
     }
-    if(!placement.sample) return false
-    placement.sample.settledAtMs = Math.max(placement.sample.startedAtMs, Math.floor(gameNow()))
-    placement.sample.intervalReward = clamp(reward, -1, 1)
-    placement.sample.economyReward = clamp(((Number(outcome.ownMoneyAfter) || 0) - placement.ownMoneyBefore + placement.placementCost) / 2000, -1, 1)
-    placement.sample.catastropheTarget = outcome.ownLivesAfter <= 0 ? 1 : clamp(((Number(outcome.ownLivesLostAfter) || 0) - placement.ownLivesLostBefore) / 30, 0, 1)
-    if(!aiProfile.placementSamples) aiProfile.placementSamples = []
-    aiProfile.placementSamples.push(placement.sample)
-    while(aiProfile.placementSamples.length > AI_MAX_PLACEMENT_SAMPLES) aiProfile.placementSamples.shift()
-    return true
+    return finalized
 }
 
 function finalizeAIPlacementOutcomesForSide(side) {
@@ -4098,21 +4163,21 @@ function createLocalHumanDemonstration(side, opponentSide, loadoutSummary, oppon
 }
 
 function finalizeLocalMatchCollection() {
-    if(selectedMenuMode != "local" || aiEnabled || practiceMode || bossMode || gameStarted == false || gameOver == false || !localMatchCollectionState || localMatchCollectionState.recorded) {
+    if(!isHumanDemonstrationMatchMode() || gameStarted == false || gameOver == false || !localMatchCollectionState || localMatchCollectionState.recorded) {
         return false
     }
     if(aiPersistenceState.contributionEnabled == false) {
-        localMatchCollectionState.contributionStatus = AI_CROSS_MATCH_LEARNING_ENABLED ? "unavailable" : "not-eligible"
+        setLocalMatchContributionStatus(AI_CROSS_MATCH_LEARNING_ENABLED ? "unavailable" : "not-eligible")
         return false
     }
     if(players[PLAYER_SIDE.left].towers.length != 3 || players[PLAYER_SIDE.right].towers.length != 3 || players[PLAYER_SIDE.left].boostTypes.length != 2 || players[PLAYER_SIDE.right].boostTypes.length != 2) {
-        localMatchCollectionState.contributionStatus = "not-eligible"
+        setLocalMatchContributionStatus("not-eligible")
         return false
     }
     var leftSummary = summarizeLoadoutSelection(players[PLAYER_SIDE.left].towers, players[PLAYER_SIDE.left].boostTypes)
     var rightSummary = summarizeLoadoutSelection(players[PLAYER_SIDE.right].towers, players[PLAYER_SIDE.right].boostTypes)
     if(leftSummary.signature == "||" || rightSummary.signature == "||") {
-        localMatchCollectionState.contributionStatus = "not-eligible"
+        setLocalMatchContributionStatus("not-eligible")
         return false
     }
     localMatchCollectionState.recorded = true
@@ -4121,7 +4186,7 @@ function finalizeLocalMatchCollection() {
     localMatchCollectionState.contributionIds = [leftContribution.contributionId, rightContribution.contributionId]
     var leftQueued = queueAIPublicContribution(leftContribution)
     var rightQueued = queueAIPublicContribution(rightContribution)
-    localMatchCollectionState.contributionStatus = leftQueued && rightQueued ? "queued" : "failed"
+    setLocalMatchContributionStatus(leftQueued && rightQueued ? "queued" : "failed")
     return leftQueued && rightQueued
 }
 
@@ -4252,7 +4317,7 @@ function getAIMatchReward(aiLives, enemyLives) {
         result = -1
     }
     var lifeMargin = clamp((aiLives - enemyLives) / 150, -1, 1)
-    return clamp(result * 0.9 + lifeMargin * 0.1, -1, 1)
+    return clamp(result * 0.7 + lifeMargin * 0.3, -1, 1)
 }
 
 function createAIPublicMatchContribution(aiLives, enemyLives, reward, selfPlayActive) {
@@ -4425,9 +4490,11 @@ function getCompletedMatchAIContributionStatus() {
     if(aiEnabled && aiMatchTelemetry) {
         return aiMatchTelemetry.contributionStatus || "not-eligible"
     }
-    if(selectedMenuMode == "local" && localMatchCollectionState) {
+    var multiplayerLocalCapture = selectedMenuMode == "multiplayer" && typeof isMultiplayerActive == "function" && isMultiplayerActive() && typeof isMultiplayerHost == "function" && isMultiplayerHost()
+    if((selectedMenuMode == "local" || multiplayerLocalCapture) && localMatchCollectionState) {
         return localMatchCollectionState.contributionStatus || "not-eligible"
     }
+    if(selectedMenuMode == "multiplayer" && typeof isMultiplayerActive == "function" && isMultiplayerActive() && multiplayerState.role == "guest") return multiplayerState.remoteContributionStatus || "not-eligible"
     return "not-eligible"
 }
 
@@ -7056,9 +7123,12 @@ function executeAIAction(action) {
         if(action.readyAt && gameNow() < action.readyAt) {
             return "pending"
         }
+        var upgradeCost = action.tower["path" + action.pathNumber + "Cost"][action.tower["path" + action.pathNumber + "Upgrades"]]
+        action.factualOutcomeBefore = getAIFactualDecisionOutcomeSnapshot(action.side)
         var upgradeSucceeded = aiTryUpgradeTower(action.side, action.tower, action.pathNumber)
         if(upgradeSucceeded) {
             recordAITacticalDecision(action.side, action.tower.towerType == "farm" ? "farm" : "development", "upgrade|" + action.tower.towerType + "|" + action.pathNumber, getCurrentPlayerMatchupStyle(action.side), action.decisionSample, action.factualOutcomeBefore, action.actionContext)
+            bindAITowerPlacementOutcome(action.tower, AI_DECISION_FAMILY.upgrade, upgradeCost)
         }
         return upgradeSucceeded
     } else if(action.type == "collectFarm") {
@@ -8035,6 +8105,7 @@ function canTowerUpgradePathNow(side, tower, pathNumber) {
 function isAIUpgradeWithinIntent(tower, hypotheticalTower) {
     var intentTiers = normalizeAIUpgradeIntent(tower && tower.aiIntendedUpgradeTiers)
     if(!intentTiers || !hypotheticalTower) return true
+    if(intentTiers[0] == 0 && intentTiers[1] == 0 && intentTiers[2] == 0) return true
     return hypotheticalTower.path1Upgrades <= intentTiers[0] && hypotheticalTower.path2Upgrades <= intentTiers[1] && hypotheticalTower.path3Upgrades <= intentTiers[2]
 }
 
@@ -8242,7 +8313,7 @@ function getCrosspathCandidatesForTowerType(towerType) {
         for(var path2 = 0; path2 <= 5; path2++) {
             for(var path3 = 0; path3 <= 5; path3++) {
                 var intentTiers = [path1, path2, path3]
-                if(isValidAIUpgradeIntent(intentTiers)) candidates.push(intentTiers)
+                if(isValidAIUpgradeIntent(intentTiers) && intentTiers[0] + intentTiers[1] + intentTiers[2] > 0) candidates.push(intentTiers)
             }
         }
     }
@@ -8251,8 +8322,9 @@ function getCrosspathCandidatesForTowerType(towerType) {
 
 function getAICrosspathInferenceState() {
     if(!aiProfile.crosspathInference) {
-        aiProfile.crosspathInference = { pending: {}, results: {} }
+        aiProfile.crosspathInference = { pending: {}, results: {}, selected: {} }
     }
+    if(!aiProfile.crosspathInference.selected) aiProfile.crosspathInference.selected = {}
     return aiProfile.crosspathInference
 }
 
@@ -8268,6 +8340,8 @@ function chooseAICrosspathWithWorker(side, towerType, role, matchup, stateFeatur
     var inferenceState = getAICrosspathInferenceState()
     var inferenceKey = getAICrosspathInferenceKey(side, towerType, role)
     var policy = getAIPolicyForDecision()
+    var selected = inferenceState.selected[inferenceKey]
+    if(selected && selected.policy == policy) return { supported: true, intent: selected.intent }
     var completed = inferenceState.results[inferenceKey]
     if(completed && completed.policy == policy) {
         delete inferenceState.results[inferenceKey]
@@ -8289,13 +8363,15 @@ function chooseAICrosspathWithWorker(side, towerType, role, matchup, stateFeatur
         var decision = scoreAIDecisionCandidate(side, AI_DECISION_FAMILY.placement, bestMetadata, matchup, completed.stateFeatures)
         decision.score = bestCompleted.decision.score
         decision.neuralScore = bestCompleted.neuralScore
+        var intent = {
+            intentTiers: bestCompleted.candidate.intentTiers.slice(0),
+            intentSignature: bestCompleted.candidate.intentSignature,
+            decisionSample: decision,
+        }
+        inferenceState.selected[inferenceKey] = { policy: policy, intent: intent }
         return {
             supported: true,
-            intent: {
-                intentTiers: bestCompleted.candidate.intentTiers.slice(0),
-                intentSignature: bestCompleted.candidate.intentSignature,
-                decisionSample: decision,
-            },
+            intent: intent,
         }
     }
 
@@ -8590,12 +8666,9 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
     if(economyUtility) {
         candidates.push(economyUtility)
     }
-    if(candidates.length == 0) {
-        return null
-    }
-
     var actionableCandidates = []
     var bestNoOp = null
+    var urgencyBonus = matchup && matchup.dangerHigh ? clamp(0.12 + (Number(matchup.playerThreat.nearExitScore) || 0) / 100, 0.12, 0.28) : 0
     for(var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
         var candidate = candidates[candidateIndex]
         var familyIndex = candidate.decisionSample.familyIndex
@@ -8606,8 +8679,17 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
             noop: true,
         }, matchup, candidate.decisionSample.stateFeatures)
         if(isAIDecisionScoreBetter(noOp, bestNoOp)) bestNoOp = noOp
-        if(getAIDecisionActionScore(candidate.decisionSample, true) >= getAIDecisionActionScore(noOp, false)) actionableCandidates.push(candidate)
+        var actionScore = getAIDecisionActionScore(candidate.decisionSample, true) + (candidate.type == "upgrade" || candidate.type == "place" ? urgencyBonus : urgencyBonus * 0.35)
+        var noOpScore = getAIDecisionActionScore(noOp, false) - urgencyBonus
+        var maximumDefer = matchup && matchup.dangerHigh ? AI_NOOP_DANGER_DEFER_MS : AI_NOOP_MAX_DEFER_MS
+        var noOpExpired = aiProfile && Number(aiProfile.noOpStartedAt) > 0 && gameNow() - aiProfile.noOpStartedAt >= maximumDefer
+        if(noOpExpired || actionScore >= noOpScore) actionableCandidates.push(candidate)
     }
+    if(!bestNoOp) {
+        var noOpFamily = bestUpgrade ? AI_DECISION_FAMILY.upgrade : bestPlacement ? AI_DECISION_FAMILY.placement : AI_DECISION_FAMILY.upgrade
+        bestNoOp = scoreAIDecisionCandidate(side, noOpFamily, { id: "noop|" + noOpFamily, type: "noop", actionKey: "noop", noop: true }, matchup)
+    }
+    var noOpOption = { type: "noop", score: bestNoOp.score, decisionSample: bestNoOp, aiUrgencyBonus: -urgencyBonus, maxDeferMs: matchup && matchup.dangerHigh ? AI_NOOP_DANGER_DEFER_MS : AI_NOOP_MAX_DEFER_MS }
     if(actionableCandidates.length == 0) {
         var placedTowerCount = 0
         for(var towerIndex = 0; towerIndex < towers.length; towerIndex++) {
@@ -8615,34 +8697,49 @@ function getBestDefenseOption(side, matchup, recordNoOp) {
                 placedTowerCount++
             }
         }
-        if(isAITrainingTrueSelfPlayActive() && aiTrainingState.evaluationActive == false && placedTowerCount < 3 && bestPlacement) return bestPlacement
-        if(recordNoOp !== false) recordAINoOpDecision(bestNoOp)
-        return null
+        if(isAITrainingTrueSelfPlayActive() && aiTrainingState.evaluationActive == false && placedTowerCount < 3 && bestPlacement) {
+            bestPlacement.noOpOption = noOpOption
+            return bestPlacement
+        }
+        return noOpOption
     }
 
     actionableCandidates.sort(function(a, b) {
         if(a.score != b.score) return b.score - a.score
         return a.decisionSample.id < b.decisionSample.id ? -1 : 1
     })
+    actionableCandidates[0].aiUrgencyBonus = actionableCandidates[0].type == "upgrade" || actionableCandidates[0].type == "place" ? urgencyBonus : urgencyBonus * 0.35
+    actionableCandidates[0].noOpOption = noOpOption
     return actionableCandidates[0]
 }
 
 function getAIGameplayOptionScore(option) {
     if(!option || !option.decisionSample) return -Infinity
-    return getAIDecisionActionScore(option.decisionSample, true)
+    var score = getAIDecisionActionScore(option.decisionSample, true) + (Number(option.aiUrgencyBonus) || 0)
+    if(option.type == "noop" && aiProfile && Number(aiProfile.noOpStartedAt) > 0) {
+        var maximumDefer = Number(option.maxDeferMs) || AI_NOOP_MAX_DEFER_MS
+        var deferProgress = clamp((gameNow() - aiProfile.noOpStartedAt) / maximumDefer, 0, 1)
+        if(deferProgress >= 1) return -Infinity
+        score -= deferProgress * 0.15
+    }
+    return score
 }
 
 function getBestAIGameplayOption(side, matchup) {
     var options = []
-    var defenseOption = getBestDefenseOption(side, matchup, false)
-    if(aiProfile.workerDecisionPending) return null
+    var defenseOption = getBestDefenseOption(side, matchup, true)
     var ecoOption = getBestAIEcoOption(side, matchup)
     var rushPlan = getBestRushPlan(side, matchup)
     var boostOption = getBestAIBoostOption(side)
     var aimOption = getBestAIAimingOption(side)
     var targetPriorityOption = getBestAITargetPriorityOption(side)
-    if(aiProfile.workerDecisionPending) return null
     if(defenseOption) options.push(defenseOption)
+    if(defenseOption && defenseOption.noOpOption) {
+        defenseOption.noOpOption.maxDeferMs = matchup && matchup.dangerHigh ? AI_NOOP_DANGER_DEFER_MS : AI_NOOP_MAX_DEFER_MS
+        options.push(defenseOption.noOpOption)
+    } else if(defenseOption && defenseOption.type == "noop") {
+        defenseOption.maxDeferMs = matchup && matchup.dangerHigh ? AI_NOOP_DANGER_DEFER_MS : AI_NOOP_MAX_DEFER_MS
+    }
     if(ecoOption && ecoOption.type != "noop") options.push(ecoOption)
     if(rushPlan && rushPlan.noop == false) options.push({ type: "rush", plan: rushPlan, decisionSample: rushPlan.decisionSample })
     if(boostOption && boostOption.type != "noop") options.push(boostOption)
@@ -8658,6 +8755,11 @@ function getBestAIGameplayOption(side, matchup) {
 
 function applyAIGameplayOption(side, matchup, option) {
     if(!option) return false
+    if(option.type == "noop") {
+        if(!aiProfile.noOpStartedAt) aiProfile.noOpStartedAt = Math.max(1, gameNow())
+        return recordAINoOpDecision(option.decisionSample)
+    }
+    aiProfile.noOpStartedAt = 0
     if(option.type == "eco") return applyAIEcoOption(side, matchup, option)
     if(option.type == "rush") return aiQueueRush(side, matchup, option.plan)
     if(option.type == "boost") return aiTryUseBoostType(side, option.boostType, option.decisionSample)
@@ -8671,7 +8773,7 @@ function applyAIGameplayOption(side, matchup, option) {
         if(!startAITargetPriorityAction(side, option.towerIDs, option.targetPriorities, option.decisionSamples)) return false
         return advanceAITargetPriorityAction(side)
     }
-    return requestAIDefenseOption(side, option, AI_ACTION_PRIORITY.normal)
+    return requestAIDefenseOption(side, option, matchup && matchup.dangerHigh ? AI_ACTION_PRIORITY.emergency : AI_ACTION_PRIORITY.normal)
 }
 
 function getBestAIBoostOption(side) {
@@ -8730,9 +8832,15 @@ function isAIPaidActionPending() {
 function runAIGameplayDecisionCycle(side) {
     handleAIRoundStartBoosts(side)
     updateAIMatchTelemetry()
-    if(aiProfile.currentAction || aiProfile.manualAimAction || aiProfile.targetPriorityAction) return
-    aiProfile.workerDecisionPending = false
     var matchup = getCurrentPlayerMatchupStyle(side)
+    if(aiProfile.currentAction || aiProfile.manualAimAction || aiProfile.targetPriorityAction) {
+        if(matchup.dangerHigh) {
+            var emergencyUpgrade = getBestTowerUpgradeOption(side, matchup, matchup.defenseMath)
+            if(emergencyUpgrade) requestAIDefenseOption(side, emergencyUpgrade, AI_ACTION_PRIORITY.emergency)
+        }
+        return
+    }
+    aiProfile.workerDecisionPending = false
     applyAIGameplayOption(side, matchup, getBestAIGameplayOption(side, matchup))
 }
 

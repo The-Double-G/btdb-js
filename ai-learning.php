@@ -2173,7 +2173,7 @@ function model_for_response(array $model): array {
 function match_reward(float $aiLives, float $enemyLives): float {
     $result = $aiLives > $enemyLives ? 1.0 : ($aiLives < $enemyLives ? -1.0 : 0.0);
     $lifeMargin = clamp_number(($aiLives - $enemyLives) / 150.0, -1.0, 1.0);
-    return clamp_number($result * 0.9 + $lifeMargin * 0.1, -1.0, 1.0);
+    return clamp_number($result * 0.7 + $lifeMargin * 0.3, -1.0, 1.0);
 }
 
 function increment_match_record(array &$record, float $aiLives, float $enemyLives, float $reward): void {

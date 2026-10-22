@@ -1064,6 +1064,32 @@ async function main() {
                     exactSampleKeys: usefulSamples.concat(idleSamples, untestedSamples, bankSamples).every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "economyReward", "catastropheTarget", "successorStateFeatures", "successorMemory", "terminal"])),
                     exactPlacementSampleKeys: usefulPlacementSamples.concat(idlePlacementSamples, untestedPlacementSamples, bankPlacementSamples).every(sample => JSON.stringify(Object.keys(sample)) == JSON.stringify(["creditVersion", "familyIndex", "stateFeatures", "chosenCandidateFeatures", "memoryIn", "startedAtMs", "settledAtMs", "intervalReward", "economyReward", "catastropheTarget"])),
                 }
+                aiProfile = createAIProfileState()
+                towers.length = 0
+                setOwnPops(0)
+                players[aiSide].lives = 150
+                const upgradeTower = new Tower(canvas.width * 0.75, canvas.height * 0.55, 25, 100, "tack", aiSide)
+                upgradeTower.totalCost = 200
+                towers.push(upgradeTower)
+                const upgradeCost = upgradeTower.path1Cost[upgradeTower.path1Upgrades]
+                const upgradeDecision = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.upgrade, { id: "upgrade-outcome", type: "tack", actionKey: "upgrade|tack|1" })
+                beginAIDecisionTransition(aiSide, "development", "upgrade|tack|1", null, upgradeDecision, 0, getAIFactualDecisionOutcomeSnapshot(aiSide), { kind: "spend", expectedCost: upgradeCost })
+                upgradeTower.path1Upgrades++
+                const upgradeOutcomeBound = bindAITowerPlacementOutcome(upgradeTower, AI_DECISION_FAMILY.upgrade, upgradeCost)
+                players[aiSide].lives = 140
+                getAIFactualDecisionOutcomeSnapshot(aiSide)
+                const upgradeOutcomeFinalized = finalizeAITowerPlacementOutcome(upgradeTower, null, AI_DECISION_FAMILY.upgrade)
+                const upgradeOutcomeSample = collectAIPlacementSamples()[0]
+                const upgradeOutcomeContract = {
+                    bound: upgradeOutcomeBound,
+                    finalized: upgradeOutcomeFinalized,
+                    family: upgradeOutcomeSample && upgradeOutcomeSample.familyIndex,
+                    leakPenalty: upgradeOutcomeSample && upgradeOutcomeSample.intervalReward,
+                }
+                placementOutcomeContract.upgradeOutcomeBound = upgradeOutcomeContract.bound
+                placementOutcomeContract.upgradeOutcomeFinalized = upgradeOutcomeContract.finalized
+                placementOutcomeContract.upgradeOutcomeFamily = upgradeOutcomeContract.family
+                placementOutcomeContract.upgradeLeakPenalty = upgradeOutcomeContract.leakPenalty
             } finally {
                 aiProfile = savedPlacementOutcomeProbe.aiProfile
                 players[PLAYER_SIDE.left].lives = savedPlacementOutcomeProbe.leftLives
@@ -1279,6 +1305,9 @@ async function main() {
                 survivalTimePositive: getAIFactualDecisionLocalReward(timedSurvivalBefore, timedSurvivalAfter, { kind: "neutral" }) > 0,
                 lifeLossPenalty: getAIFactualDecisionLocalReward(timedSurvivalBefore, lifeLossAfter, { kind: "neutral" }) < 0,
                 lifePopSigns: getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardPositiveAfter) > 0 && getAIFactualDecisionLocalReward(denseRewardBefore, denseRewardNegativeAfter) < 0,
+                fullHealthWinReward: getAIMatchReward(150, 0),
+                lowHealthWinReward: getAIMatchReward(1, 0),
+                lowHealthWinPenalized: getAIMatchReward(1, 0) < getAIMatchReward(150, 0),
                 bounded: [denseRewardPositiveAfter, denseRewardNegativeAfter].every(after => {
                     const reward = getAIFactualDecisionLocalReward(denseRewardBefore, after)
                     return Number.isFinite(reward) && reward >= -1 && reward <= 1
@@ -1320,6 +1349,17 @@ async function main() {
                     frozenRushActionScore: frozenRushActionScore,
                 }
             })()
+            const liveExplorationContract = (() => {
+                const saved = { explorationEnabled: aiProfile.explorationEnabled, explorationScale: aiProfile.explorationScale, liveExploration: aiProfile.liveExploration }
+                aiProfile.explorationEnabled = true
+                aiProfile.explorationScale = 0.35
+                aiProfile.liveExploration = true
+                const live = { enabled: aiProfile.explorationEnabled, scale: aiProfile.explorationScale, bounded: AI_LIVE_EXPLORATION_FLOOR > 0 && AI_LIVE_EXPLORATION_FLOOR <= 0.1 }
+                aiProfile.explorationEnabled = saved.explorationEnabled
+                aiProfile.explorationScale = saved.explorationScale
+                aiProfile.liveExploration = saved.liveExploration
+                return live
+            })()
             const savedRewardAction = aiProfile.currentAction
             aiProfile.currentAction = null
             const rewardActionSample = scoreAIDecisionCandidate(aiSide, AI_DECISION_FAMILY.placement, { id: "reward-baseline", type: "farmer" })
@@ -1336,9 +1376,13 @@ async function main() {
             const originalBestAIEcoOption = getBestAIEcoOption
             const originalBestRushPlan = getBestRushPlan
             const originalBestAIBoostOption = getBestAIBoostOption
+            const originalBestAIAimingOption = getBestAIAimingOption
+            const originalBestAITargetPriorityOption = getBestAITargetPriorityOption
             const originalScoreDecisionCandidate = scoreAIDecisionCandidate
             let crossFamilyNoOp
             let gameplayArbitration
+            let workerPendingGameplay
+            let noOpCreditContract
             try {
                 const option = (type, familyIndex, score) => ({
                     type,
@@ -1368,6 +1412,60 @@ async function main() {
                     type: selectedGameplayOption && selectedGameplayOption.type,
                     familyIndex: selectedGameplayOption && selectedGameplayOption.decisionSample.familyIndex,
                 }
+
+                const savedWorkerPending = aiProfile.workerDecisionPending
+                aiProfile.workerDecisionPending = true
+                getBestDefenseOption = () => option("upgrade", AI_DECISION_FAMILY.upgrade, 0.8)
+                getBestAIEcoOption = () => null
+                getBestRushPlan = () => null
+                getBestAIBoostOption = () => null
+                getBestAIAimingOption = () => null
+                getBestAITargetPriorityOption = () => null
+                const pendingWorkerOption = getBestAIGameplayOption(aiSide, {})
+                workerPendingGameplay = { type: pendingWorkerOption && pendingWorkerOption.type, familyIndex: pendingWorkerOption && pendingWorkerOption.decisionSample.familyIndex }
+                aiProfile.workerDecisionPending = savedWorkerPending
+
+                const savedProfile = aiProfile
+                aiProfile = createAIProfileState()
+                const originalUpgradeOption = getBestTowerUpgradeOption
+                const originalPlacementOption = getBestPlacementOption
+                const originalUtilityOption = getBestAIEconomyUtilityOption
+                const originalScorerForNoOp = scoreAIDecisionCandidate
+                const savedNoOpLives = players[aiSide].lives
+                try {
+                    getBestDefenseOption = originalBestDefenseOption
+                    getBestTowerUpgradeOption = () => option("upgrade", AI_DECISION_FAMILY.upgrade, 0)
+                    getBestPlacementOption = () => null
+                    getBestAIEconomyUtilityOption = () => null
+                    scoreAIDecisionCandidate = (side, familyIndex) => ({
+                        id: `learned-noop|${familyIndex}`,
+                        side,
+                        familyIndex,
+                        score: 1,
+                        stateFeatures: Array(AI_DECISION_STATE_INPUT_SIZE).fill(0),
+                        candidateFeatures: Array(AI_DECISION_CANDIDATE_INPUT_SIZE).fill(0),
+                        memoryIn: Array(AI_DECISION_MEMORY_SIZE).fill(0),
+                    })
+                    players[aiSide].lives = 150
+                    const noOpOption = getBestAIGameplayOption(aiSide, { dangerHigh: false, playerThreat: { nearExitScore: 0 } })
+                    const noOpApplied = noOpOption && noOpOption.type == "noop" && applyAIGameplayOption(aiSide, { dangerHigh: false, playerThreat: { nearExitScore: 0 } }, noOpOption)
+                    const noOpStarted = aiProfile.pendingTacticalDecision && aiProfile.pendingTacticalDecision.actionKey == "learned-noop|3"
+                    players[aiSide].lives = 120
+                    if(noOpStarted) settleAITacticalDecision(aiSide, null, false)
+                    noOpCreditContract = {
+                        deferred: noOpOption && noOpOption.type == "noop",
+                        applied: noOpApplied,
+                        recorded: !!noOpStarted,
+                        negativeAfterLeak: !!aiProfile.tacticalTrace.length && aiProfile.tacticalTrace[0].intervalReward < 0,
+                    }
+                } finally {
+                    players[aiSide].lives = savedNoOpLives
+                    getBestTowerUpgradeOption = originalUpgradeOption
+                    getBestPlacementOption = originalPlacementOption
+                    getBestAIEconomyUtilityOption = originalUtilityOption
+                    scoreAIDecisionCandidate = originalScorerForNoOp
+                    aiProfile = savedProfile
+                }
             } finally {
                 getBestTowerUpgradeOption = originalBestTowerUpgradeOption
                 getBestPlacementOption = originalBestPlacementOption
@@ -1376,6 +1474,8 @@ async function main() {
                 getBestAIEcoOption = originalBestAIEcoOption
                 getBestRushPlan = originalBestRushPlan
                 getBestAIBoostOption = originalBestAIBoostOption
+                getBestAIAimingOption = originalBestAIAimingOption
+                getBestAITargetPriorityOption = originalBestAITargetPriorityOption
                 scoreAIDecisionCandidate = originalScoreDecisionCandidate
             }
 
@@ -1508,10 +1608,19 @@ async function main() {
                 round,
                 selectedMenuMode,
                 timeGameStarted,
-                leftAutoEco: players[PLAYER_SIDE.left].autoEco,
-                leftCursor: { x: players[PLAYER_SIDE.left].cursor.x, y: players[PLAYER_SIDE.left].cursor.y },
-                leftSelectedBloon: players[PLAYER_SIDE.left].selectedBloon,
-            }
+            leftAutoEco: players[PLAYER_SIDE.left].autoEco,
+            leftCursor: { x: players[PLAYER_SIDE.left].cursor.x, y: players[PLAYER_SIDE.left].cursor.y },
+            leftSelectedBloon: players[PLAYER_SIDE.left].selectedBloon,
+            leftLoadoutTowers: p1Towers.slice(),
+            leftLoadoutBoosts: p1BoostTypes.slice(),
+            rightLoadoutTowers: p2Towers.slice(),
+            rightLoadoutBoosts: p2BoostTypes.slice(),
+            multiplayerActive: multiplayerState.active,
+            multiplayerRole: multiplayerState.role,
+            multiplayerLocalSide: multiplayerState.localSide,
+            multiplayerRemoteContributionStatus: multiplayerState.remoteContributionStatus,
+            multiplayerApplyingRemoteInput: multiplayerState.applyingRemoteInput,
+        }
             let humanTacticalCapture
             try {
                 selectedMenuMode = "local"
@@ -1575,6 +1684,93 @@ async function main() {
                 aiEnabled = true
                 const ineligibleCaptureRejected = recordLocalHumanBoost(PLAYER_SIDE.left, "towerboost.png") == false
                 aiEnabled = false
+
+                const savedContributionEnabled = aiPersistenceState.contributionEnabled
+                const originalQueueContribution = queueAIPublicContribution
+                const originalMultiplayerSendMessage = multiplayerSendMessage
+                const multiplayerQueuedContributions = []
+                const multiplayerStatusMessages = []
+                let multiplayerHumanCapture
+                try {
+                    selectedMenuMode = "multiplayer"
+                    gameStarted = true
+                    gameOver = false
+                    p1Towers = ["000dart.png", "000farm.png", "000wizard.png"]
+                    p1BoostTypes = ["bloonboost.png", "towerboost.png"]
+                    p2Towers = ["000bomb.png", "000farm.png", "000ninja.png"]
+                    p2BoostTypes = ["ecoboost.png", "towerboost.png"]
+                    multiplayerState.active = true
+                    multiplayerState.role = "host"
+                    multiplayerState.localSide = PLAYER_SIDE.left
+                    multiplayerState.applyingRemoteInput = false
+                    aiPersistenceState.contributionEnabled = true
+                    queueAIPublicContribution = contribution => { multiplayerQueuedContributions.push(contribution); return true }
+                    multiplayerSendMessage = (type, payload) => { multiplayerStatusMessages.push({ type, payload }); return true }
+                    resetLocalMatchCollection()
+                    const hostCaptureEnabled = !!isLocalHumanTacticalCaptureActive(PLAYER_SIDE.left)
+                    multiplayerState.applyingRemoteInput = true
+                    const joinerCaptureEnabled = !!isLocalHumanTacticalCaptureActive(PLAYER_SIDE.right)
+                    multiplayerState.applyingRemoteInput = false
+                    recordLocalHumanTacticalEvent(PLAYER_SIDE.left, { k: "eco", enabled: true, slot: 2 })
+                    multiplayerState.applyingRemoteInput = true
+                    recordLocalHumanTacticalEvent(PLAYER_SIDE.right, { k: "eco", enabled: false, slot: 4 })
+                    multiplayerState.applyingRemoteInput = false
+                    gameOver = true
+                    const multiplayerFinalized = finalizeLocalMatchCollection()
+                    multiplayerState.role = "guest"
+                    multiplayerState.remoteContributionStatus = "queued"
+                    const joinerSavingMessage = getCompletedMatchAIRematchMessage()
+                    multiplayerState.remoteContributionStatus = "accepted"
+                    const joinerSavedMessage = getCompletedMatchAIRematchMessage()
+                    multiplayerHumanCapture = {
+                        hostCaptureEnabled,
+                        joinerCaptureEnabled,
+                        finalized: multiplayerFinalized,
+                        contributionCount: multiplayerQueuedContributions.length,
+                        bothPerspectivesHaveEvents: multiplayerQueuedContributions.length == 2 && multiplayerQueuedContributions.some(item => item.events.some(event => event.k == "eco" && event.enabled === true)) && multiplayerQueuedContributions.some(item => item.events.some(event => event.k == "eco" && event.enabled === false)),
+                        hostBroadcastQueued: multiplayerStatusMessages.some(message => message.type == "contributionStatus" && message.payload.status == "queued"),
+                        joinerSavingMessage,
+                        joinerSavedMessage,
+                    }
+                } finally {
+                    aiPersistenceState.contributionEnabled = savedContributionEnabled
+                    queueAIPublicContribution = originalQueueContribution
+                    multiplayerSendMessage = originalMultiplayerSendMessage
+                    multiplayerState.active = originalCaptureEnvironment.multiplayerActive
+                    multiplayerState.role = originalCaptureEnvironment.multiplayerRole
+                    multiplayerState.localSide = originalCaptureEnvironment.multiplayerLocalSide
+                    multiplayerState.remoteContributionStatus = originalCaptureEnvironment.multiplayerRemoteContributionStatus
+                    multiplayerState.applyingRemoteInput = originalCaptureEnvironment.multiplayerApplyingRemoteInput
+                    selectedMenuMode = "local"
+                    gameOver = false
+                }
+
+                AI_CROSS_MATCH_LEARNING_ENABLED = true
+                const storageProbeContributionEnabled = aiPersistenceState.contributionEnabled
+                aiPersistenceState.contributionEnabled = true
+                const originalStorageSetItem = localStorage.setItem
+                const queuedStorageProbe = {
+                    contributionId: "storage-failure-probe",
+                    contributionEpoch: aiPersistenceState.contributionEpoch,
+                }
+                localMatchCollectionState = {
+                    recorded: true,
+                    contributionStatus: "queued",
+                    contributionIds: [queuedStorageProbe.contributionId],
+                    acceptedContributionIds: {},
+                    contributionResults: {},
+                }
+                let queueStorageFailureRejected = false
+                try {
+                    localStorage.setItem = function(key, value) {
+                        if(key == AI_CONTRIBUTION_STORAGE_KEY) throw new Error("quota probe")
+                        return originalStorageSetItem.call(this, key, value)
+                    }
+                    queueStorageFailureRejected = queueAIPublicContribution(queuedStorageProbe) == false && localMatchCollectionState.contributionStatus == "failed"
+                } finally {
+                    localStorage.setItem = originalStorageSetItem
+                    aiPersistenceState.contributionEnabled = storageProbeContributionEnabled
+                }
                 resetLocalMatchCollection()
                 const towerIdResults = []
                 for(let towerIndex = 0; towerIndex < 65; towerIndex++) {
@@ -1620,6 +1816,8 @@ async function main() {
                     boundedPayload: demonstration.map >= 0 && demonstration.map <= 20 && demonstration.durationMs >= demonstration.events[demonstration.events.length - 1].t && demonstration.matchFeatures.length == AI_FEATURE_KEYS.length && demonstration.matchFeatures.every(value => value >= 0 && value <= 1),
                     excludesNeuralData: !Object.prototype.hasOwnProperty.call(demonstration, "model") && !Object.prototype.hasOwnProperty.call(demonstration, "decisionSamples") && !Object.prototype.hasOwnProperty.call(demonstration, "observations"),
                     ineligibleCaptureRejected,
+                    multiplayerHumanCapture,
+                    queueStorageFailureRejected,
                     towerIdBounded: towerIdResults.slice(0, 64).every(Boolean) && towerIdResults[64] == false,
                     cappedActions,
                     cappedUploadEvents,
@@ -1637,6 +1835,10 @@ async function main() {
                 gameStarted = originalCaptureEnvironment.gameStarted
                 localMatchCollectionState = originalCaptureEnvironment.localMatchCollectionState
                 mapNumber = originalCaptureEnvironment.mapNumber
+                p1Towers = originalCaptureEnvironment.leftLoadoutTowers
+                p1BoostTypes = originalCaptureEnvironment.leftLoadoutBoosts
+                p2Towers = originalCaptureEnvironment.rightLoadoutTowers
+                p2BoostTypes = originalCaptureEnvironment.rightLoadoutBoosts
                 practiceMode = originalCaptureEnvironment.practiceMode
                 round = originalCaptureEnvironment.round
                 selectedMenuMode = originalCaptureEnvironment.selectedMenuMode
@@ -1808,6 +2010,9 @@ async function main() {
                 prioritizedReplayContract,
                 crossFamilyNoOp,
                 gameplayArbitration,
+                liveExplorationContract,
+                workerPendingGameplay,
+                noOpCreditContract,
                 decisionEncodeCalls,
                 decisionTraining,
                 invalidTrainerStatusSucceeded,
@@ -2056,6 +2261,10 @@ async function main() {
         assert.equal(result.placementOutcomeContract.ledgerCleared, true)
         assert.equal(result.placementOutcomeContract.exactSampleKeys, true)
         assert.equal(result.placementOutcomeContract.exactPlacementSampleKeys, true)
+        assert.equal(result.placementOutcomeContract.upgradeOutcomeBound, true)
+        assert.equal(result.placementOutcomeContract.upgradeOutcomeFinalized, true)
+        assert.equal(result.placementOutcomeContract.upgradeOutcomeFamily, 3)
+        assert.equal(result.placementOutcomeContract.upgradeLeakPenalty, -1)
         assert.deepEqual(result.farmerPriceContract, {
             basePrice: 0,
             candidateFinite: true,
@@ -2104,6 +2313,17 @@ async function main() {
         assert.equal(result.humanTacticalCapture.boundedPayload, true)
         assert.equal(result.humanTacticalCapture.excludesNeuralData, true)
         assert.equal(result.humanTacticalCapture.ineligibleCaptureRejected, true)
+        assert.deepEqual(result.humanTacticalCapture.multiplayerHumanCapture, {
+            hostCaptureEnabled: true,
+            joinerCaptureEnabled: true,
+            finalized: true,
+            contributionCount: 2,
+            bothPerspectivesHaveEvents: true,
+            hostBroadcastQueued: true,
+            joinerSavingMessage: "Saving...",
+            joinerSavedMessage: "Saved! You can close now.",
+        })
+        assert.equal(result.humanTacticalCapture.queueStorageFailureRejected, true)
         assert.equal(result.humanTacticalCapture.towerIdBounded, true)
         assert.equal(result.humanTacticalCapture.cappedActions, 96)
         assert.ok(result.humanTacticalCapture.cappedUploadEvents <= 128)
@@ -2130,6 +2350,9 @@ async function main() {
             survivalTimePositive: true,
             lifeLossPenalty: true,
             lifePopSigns: true,
+            fullHealthWinReward: 1,
+            lowHealthWinReward: 0.702,
+            lowHealthWinPenalized: true,
             bounded: true,
             rewardActionBaselineCaptured: true,
         })
@@ -2149,8 +2372,11 @@ async function main() {
         assert.ok(result.familyBalanceContract.rushLearningMultiplier > result.familyBalanceContract.placementLearningMultiplier)
         assert.ok(result.familyBalanceContract.rushActionScore > result.familyBalanceContract.placementActionScore)
         assert.equal(result.familyBalanceContract.frozenRushActionScore, 0)
+        assert.deepEqual(result.liveExplorationContract, { enabled: true, scale: 0.35, bounded: true })
         assert.deepEqual(result.crossFamilyNoOp, { familyIndex: 2, type: "place" })
         assert.deepEqual(result.gameplayArbitration, { familyIndex: 5, type: "eco" })
+        assert.deepEqual(result.workerPendingGameplay, { familyIndex: 3, type: "upgrade" })
+        assert.deepEqual(result.noOpCreditContract, { deferred: true, applied: true, recorded: true, negativeAfterLeak: true })
         assert.equal(result.unsnapshottedInferenceUsesCandidate, true)
         assert.equal(result.loadoutCounterSelection.baselineKey, result.loadoutCounterSelection.baselineExpectedKey)
         assert.equal(result.loadoutCounterSelection.learnedKey, result.loadoutCounterSelection.learnedExpectedKey)
