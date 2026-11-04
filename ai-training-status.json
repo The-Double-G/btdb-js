@@ -3,48 +3,48 @@
   "formatVersion": 1,
   "repository": "The-Double-G/btdb-js",
   "branch": "main",
-  "publishedAt": "2026-11-03T22:20:18.570Z",
+  "publishedAt": "2026-11-04T00:54:44.467Z",
   "current": {
-    "runId": 41655607050,
-    "runNumber": 258,
+    "runId": 41750284628,
+    "runNumber": 259,
     "runAttempt": 1,
-    "state": "completed",
-    "conclusion": "cancelled",
+    "state": "in_progress",
+    "conclusion": null,
     "headSha": "658307012b1c83869f011de7601704d3937c7659",
-    "url": "https://github.com/The-Double-G/btdb-js/actions/runs/41655607050",
-    "createdAt": "2026-11-03T14:37:57.000Z",
-    "startedAt": "2026-11-03T14:37:57.000Z",
-    "updatedAt": "2026-11-03T20:39:50.000Z",
-    "phase": "completed",
+    "url": "https://github.com/The-Double-G/btdb-js/actions/runs/41750284628",
+    "createdAt": "2026-11-04T00:54:27.000Z",
+    "startedAt": "2026-11-04T00:54:27.000Z",
+    "updatedAt": "2026-11-04T00:54:32.000Z",
+    "phase": "preparing",
     "projection": {
       "jobs": {
-        "total": 28,
+        "total": 1,
         "queued": 0,
-        "inProgress": 0,
-        "completed": 28,
-        "succeeded": 15,
+        "inProgress": 1,
+        "completed": 0,
+        "succeeded": 0,
         "failed": 0,
-        "cancelled": 6,
-        "skipped": 7
+        "cancelled": 0,
+        "skipped": 0
       },
       "workers": {
         "training": {
-          "total": 20,
-          "queued": 0,
-          "inProgress": 0,
-          "succeeded": 14,
-          "failed": 0,
-          "cancelled": 6,
-          "skipped": 0
-        },
-        "evaluation": {
-          "total": 1,
+          "total": 0,
           "queued": 0,
           "inProgress": 0,
           "succeeded": 0,
           "failed": 0,
           "cancelled": 0,
-          "skipped": 1
+          "skipped": 0
+        },
+        "evaluation": {
+          "total": 0,
+          "queued": 0,
+          "inProgress": 0,
+          "succeeded": 0,
+          "failed": 0,
+          "cancelled": 0,
+          "skipped": 0
         }
       }
     }
